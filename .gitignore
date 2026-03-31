@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.json.bak
+logs/
+*.log
+state.json
+pool-memory.json
+lessons.json
+strategy-library.json

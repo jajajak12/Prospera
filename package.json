@@ -1,0 +1,26 @@
+{
+  "name": "fibonacci-lp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Autonomous DLMM LP agent using Fibonacci + Volume Profile entry signals on Meteora/Solana",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "DRY_RUN=true node index.js",
+    "postinstall": "node scripts/patch-anchor.js"
+  },
+  "dependencies": {
+    "@meteora-ag/dlmm": "latest",
+    "@solana/spl-token": "^0.3.11",
+    "@solana/web3.js": "^1.95.0",
+    "bn.js": "^5.2.1",
+    "bs58": "^5.0.0",
+    "dotenv": "^17.3.1",
+    "jsonrepair": "^3.13.3",
+    "node-cron": "^3.0.3",
+    "openai": "^4.73.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
