@@ -21,7 +21,7 @@ import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
-import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
+import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits } from "./state.js";
@@ -483,6 +483,90 @@ reason: <one sentence why this over others>
 }
 
 // ═══════════════════════════════════════════
+//  PERIODIC BACKTEST (02:00 daily)
+// ═══════════════════════════════════════════
+async function runPeriodicBacktest() {
+  log("cron", "Periodic backtest starting...");
+
+  const pools = getClosedPoolsForBacktest({ hours: 168, limit: 8 });
+  if (pools.length === 0) {
+    log("cron", "Periodic backtest: no closed pools in last 7 days — skipping");
+    return;
+  }
+
+  const results = [];
+  for (const p of pools) {
+    let bt = null;
+    for (const agg of [15, 5, 1]) {
+      try {
+        bt = await runBacktest({ poolAddress: p.pool, binStep: p.bin_step, feePct: p.fee_pct, aggregate: agg, candleLimit: 500 });
+        if (bt && bt.totalTrades >= 3) break;
+      } catch { bt = null; }
+    }
+    results.push({ ...p, bt });
+  }
+
+  // ── Build suggestions ───────────────────────────────────────────────────────
+  const withData    = results.filter(r => r.bt && r.bt.totalTrades >= 3);
+  const suggestions = [];
+
+  if (withData.length > 0) {
+    const avgBtWr   = withData.reduce((s, r) => s + r.bt.winRate, 0) / withData.length;
+    const avgActual = withData.reduce((s, r) => s + (r.actual_pnl ?? 0), 0) / withData.length;
+
+    // Suggest raising minBacktestWinRate if most pools backtest poorly
+    if (avgBtWr < 0.45 && !config.screening.autoBacktest) {
+      suggestions.push(`Aktifkan auto-backtest filter (win rate rata-rata backtest: ${(avgBtWr*100).toFixed(0)}%)`);
+    }
+
+    // Suggest bin_step focus if one range clearly outperforms
+    const byStep = {};
+    for (const r of withData) {
+      const bucket = r.bin_step <= 100 ? "80–100" : r.bin_step <= 150 ? "100–150" : "150–200";
+      if (!byStep[bucket]) byStep[bucket] = [];
+      byStep[bucket].push(r.bt.winRate);
+    }
+    let bestBucket = null, bestWr = 0;
+    for (const [bucket, wrs] of Object.entries(byStep)) {
+      const avg = wrs.reduce((a, b) => a + b, 0) / wrs.length;
+      if (avg > bestWr) { bestWr = avg; bestBucket = bucket; }
+    }
+    if (bestBucket && bestWr > 0.60) {
+      suggestions.push(`Bin step ${bestBucket} unggul (WR ${(bestWr*100).toFixed(0)}%) — pertimbangkan fokuskan minBinStep/maxBinStep`);
+    }
+
+    // Suggest stop loss tightening if many stop-loss exits
+    const slHits = withData.filter(r => r.close_reason === "stop_loss").length;
+    if (slHits >= Math.ceil(withData.length * 0.5)) {
+      suggestions.push(`${slHits}/${withData.length} posisi kena stop loss — pertimbangkan naikkan minBacktestWinRate atau perketat confluence`);
+    }
+
+    if (suggestions.length === 0) {
+      suggestions.push("Tidak ada perubahan yang disarankan — strategi berjalan sesuai ekspektasi");
+    }
+  }
+
+  // ── Build Telegram message ──────────────────────────────────────────────────
+  const lines = results.map(r => {
+    if (!r.bt || r.bt.totalTrades < 3) return `  • ${r.pool_name} — data tidak cukup`;
+    const wr  = `WR ${(r.bt.winRate*100).toFixed(0)}%`;
+    const avg = `avgPnL ${r.bt.avgPnlPct?.toFixed(1)}%`;
+    const act = r.actual_pnl != null ? ` | live ${r.actual_pnl >= 0 ? "+" : ""}${r.actual_pnl.toFixed(1)}%` : "";
+    return `  • ${r.pool_name} — ${wr} ${avg} (${r.bt.totalTrades}t)${act}`;
+  });
+
+  const msg =
+    `📊 Periodic Backtest (7 hari terakhir)\n\n` +
+    `Pool ditest: ${pools.length} | Data cukup: ${withData.length}\n\n` +
+    lines.join("\n") +
+    `\n\n💡 Saran:\n` +
+    suggestions.map(s => `  • ${s}`).join("\n");
+
+  await sendMessage(msg).catch(() => {});
+  log("cron", `Periodic backtest done — ${withData.length}/${pools.length} pools had data`);
+}
+
+// ═══════════════════════════════════════════
 //  CRON SCHEDULER
 // ═══════════════════════════════════════════
 export function startCronJobs() {
@@ -570,7 +654,12 @@ export function startCronJobs() {
     }
   });
 
-  _cronTasks = [mgmtTask, screenTask, briefingTask];
+  // Periodic backtest — runs at 02:00 server time every day
+  const backtestTask = cron.schedule("0 2 * * *", () => {
+    runPeriodicBacktest().catch(e => log("cron_error", `Periodic backtest failed: ${e.message}`));
+  });
+
+  _cronTasks = [mgmtTask, screenTask, briefingTask, backtestTask];
   _cronTasks._pnlPollInterval = pnlPollInterval;
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }
@@ -777,6 +866,22 @@ if (isTTY) {
       return;
     }
 
+    // /backtest [7d|30d|all] — on-demand periodic backtest
+    const btMatch = text.match(/^\/backtest(?:\s+(7d|30d|all))?$/i);
+    if (btMatch) {
+      const range = (btMatch[1] || "7d").toLowerCase();
+      const hours = range === "30d" ? 720 : range === "all" ? 99999 : 168;
+      const label = range === "30d" ? "30 hari" : range === "all" ? "semua waktu" : "7 hari";
+      await sendMessage(`🔄 Menjalankan backtest (${label})...`);
+      const saved = getClosedPoolsForBacktest({ hours, limit: 8 });
+      if (saved.length === 0) {
+        await sendMessage(`Belum ada pool yang ditutup dalam ${label}.`);
+        return;
+      }
+      await runPeriodicBacktest().catch(e => sendMessage(`Error: ${e.message}`).catch(() => {}));
+      return;
+    }
+
     busy = true;
     try {
       log("telegram", `Incoming: ${text}`);
@@ -806,6 +911,7 @@ Commands:
   /candidates    Refresh Fibonacci candidates list
   /thresholds    Show current screening thresholds + performance stats
   /evolve        Manually trigger threshold evolution from performance data
+  /backtest [7d|30d|all]  Run periodic backtest on recently closed pools
   /stop          Shut down
 `);
 

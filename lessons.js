@@ -506,3 +506,32 @@ export function getPerformanceSummary() {
     total_lessons:            data.lessons.length,
   };
 }
+
+/**
+ * Return unique closed pools from the last N hours, with bin_step + fee_pct,
+ * for use in periodic backtesting.
+ */
+export function getClosedPoolsForBacktest({ hours = 168, limit = 8 } = {}) {
+  const data = load();
+  const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const seen = new Set();
+  const result = [];
+
+  for (const r of [...data.performance].reverse()) {
+    if (!r.pool || !r.bin_step || !r.fee_pct) continue;
+    if (r.recorded_at < cutoff) continue;
+    if (seen.has(r.pool)) continue;
+    seen.add(r.pool);
+    result.push({
+      pool:       r.pool,
+      pool_name:  r.pool_name  ?? r.pool.slice(0, 8),
+      bin_step:   r.bin_step,
+      fee_pct:    r.fee_pct,
+      actual_pnl: r.pnl_pct,
+      close_reason: r.close_reason ?? null,
+    });
+    if (result.length >= limit) break;
+  }
+
+  return result;
+}
