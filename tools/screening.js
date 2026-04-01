@@ -10,6 +10,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import { analyzeSignal } from "./chart.js";
 import { getTokenAdvancedInfo, getTokenPriceInfo } from "./okx.js";
+import { batchGetTokenVolume5m } from "./token.js";
 import { checkSmartWalletActivity } from "../smart-wallets.js";
 import fs from "fs";
 import path from "path";
@@ -50,7 +51,6 @@ async function discoverPools({ page_size = 50 } = {}) {
     `base_token_market_cap>=${s.minMcap}`,
     `base_token_market_cap<=${s.maxMcap}`,
     `base_token_holders>=${s.minHolders}`,
-    `volume>=${s.minVolume}`,
     `tvl>=${s.minTvl}`,
     `tvl<=${s.maxTvl}`,
     `dlmm_bin_step>=${s.minBinStep}`,
@@ -175,6 +175,32 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     return { candidates: [], total_screened: pools.length, fib_analyzed: 0 };
   }
 
+
+  if (eligible.length === 0) {
+    return { candidates: [], total_screened: pools.length, fib_analyzed: 0 };
+  }
+
+  // ── Token volume filter (GeckoTerminal — all DEXes, 5m avg) ──────────────
+  {
+    const minVol = config.screening.minVolume;
+    const mints  = eligible.map(p => p.base?.mint).filter(Boolean);
+    const volMap = await batchGetTokenVolume5m(mints).catch(() => new Map());
+    const before = eligible.length;
+    eligible.splice(0, eligible.length,
+      ...eligible.filter(p => {
+        const mint  = p.base?.mint;
+        const vol5m = volMap.get(mint);
+        if (vol5m == null) return true; // API miss → keep
+        if (vol5m < minVol) {
+          log("screening", `  ${p.name}: SKIP — token 5m vol $${Math.round(vol5m)} < min $${minVol}`);
+          return false;
+        }
+        p._vol5m = Math.round(vol5m);
+        return true;
+      })
+    );
+    log("screening", `Token volume filter: ${eligible.length}/${before} pools passed (min 5m vol $${minVol})`);
+  }
 
   if (eligible.length === 0) {
     return { candidates: [], total_screened: pools.length, fib_analyzed: 0 };

@@ -429,7 +429,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       return [
         `POOL: ${pool.name} (${pool.pool})`,
-        `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}`,
+        `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol5m=$${pool._vol5m ?? pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}`,
         `  fib: ${fibStr}`,
         `  price: ${pool.price} | change: ${pool.price_change_pct}% | trend: ${pool.price_trend ?? "?"}`,
         activeBin != null ? `  active_bin: ${activeBin}` : null,
