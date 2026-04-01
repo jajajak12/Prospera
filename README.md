@@ -25,14 +25,15 @@ Fibonacci is drawn from **all-time-low → ATH** using daily OHLCV candles (Geck
 
 | Signal | Condition | Purpose |
 |--------|-----------|---------|
-| **Fib Zone** | Price within Fib 0.236–0.618 | Pullback in uptrend |
-| **Volume Profile** | POC or VAL within Fib zone | Volume support at key level |
+| **Price** | Above Fib 0.618 (not broken support) | Token still in valid range |
+| **Volume Profile** | POC/VAL in fib zone (or POC ≥ 0.618 for ATH zone) | Volume distribution healthy |
 | **EMA Trend** | EMA20 > EMA50 | Confirmed uptrend |
-| **RSI Momentum** | RSI > 48 + rising slope | Bullish momentum during pullback |
+| **RSI Momentum** | RSI > 48 + rising slope | Bullish momentum |
 | **ATR Check** | ATR% < bin\_step% × 4 | Volatility compatible with pool |
 
 ### Zone Tiers
 
+- **ATH Zone (above 0.236)** — pre-position entry, price still near ATH, range set from Fib 0.236 → 0.618 anticipating pullback
 - **Primary zone (0.236–0.382)** — ideal entry, shallow pullback
 - **Secondary zone (0.382–0.618)** — valid entry, deeper pullback
 
@@ -46,14 +47,15 @@ Base score from price position (0.6 weight) + POC volume strength (0.4 weight).
 | Hidden Bullish Divergence | +0.15 |
 | RSI slope > 3 | +0.05 |
 | Price action support below Fib 0.618 found | +0.15 |
-| No price action support found | −0.20 |
+| No price action support found (fib zone only) | −0.20 |
 | Smart wallet present in pool | +0.10 |
 
 ### bins_below Calculation
 
-`bins_below` covers from current price down to the nearest swing low below Fib 0.618 minus one ATR buffer. If no swing low is found, falls back to Fib 0.786 as the target. Clamped to [35, 90].
+- **ATH Zone**: calculated from Fib 0.236 → Fib 0.618 (range sits below current price, ready for pullback)
+- **Fib Zone**: calculated from current price → nearest swing low below Fib 0.618 minus one ATR buffer. Falls back to Fib 0.786 if no swing low found.
 
-`bins_above` is always 0.
+Clamped to [35, 90]. `bins_above` is always 0.
 
 ---
 
@@ -237,7 +239,7 @@ DRY_RUN=true node index.js
 | Key | Default | Description |
 |-----|---------|-------------|
 | `maxPositions` | 2 | Max concurrent open positions |
-| `minBinStep` / `maxBinStep` | 80 / 125 | Pool bin step range |
+| `minBinStep` / `maxBinStep` | 80 / 200 | Pool bin step range |
 | `minVolume` | 20000 | Min 5m volume ($) |
 | `minMcap` / `maxMcap` | 150k / 10M | Token market cap range |
 | `minTokenAgeHours` / `maxTokenAgeHours` | 1 / 1440 | Token age range (1h – 2 months) |
