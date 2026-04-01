@@ -1,89 +1,155 @@
 # Prospera
 
-Autonomous DLMM liquidity provider agent for Meteora pools on Solana, powered by Fibonacci retracement + Volume Profile entry signals.
+Autonomous DLMM liquidity provider agent for Meteora pools on Solana. Combines Fibonacci retracement + Volume Profile entry signals with multi-layer token safety filters and self-learning position management.
 
 ---
 
 ## Overview
 
-Prospera is a self-running LP agent that deploys liquidity positions on Meteora DLMM using technical analysis signals instead of traditional fee/volume screening alone. It enters positions at high-probability support zones and manages them autonomously — claiming fees, detecting out-of-range conditions, and closing positions based on defined rules.
+Prospera is a fully autonomous LP agent that:
+- Discovers trending Meteora DLMM pools via the Pool Discovery API
+- Filters by Fibonacci + Volume Profile entry signals (ATH-based Fib levels from daily candles)
+- Runs multi-layer token safety checks (organic score, OKX honeypot/bundle, token age, blacklists)
+- Manages open positions with tiered rules (stop loss, LLM decision zone, auto take-profit)
+- Learns from closed positions to evolve screening thresholds and detect smart money wallets
 
 ---
 
 ## Entry Strategy
 
+### Fibonacci Levels
+
+Fibonacci is drawn from **all-time-low → ATH** using daily OHLCV candles (GeckoTerminal). For tokens with ≤ 3 daily candles, intraday extremes are also included to capture the current session's high/low. Since data is fetched fresh every screening cycle, new ATHs are automatically reflected on the next run.
+
 ### Signal Requirements (all must pass)
 
 | Signal | Condition | Purpose |
 |--------|-----------|---------|
-| **Fibonacci Zone** | Price between Fib 0.236–0.618 | Pullback in uptrend, not overextended |
-| **Volume Profile** | POC or VAL within Fib zone | Volume support confirms the level |
-| **EMA Trend** | EMA20 > EMA50 | Confirms uptrend — pullback not a reversal |
-| **RSI Momentum** | RSI > 48 + rising slope | Bullish momentum present during pullback |
-| **ATR Check** | ATR% < bin_step% × 4 | Volatility compatible with pool bin step |
+| **Fib Zone** | Price within Fib 0.236–0.618 | Pullback in uptrend |
+| **Volume Profile** | POC or VAL within Fib zone | Volume support at key level |
+| **EMA Trend** | EMA20 > EMA50 | Confirmed uptrend |
+| **RSI Momentum** | RSI > 48 + rising slope | Bullish momentum during pullback |
+| **ATR Check** | ATR% < bin\_step% × 4 | Volatility compatible with pool |
 
 ### Zone Tiers
 
-- **Primary zone (0.236–0.382)** — ideal entry, shallow pullback, higher confluence score
-- **Secondary zone (0.382–0.618)** — valid entry, deeper pullback, lower confidence
+- **Primary zone (0.236–0.382)** — ideal entry, shallow pullback
+- **Secondary zone (0.382–0.618)** — valid entry, deeper pullback
 
-### Confluence Score Boosts
-- Price in primary zone → +0.10
-- Hidden Bullish Divergence detected (price higher low + RSI lower low) → +0.15
-- RSI slope > 3 → +0.05
+### Confluence Score
 
----
+Base score from price position (0.6 weight) + POC volume strength (0.4 weight).
 
-## Position Parameters
+| Condition | Adjustment |
+|-----------|-----------|
+| Primary zone | +0.10 |
+| Hidden Bullish Divergence | +0.15 |
+| RSI slope > 3 | +0.05 |
+| Price action support below Fib 0.618 found | +0.15 |
+| No price action support found | −0.20 |
+| Smart wallet present in pool | +0.10 |
 
-| Parameter | Value |
-|-----------|-------|
-| Strategy | `bid_ask` (always) |
-| `bins_below` | Calculated to cover current price → Fib 0.618 |
-| `bins_above` | 8 if primary zone + RSI < 55, else 0 |
-| Stop loss | -20% PnL |
-| OOR close | Active bin > 10 bins out of range |
+### bins_below Calculation
 
----
+`bins_below` covers from current price down to the nearest swing low below Fib 0.618 minus one ATR buffer. If no swing low is found, falls back to Fib 0.786 as the target. Clamped to [35, 90].
 
-## Management Rules
-
-1. **Stop loss** — close if PnL ≤ -20%
-2. **Out of range** — close if OOR > `outOfRangeWaitMinutes` AND active bin > 10 bins from range
-3. **Low yield** — close if fee/TVL < threshold after 60 minutes
-4. **Auto-swap** — after any close, base token is automatically swapped back to SOL
+`bins_above` is always 0.
 
 ---
 
-## Learning System
+## Token Safety Filters
 
-Prospera learns from closed positions and evolves its parameters over time:
+Applied in order — any failure eliminates the pool:
 
-- **`binsByStep`** — learns optimal `bins_below` per bin step value (e.g. bin_step=80 → 75 bins, bin_step=125 → 52 bins)
-- **`binsExtraLow/Mid/High`** — adjusts bin offsets per volatility tier based on OOR performance
-- Evolution triggers every 5 closed positions via `evolveThresholds()`
+1. **Meteora API filters** — organic score, holders, mcap, volume, TVL, bin step, fee/TVL ratio, token age
+2. **Blacklists** — `token-blacklist.json` (mints) and `dev-blocklist.json` (deployer addresses)
+3. **OKX DEX filter** — honeypot detection, bundle % check, creator address cross-check
+4. **ATH proximity filter** (optional) — skip tokens too close to ATH (configurable `athFilterPct`)
+5. **Fibonacci signal filter** — Fib zone, volume profile, EMA, RSI, ATR
+
+---
+
+## Position Management
+
+### Close Rules (tiered)
+
+| Condition | Action |
+|-----------|--------|
+| PnL ≤ −20% | Mandatory close (stop loss) |
+| PnL ≥ 25% | Mandatory close (auto take-profit) |
+| OOR > 10 min AND active bin > 20 bins out | Mandatory close (left Fib zone) |
+| Fee/TVL < 1% after 60 min | Mandatory close (low yield) |
+| PnL 5%–25% | LLM evaluates: hold or close based on volume/momentum |
+| Any PnL above stop loss | LLM may close on concrete deterioration signals |
+
+After any close, base token is automatically swapped back to SOL via Jupiter (skips tokens worth < $0.10).
+
+### Compounding Deploy Amount
+
+Deploy size scales automatically with wallet balance:
+
+| Available SOL (after gas reserve) | Deploy |
+|-----------------------------------|--------|
+| < 5 SOL | 1 SOL |
+| 5–10 SOL | 2 SOL |
+| 10–15 SOL | 3 SOL |
+| 15–20 SOL | 4 SOL |
+| +5 SOL per bracket | +1 SOL |
+
+Capped by `maxDeployAmount` (default 50 SOL).
+
+---
+
+## Smart Wallet Tracker
+
+Self-learning system that automatically identifies and tracks high-quality LP wallets.
+
+**How it works:**
+1. Every time a position closes, Prospera fetches all other wallets that had positions in the same pool
+2. Wallets in pools where Prospera was profitable get +1 win; stop-loss pools get +1 loss
+3. After ≥ 3 observations with ≥ 65% win rate → wallet is **automatically promoted** to the smart list
+4. During screening, if a smart wallet has an active position in a candidate pool → confluenceScore +0.10
+
+Wallets can also be added/removed manually via `add_smart_wallet` / `remove_smart_wallet` commands.
+
+---
+
+## Strategy Library
+
+Four built-in strategy presets. Switch via `apply_strategy`:
+
+| Preset | Description |
+|--------|-------------|
+| `fibonacci` | Default — balanced risk/reward |
+| `conservative` | Stricter filters, tighter stop loss, trailing TP enabled |
+| `aggressive` | Higher bin steps, looser entry, wider take-profit |
+| `trending` | High-volume uptrend focus, fast exits |
 
 ---
 
 ## Architecture
 
 ```
-index.js            Main entry: REPL + cron orchestration + Telegram bot
-agent.js            ReAct loop (OpenRouter): LLM → tool call → repeat
-config.js           Runtime config from user-config.json + .env
-prompt.js           System prompt per role (SCREENER / MANAGER / GENERAL)
-state.js            Position registry (state.json)
-lessons.js          Learning engine: closed-position performance → threshold evolution
-pool-memory.js      Per-pool deploy history + snapshots
+index.js              Main entry: REPL + cron + Telegram bot
+agent.js              ReAct loop (OpenRouter LLM → tool call → repeat)
+config.js             Runtime config + tiered deploy amount logic
+prompt.js             System prompts per role (SCREENER / MANAGER / GENERAL)
+state.js              Position registry, trailing TP, PnL tracking
+lessons.js            Learning engine: performance → threshold evolution
+pool-memory.js        Per-pool deploy history + snapshots
+smart-wallets.js      Smart money tracker with self-learning auto-promotion
+strategy-library.js   Strategy presets (fibonacci / conservative / aggressive / trending)
 
 tools/
-  chart.js          Core signal engine: GeckoTerminal OHLCV + Fib + Volume Profile + EMA + RSI + ATR
-  screening.js      Pool discovery (Meteora API) + Fibonacci signal filter
-  definitions.js    Tool schemas (OpenAI function-calling format)
-  executor.js       Tool dispatch + safety checks
-  dlmm.js           Meteora DLMM SDK wrapper (deploy, close, claim, positions)
-  wallet.js         SOL/token balances + Jupiter swap
-  study.js          LPAgent API integration (pure — no Meteora fallback)
+  chart.js            Signal engine: GeckoTerminal OHLCV + Fib (ATH-based) + VP + EMA + RSI + ATR
+  screening.js        Pool discovery + multi-layer filters + Fib signal + smart wallet check
+  definitions.js      Tool schemas (OpenAI function-calling format)
+  executor.js         Tool dispatch + safety checks + post-close hooks
+  dlmm.js             Meteora DLMM SDK (deploy, close, claim, positions)
+  wallet.js           SOL/token balances + Jupiter swap
+  okx.js              OKX DEX Web3 API (honeypot, bundle %, ATH price, smart money)
+  token.js            Jupiter DataAPI (bot holders, top10, fees SOL)
+  study.js            LPAgent API integration for real-time PnL
 ```
 
 ---
@@ -93,18 +159,37 @@ tools/
 | Role | Purpose | Key Tools |
 |------|---------|-----------|
 | `SCREENER` | Find and deploy new positions | `get_chart_candidates`, `deploy_position` |
-| `MANAGER` | Manage open positions | `close_position`, `claim_fees`, `swap_token`, `get_position_pnl` |
-| `GENERAL` | Manual commands via chat | All tools |
+| `MANAGER` | Manage open positions | `close_position`, `claim_fees`, `get_position_pnl` |
+| `GENERAL` | Manual commands + strategy management | All tools |
 
 ---
 
-## PnL Source
+## Available Tools (21)
 
-Prospera uses **LPAgent API** exclusively for real-time position PnL. No Meteora API fallback.
+**Screening:** `get_chart_candidates`, `get_pool_detail`
 
-- Primary key tried up to 3× with backoff
-- Backup key attempted if primary fails
-- If both fail → management cycle is skipped, not errored
+**Deployment:** `get_active_bin`, `deploy_position`
+
+**Management:** `get_my_positions`, `get_position_pnl`, `claim_fees`, `close_position`, `set_position_note`, `add_pool_note`
+
+**Wallet:** `get_wallet_balance`, `swap_token`, `get_wallet_positions`
+
+**Token Safety:** `get_token_holders`, `get_token_info`
+
+**Smart Wallets:** `add_smart_wallet`, `remove_smart_wallet`, `list_smart_wallets`, `get_smart_wallet_stats`
+
+**Strategy:** `list_strategies`, `apply_strategy`
+
+**Config & Learning:** `update_config`, `get_performance_history`, `add_lesson`, `list_lessons`
+
+---
+
+## Scheduling
+
+| Cycle | Default Interval |
+|-------|-----------------|
+| Management | Every 3 minutes |
+| Screening | Every 15 minutes |
 
 ---
 
@@ -115,10 +200,11 @@ Prospera uses **LPAgent API** exclusively for real-time position PnL. No Meteora
 | `WALLET_PRIVATE_KEY` | Yes | Solana wallet private key (base58) |
 | `RPC_URL` | Yes | Solana RPC endpoint |
 | `OPENROUTER_API_KEY` | Yes | LLM API key (OpenRouter) |
-| `LPAGENT_API_KEY` | Yes | LPAgent primary API key |
-| `LPAGENT_API_KEY_BACKUP` | No | LPAgent backup key (used after 3 primary failures) |
+| `LPAGENT_API_KEY` | Yes | LPAgent primary API key (real-time PnL) |
+| `LPAGENT_API_KEY_BACKUP` | No | LPAgent backup key |
 | `TELEGRAM_BOT_TOKEN` | No | Telegram notifications |
 | `TELEGRAM_CHAT_ID` | No | Telegram chat target |
+| `HELIUS_API_KEY` | No | Enhanced Solana data |
 
 ---
 
@@ -126,14 +212,39 @@ Prospera uses **LPAgent API** exclusively for real-time position PnL. No Meteora
 
 ```bash
 cp .env.example .env
-# fill in .env with your keys
+# fill in WALLET_PRIVATE_KEY, RPC_URL, OPENROUTER_API_KEY, LPAGENT_API_KEY
 
 npm install
 node index.js
 ```
 
-Or with PM2:
+With PM2:
 ```bash
 pm2 start index.js --name prospera
 pm2 save
+pm2 logs prospera
 ```
+
+Dry run (no real transactions):
+```bash
+DRY_RUN=true node index.js
+```
+
+---
+
+## Key Configuration (`user-config.json`)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `maxPositions` | 2 | Max concurrent open positions |
+| `minBinStep` / `maxBinStep` | 80 / 125 | Pool bin step range |
+| `minVolume` | 20000 | Min 5m volume ($) |
+| `minMcap` / `maxMcap` | 150k / 10M | Token market cap range |
+| `minTokenAgeHours` / `maxTokenAgeHours` | 1 / 1440 | Token age range (1h – 2 months) |
+| `stopLossPct` | −20 | Stop loss threshold |
+| `takeProfitMaxPct` | 25 | Auto take-profit threshold |
+| `takeProfitFeePct` | 5 | LLM decision zone starts here |
+| `outOfRangeBinsToClose` | 20 | OOR bin distance to trigger close |
+| `maxBundlePct` | 30 | Max bundle % (OKX filter) |
+| `fibConfluenceRequired` | true | Require Fib confluence for entry |
+| `candleLimit` | 100 | OHLCV candles for analysis |
