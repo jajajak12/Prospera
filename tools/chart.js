@@ -52,6 +52,36 @@ export async function fetchOHLCV(poolAddress, limit = 50) {
   }));
 }
 
+/**
+ * Fetch daily OHLCV candles from GeckoTerminal for a pool.
+ * Used to find ATH and all-time-low across the token's full price history.
+ */
+export async function fetchDailyOHLCV(poolAddress, limit = 1000) {
+  const url =
+    `${GECKO_BASE}/networks/solana/pools/${poolAddress}/ohlcv/day` +
+    `?aggregate=1&limit=${limit}`;
+
+  const res = await fetch(url, {
+    headers: { Accept: "application/json;version=20230302" },
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!res.ok) return null; // non-fatal — fall back to intraday swing
+
+  const data = await res.json();
+  const raw  = data?.data?.attributes?.ohlcv_list;
+  if (!raw || raw.length === 0) return null;
+
+  return [...raw].reverse().map(([timestamp, open, high, low, close, volume]) => ({
+    timestamp: Number(timestamp),
+    open:      Number(open),
+    high:      Number(high),
+    low:       Number(low),
+    close:     Number(close),
+    volume:    Number(volume),
+  }));
+}
+
 // ─── Swing Detection ─────────────────────────────────────────────────────────
 
 /**
@@ -68,6 +98,41 @@ export function detectSwing(candles) {
   }
 
   return { swingHigh, swingLow, highIndex, lowIndex };
+}
+
+// ─── Price Action S/R Detection ──────────────────────────────────────────────
+
+/**
+ * Find local swing lows (support levels) from candle data.
+ * A swing low is a candle whose low is lower than `lookback` candles on each side.
+ */
+function findSwingLows(candles, lookback = 5) {
+  const levels = [];
+  for (let i = lookback; i < candles.length - lookback; i++) {
+    const price = candles[i].low;
+    let isLow = true;
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j !== i && candles[j].low <= price) { isLow = false; break; }
+    }
+    if (isLow) levels.push(price);
+  }
+  return levels;
+}
+
+/**
+ * Find local swing highs (resistance levels) from candle data.
+ */
+function findSwingHighs(candles, lookback = 5) {
+  const levels = [];
+  for (let i = lookback; i < candles.length - lookback; i++) {
+    const price = candles[i].high;
+    let isHigh = true;
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j !== i && candles[j].high >= price) { isHigh = false; break; }
+    }
+    if (isHigh) levels.push(price);
+  }
+  return levels;
 }
 
 // ─── Fibonacci Levels ────────────────────────────────────────────────────────
@@ -311,6 +376,16 @@ export function calcBinsToTarget(currentPrice, targetPrice, binStep) {
   return Math.max(35, Math.min(90, Math.round(Math.abs(n))));
 }
 
+/**
+ * Calculate bins needed to cover from currentPrice UP to targetPrice.
+ * Used for bins_above to cover up to Fib 0.236.
+ */
+function calcBinsAbove(currentPrice, targetPrice, binStep) {
+  if (targetPrice <= currentPrice) return 0;
+  const n = Math.log(targetPrice / currentPrice) / Math.log(1 + binStep / 10000);
+  return Math.max(0, Math.min(30, Math.round(n)));
+}
+
 // ─── Full Signal Analysis ─────────────────────────────────────────────────────
 
 /**
@@ -342,10 +417,13 @@ export function calcBinsToTarget(currentPrice, targetPrice, binStep) {
  * @returns {Promise<SignalResult>}
  */
 export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLimit = 50) {
-  // ── Fetch OHLCV ────────────────────────────────────────────────────────────
-  let candles;
+  // ── Fetch OHLCV (1m for indicators) + Daily (for ATH-based Fibonacci) ──────
+  let candles, dailyCandles;
   try {
-    candles = await fetchOHLCV(poolAddress, candleLimit);
+    [candles, dailyCandles] = await Promise.all([
+      fetchOHLCV(poolAddress, candleLimit),
+      fetchDailyOHLCV(poolAddress, 1000),
+    ]);
   } catch (e) {
     return skip(`Chart data unavailable: ${e.message}`, currentPrice);
   }
@@ -354,8 +432,28 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     return skip(`Insufficient candle data (${candles?.length ?? 0} candles, need 20+)`, currentPrice);
   }
 
-  // ── Swing & Fibonacci ──────────────────────────────────────────────────────
-  const { swingHigh, swingLow } = detectSwing(candles);
+  // ── Fibonacci: drawn from all-time-low → ATH ───────────────────────────────
+  // Daily candles give full price history. Fib is the overall range framework;
+  // S/R from price action validates which levels are meaningful.
+  let swingHigh, swingLow;
+  if (dailyCandles && dailyCandles.length >= 1) {
+    // Use all available daily candles for ATH/ATL — even a single candle
+    // is better than intraday for new tokens (captures full-day high/low).
+    // Since daily data is fetched fresh every cycle, a new ATH is picked up
+    // automatically on the next screening run.
+    swingHigh = Math.max(...dailyCandles.map(c => c.high));
+    swingLow  = Math.min(...dailyCandles.map(c => c.low));
+    // For tokens with very few daily candles, also consider intraday extremes
+    // to ensure the current session's ATH is captured.
+    if (dailyCandles.length <= 3) {
+      const { swingHigh: intradayHigh, swingLow: intradayLow } = detectSwing(candles);
+      swingHigh = Math.max(swingHigh, intradayHigh);
+      swingLow  = Math.min(swingLow,  intradayLow);
+    }
+  } else {
+    // Fallback to intraday swing if daily data completely unavailable
+    ({ swingHigh, swingLow } = detectSwing(candles));
+  }
 
   if (swingHigh <= swingLow || swingHigh === swingLow) {
     return skip("No price movement detected (swing_high === swing_low)", currentPrice);
@@ -394,30 +492,40 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     }
   }
 
-  // ── Check 1: Fib Zone ──────────────────────────────────────────────────────
-  const inFibZone = currentPrice >= fib.fib618 && currentPrice <= fib.fib236;
+  // ── Check 1: Price not below Fib 0.618 (key support) ─────────────────────
+  // Entry is allowed in three zones:
+  //   ATH zone    : price > fib236  (pre-position before pullback, range covers 0.236→0.618)
+  //   Primary zone: fib382 → fib236 (shallow pullback, ideal)
+  //   Secondary   : fib618 → fib382 (deeper pullback, still valid)
+  // Reject only if price has already broken below fib 0.618.
+  const inFibZone    = currentPrice >= fib.fib618 && currentPrice <= fib.fib236;
+  const inAthZone    = currentPrice > fib.fib236;   // still near ATH, hasn't pulled back yet
+  const inEntryRange = inFibZone || inAthZone;       // either is valid
 
-  if (!inFibZone) {
+  if (!inEntryRange) {
     return skip(
-      `Price ${fmt(currentPrice)} not in Fib zone [${fmt(fib.fib618)}, ${fmt(fib.fib236)}]`,
+      `Price ${fmt(currentPrice)} below Fib 0.618 support (${fmt(fib.fib618)}) — broken support, no entry`,
       currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
     );
   }
 
   // ── Check 2: Volume Confirmation ───────────────────────────────────────────
+  // In ATH zone: price hasn't pulled back yet so POC/VAL won't be in fib zone.
+  // Require only that POC is above fib 0.618 (healthy volume distribution).
+  // In fib zone: require POC or VAL within zone (standard check).
   const pocInZone = vp.poc >= fib.fib618 && vp.poc <= fib.fib236;
   const valInZone = vp.val >= fib.fib618 && vp.val <= fib.fib236;
-  const volumeConfirmed = pocInZone || valInZone;
+  const pocAbove618 = vp.poc >= fib.fib618;
+  const volumeConfirmed = inAthZone ? pocAbove618 : (pocInZone || valInZone);
 
   if (!volumeConfirmed) {
-    return skip(
-      `No volume support in Fib zone — POC=${fmt(vp.poc)} (${pocInZone ? "in" : "out"}), VAL=${fmt(vp.val)} (${valInZone ? "in" : "out"})`,
-      currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
-    );
+    const reason = inAthZone
+      ? `ATH zone: POC=${fmt(vp.poc)} below Fib 0.618 (${fmt(fib.fib618)}) — volume distribution too low`
+      : `No volume support in Fib zone — POC=${fmt(vp.poc)} (${pocInZone ? "in" : "out"}), VAL=${fmt(vp.val)} (${valInZone ? "in" : "out"})`;
+    return skip(reason, currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val });
   }
 
   // ── Check 3: EMA Trend Filter ──────────────────────────────────────────────
-  // Require uptrend: EMA20 > EMA50 (confirms pullback is within uptrend, not dead cat)
   if (ema20 != null && ema50 != null && ema20 <= ema50) {
     return skip(
       `EMA trend bearish — EMA20 (${fmt(ema20)}) <= EMA50 (${fmt(ema50)}). Fib pullback invalid in downtrend.`,
@@ -426,8 +534,6 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
   }
 
   // ── Check 4: RSI Momentum ──────────────────────────────────────────────────
-  // RSI > 48 = bullish momentum above midline (not oversold filter)
-  // RSI slope positive = momentum is building during pullback
   if (rsi != null) {
     if (rsi < 48) {
       return skip(
@@ -447,48 +553,70 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
   const hasHiddenDivergence = detectHiddenBullishDivergence(candles, rsiValues);
 
   // ── Entry Zone Tier ────────────────────────────────────────────────────────
-  // Primary = 0.236–0.382 (shallow pullback, ideal entry)
-  // Secondary = 0.382–0.618 (deeper pullback, still valid)
   const inPrimaryZone = currentPrice >= fib.fib382 && currentPrice <= fib.fib236;
 
-  // pricePosition: 0 = at fib236 (top), 1 = at fib618 (bottom)
-  const zoneWidth    = fib.fib236 - fib.fib618;
-  const pricePosition = zoneWidth > 0 ? (fib.fib236 - currentPrice) / zoneWidth : 0.5;
+  // pricePosition: 0 = at fib236 (top of zone), 1 = at fib618 (bottom)
+  // For ATH zone (above fib236), clamp to 0 (treated as top of zone)
+  const zoneWidth     = fib.fib236 - fib.fib618;
+  const rawPosition   = zoneWidth > 0 ? (fib.fib236 - currentPrice) / zoneWidth : 0.5;
+  const pricePosition = Math.max(0, rawPosition); // clamp: ATH zone → 0
 
-  // ── bins_below & bins_above ────────────────────────────────────────────────
-  const binsBelow = calcBinsToTarget(currentPrice, fib.fib618, binStep);
+  // ── Price Action S/R: find real support below Fib 0.618 ──────────────────
+  const dailySR    = dailyCandles ? [...findSwingLows(dailyCandles), ...findSwingHighs(dailyCandles)] : [];
+  const intradaySR = [...findSwingLows(candles), ...findSwingHighs(candles)];
+  const srLevels   = [...dailySR, ...intradaySR];
 
-  // Small bins_above only when in primary zone AND RSI not yet overextended
-  const binsAbove = inPrimaryZone && rsi != null && rsi < 55 ? 8 : 0;
+  const supportsBelow = srLevels.filter(l => l < fib.fib618).sort((a, b) => b - a);
+  const nearestSupport = supportsBelow[0] ?? null;
+  const paConfluence   = nearestSupport != null;
+
+  // ── bins_below ────────────────────────────────────────────────────────────
+  // ATH zone: range starts at fib 0.236 (not current price) → fib 0.618
+  //   All liquidity sits in the anticipated pullback zone, not above it.
+  // Fib zone: current price → nearest support below fib618 (or fib786)
+  const atrBuffer = atr ?? (fib.fib618 * binStepPct / 100);
+  const supportTarget = inAthZone
+    ? fib.fib618
+    : (nearestSupport ?? fib.fib786);
+  const rangeTop  = inAthZone ? fib.fib236 : currentPrice;
+  const binsBelow = calcBinsToTarget(rangeTop, supportTarget - atrBuffer, binStep);
+
+  const binsAbove = 0;
 
   // ── Confluence Score ───────────────────────────────────────────────────────
-  // Base: 0.6 weight for price position, 0.4 for volume strength
-  // Primary zone bonus: +0.10
-  // Hidden divergence bonus: +0.15
-  // RSI slope bonus: up to +0.05
-
-  const totalVol = vp.buckets.reduce((s, b) => s + b.volume, 0);
-  const pocVol   = vp.buckets[vp.pocIdx]?.volume ?? 0;
+  const totalVol    = vp.buckets.reduce((s, b) => s + b.volume, 0);
+  const pocVol      = vp.buckets[vp.pocIdx]?.volume ?? 0;
   const pocStrength = totalVol > 0 ? pocVol / totalVol : 0;
 
-  // Position score peaks near 0.382 (top of primary zone = ideal pullback depth)
-  const idealPosition = (fib.fib236 - fib.fib382) / zoneWidth; // ~0.19 from top
+  const idealPosition = (fib.fib236 - fib.fib382) / zoneWidth;
   const positionScore = Math.max(0, 1 - Math.abs(pricePosition - idealPosition) * 2);
 
   let score = positionScore * 0.6 + pocStrength * 0.4;
-  if (inPrimaryZone)      score += 0.10;
+  if (inPrimaryZone)       score += 0.10;
   if (hasHiddenDivergence) score += 0.15;
   if (rsiSlope > 3)        score += 0.05;
+  // ATH zone: no PA penalty (we're pre-positioning, support below 618 not yet tested)
+  // Fib zone: +0.15 PA support found, −0.20 not found
+  if (!inAthZone) {
+    if (paConfluence) score += 0.15;
+    else              score -= 0.20;
+  }
 
-  const confluenceScore = Math.round(Math.min(1, score) * 100) / 100;
+  const confluenceScore = Math.round(Math.min(1, Math.max(0, score)) * 100) / 100;
 
   // ── Build Reason ──────────────────────────────────────────────────────────
-  const zoneTier = inPrimaryZone ? "PRIMARY(0.236-0.382)" : "SECONDARY(0.382-0.618)";
+  const zoneTier = inAthZone
+    ? "ATH_ZONE(above 0.236, pre-position)"
+    : inPrimaryZone ? "PRIMARY(0.236-0.382)" : "SECONDARY(0.382-0.618)";
   const parts = [
     `Zone: ${zoneTier}`,
     `RSI=${rsi?.toFixed(1)} slope=+${rsiSlope.toFixed(1)}`,
     `EMA20>EMA50 ✓`,
     `Vol: POC=${pocInZone ? "in" : "out"} VAL=${valInZone ? "in" : "out"}`,
+    `bins=${binsBelow}↓/${binsAbove}↑`,
+    paConfluence
+      ? `PA support ✓ @${fmt(nearestSupport)}`
+      : `PA support ✗ below 0.618 (score−0.20)`,
   ];
   if (hasHiddenDivergence) parts.push("HiddenDiv ✓");
   if (atrWarning)          parts.push(atrWarning);
@@ -500,10 +628,16 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     volumeProfile:   { poc: vp.poc, vah: vp.vah, val: vp.val },
     binsBelow,
     binsAbove,
+    supportPrice:    Math.round(supportTarget * 1e8) / 1e8,
+    paConfluence,
+    nearestSupportBelow618: nearestSupport != null ? Math.round(nearestSupport * 1e8) / 1e8 : null,
+    ath:             Math.round(swingHigh * 1e8) / 1e8,
+    atl:             Math.round(swingLow  * 1e8) / 1e8,
     currentPrice,
     confluenceScore,
     pricePosition:   Math.round(pricePosition * 100) / 100,
     inPrimaryZone,
+    inAthZone,
     hasHiddenDivergence,
     rsi:             rsi != null ? Math.round(rsi * 10) / 10 : null,
     rsiSlope:        Math.round(rsiSlope * 10) / 10,

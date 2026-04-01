@@ -26,12 +26,13 @@ import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
+import { runBacktest } from "./backtest.js";
 
 log("startup", "Fibonacci LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || config.llm.screeningModel}`);
 
-const DEPLOY = config.management.deployAmountSol;
+// Deploy amount is computed dynamically per wallet balance — see computeDeployAmount()
 
 // ═══════════════════════════════════════════
 //  CYCLE TIMERS
@@ -312,7 +313,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   _screeningBusy = true;
   _screeningLastTriggered = Date.now();
 
-  let prePositions, preBalance;
+  let prePositions, preBalance, deployAmount;
   try {
     [prePositions, preBalance] = await Promise.all([
       getMyPositions({ force: true }),
@@ -323,9 +324,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
       _screeningBusy = false;
       return null;
     }
-    const minRequired = config.management.deployAmountSol + config.management.gasReserve;
-    if (preBalance.sol < minRequired) {
-      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired})`);
+    deployAmount = computeDeployAmount(preBalance.sol);
+    if (deployAmount === 0) {
+      log("cron", `Screening skipped — insufficient SOL for minimum deploy (${preBalance.sol.toFixed(3)} SOL, need at least ${1 + config.management.gasReserve} SOL)`);
       _screeningBusy = false;
       return null;
     }
@@ -337,11 +338,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
   timers.screeningLastRun = Date.now();
   log("cron", `Starting Fibonacci screening cycle [model: ${config.llm.screeningModel}]`);
+  log("cron", `Deploy amount: ${deployAmount} SOL (wallet: ${preBalance.sol} SOL)`);
   let screenReport = null;
 
   try {
-    const deployAmount = computeDeployAmount(preBalance.sol);
-    log("cron", `Deploy amount: ${deployAmount} SOL (wallet: ${preBalance.sol} SOL)`);
 
     // Fetch Fibonacci-filtered candidates
     const topResult = await getTopCandidates({ limit: 20 }).catch(() => null);
@@ -351,6 +351,61 @@ export async function runScreeningCycle({ silent = false } = {}) {
       screenReport = `No Fibonacci entry signals found. Total screened: ${topResult?.total_screened ?? 0}, Fib analyzed: ${topResult?.fib_analyzed ?? 0}. All pools either outside Fib zone or lack volume support at key levels.`;
       return screenReport;
     }
+
+    // ── Auto-backtest pre-deploy filter ────────────────────────────────────
+    if (config.screening.autoBacktest) {
+      const targetAgg   = config.screening.backtestAggregate ?? 15;
+      const minWinRate  = config.screening.minBacktestWinRate ?? 0.50;
+      log("cron", `Auto-backtest: testing ${candidates.length} candidate(s) (agg=${targetAgg}m, minWR=${(minWinRate*100).toFixed(0)}%)...`);
+
+      const btResults = await Promise.allSettled(
+        candidates.map(async (pool) => {
+          let result = null;
+          for (const agg of [targetAgg, 5, 1]) {
+            try {
+              result = await runBacktest({
+                poolAddress:  pool.pool,
+                binStep:      pool.bin_step,
+                feePct:       pool.fee_pct,
+                aggregate:    agg,
+                candleLimit:  500,
+              });
+              if (result && result.totalTrades >= 3) break;
+            } catch { result = null; }
+          }
+          return { poolAddr: pool.pool, result };
+        })
+      );
+
+      const preCount = candidates.length;
+      const passed = candidates.filter((pool, i) => {
+        const r = btResults[i];
+        if (r.status !== "fulfilled" || !r.value?.result) {
+          log("cron", `Auto-backtest: ${pool.name} — fetch failed, keeping`);
+          return true;
+        }
+        const { totalTrades, winRate, avgPnlPct } = r.value.result;
+        if (totalTrades < 3) {
+          log("cron", `Auto-backtest: ${pool.name} — insufficient history (${totalTrades} trades), keeping`);
+          return true;
+        }
+        const ok = winRate >= minWinRate;
+        log("cron", `Auto-backtest: ${pool.name} — WR=${(winRate*100).toFixed(0)}% avgPnL=${avgPnlPct?.toFixed(1)}% (${totalTrades}t) → ${ok ? "PASS" : "REJECT"}`);
+        if (ok) pool._backtest = r.value.result;
+        return ok;
+      });
+
+      const removed = preCount - passed.length;
+      if (removed > 0) log("cron", `Auto-backtest: filtered ${removed}/${preCount} low win-rate pool(s)`);
+      candidates.length = 0;
+      passed.forEach(c => candidates.push(c));
+
+      if (candidates.length === 0) {
+        screenReport = `Auto-backtest filtered all ${preCount} candidate(s) — win rate below ${(minWinRate*100).toFixed(0)}% threshold.`;
+        return screenReport;
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────
 
     // Pre-fetch active_bin for all candidates in parallel
     const activeBinResults = await Promise.allSettled(
@@ -378,6 +433,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         `  fib: ${fibStr}`,
         `  price: ${pool.price} | change: ${pool.price_change_pct}% | trend: ${pool.price_trend ?? "?"}`,
         activeBin != null ? `  active_bin: ${activeBin}` : null,
+        pool._backtest ? `  backtest: winRate=${(pool._backtest.winRate*100).toFixed(0)}% avgPnL=${pool._backtest.avgPnlPct?.toFixed(1)}% trades=${pool._backtest.totalTrades}` : null,
         mem ? `  memory: ${mem}` : null,
       ].filter(Boolean).join("\n");
     }).join("\n\n");
@@ -474,7 +530,47 @@ export function startCronJobs() {
     }
   }, 30_000);
 
-  _cronTasks = [mgmtTask, screenTask];
+  // Morning briefing — runs at 08:00 server time every day
+  const briefingTask = cron.schedule("0 8 * * *", async () => {
+    try {
+      const [positions, balance] = await Promise.all([
+        getMyPositions({ force: true }).catch(() => ({ positions: [], total_positions: 0 })),
+        getWalletBalances().catch(() => null),
+      ]);
+      const { getPerformanceSummary, getLessonsForPrompt } = await import("./lessons.js");
+      const perf   = getPerformanceSummary();
+      const deploy = computeDeployAmount(balance?.sol ?? 0);
+
+      const posLines = positions.positions?.length
+        ? positions.positions.map(p => {
+            const pnl  = p.pnl_pct != null ? `${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(1)}%` : "?";
+            const fees = p.unclaimed_fees_usd != null ? ` | fees $${p.unclaimed_fees_usd.toFixed(2)}` : "";
+            const oor  = !p.in_range ? " ⚠️OOR" : "";
+            return `  • ${p.pair} — PnL: ${pnl}${fees}${oor}`;
+          }).join("\n")
+        : "  No open positions";
+
+      const perfLines = perf
+        ? `Closed: ${perf.total ?? 0} | WR: ${perf.win_rate ?? "?"}% | Avg PnL: ${perf.avg_pnl_pct != null ? (perf.avg_pnl_pct >= 0 ? "+" : "") + perf.avg_pnl_pct.toFixed(1) + "%" : "?"}`
+        : "No closed positions yet";
+
+      const msg =
+        `☀️ Morning Briefing — ${new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long" })}\n\n` +
+        `💰 Wallet: ${balance?.sol?.toFixed(3) ?? "?"} SOL | Deploy: ${deploy} SOL/position\n` +
+        `📊 Open Positions (${positions.total_positions ?? 0}/${config.risk.maxPositions}):\n${posLines}\n\n` +
+        `📈 Performance: ${perfLines}\n\n` +
+        `⚙️ Strategy: ${config.screening.minBinStep}–${config.screening.maxBinStep} bin step | ` +
+        `Vol min $${config.screening.minVolume.toLocaleString()} | ` +
+        `SL ${config.management.stopLossPct}% / TP ${config.management.takeProfitMaxPct}%`;
+
+      await sendMessage(msg);
+      log("cron", "Morning briefing sent");
+    } catch (e) {
+      log("cron_error", `Morning briefing failed: ${e.message}`);
+    }
+  });
+
+  _cronTasks = [mgmtTask, screenTask, briefingTask];
   _cronTasks._pnlPollInterval = pnlPollInterval;
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }
@@ -704,7 +800,7 @@ if (isTTY) {
 
   console.log(`
 Commands:
-  1 / 2 / 3 ...  Deploy ${DEPLOY} SOL into that Fib-confirmed pool
+  1 / 2 / 3 ...  Deploy into that Fib-confirmed pool (amount based on wallet balance)
   auto           Let the agent pick and deploy automatically
   /status        Refresh wallet + positions
   /candidates    Refresh Fibonacci candidates list
@@ -725,9 +821,11 @@ Commands:
       await runBusy(async () => {
         const pool = startupCandidates[pick - 1];
         const bins = pool.fib_signal?.binsBelow ?? 69;
-        console.log(`\nDeploying ${DEPLOY} SOL into ${pool.name} (bins_below=${bins})...\n`);
+        const bal  = await getWalletBalances();
+        const amt  = computeDeployAmount(bal.sol);
+        console.log(`\nDeploying ${amt} SOL into ${pool.name} (bins_below=${bins})...\n`);
         const { content: reply } = await agentLoop(
-          `Deploy ${DEPLOY} SOL into pool ${pool.pool} (${pool.name}). ` +
+          `Deploy ${amt} SOL into pool ${pool.pool} (${pool.name}). ` +
           `Use bins_below=${bins} (pre-calculated Fibonacci bins to fib_618 level), bins_above=0, strategy=bid_ask. ` +
           `Call deploy_position directly — active_bin is pre-fetched: use fib_signal data. Report result.`,
           config.llm.maxSteps,
@@ -743,9 +841,11 @@ Commands:
     // ── auto ────────────────────────────────────────────────────────
     if (input.toLowerCase() === "auto") {
       await runBusy(async () => {
+        const bal = await getWalletBalances();
+        const amt = computeDeployAmount(bal.sol);
         console.log("\nAgent running Fibonacci screening and deploying...\n");
         const { content: reply } = await agentLoop(
-          `Call get_chart_candidates, pick the best Fibonacci signal, deploy_position with ${DEPLOY} SOL. Execute now.`,
+          `Call get_chart_candidates, pick the best Fibonacci signal, deploy_position with ${amt} SOL. Execute now.`,
           config.llm.maxSteps,
           [],
           "SCREENER"

@@ -273,7 +273,7 @@ WARNING: Real on-chain transaction.`,
       description: `Update operating parameters at runtime. Changes persist to user-config.json immediately.
 
 VALID KEYS:
-Screening: minTvl, maxTvl, minVolume, minOrganic, minHolders, minMcap, maxMcap, minBinStep, maxBinStep, timeframe, candleLimit, fibConfluenceRequired
+Screening: minTvl, maxTvl, minVolume, minOrganic, minHolders, minMcap, maxMcap, minBinStep, maxBinStep, timeframe, candleLimit, fibConfluenceRequired, autoBacktest, minBacktestWinRate, backtestAggregate
 Management: minClaimAmount, outOfRangeBinsToClose, outOfRangeWaitMinutes, stopLossPct, takeProfitFeePct, minSolToOpen, deployAmountSol, gasReserve, positionSizePct
 Risk: maxPositions, maxDeployAmount
 Schedule: managementIntervalMin, screeningIntervalMin
@@ -316,6 +316,39 @@ The instruction is shown in every management cycle and the agent acts on it.`,
   {
     type: "function",
     function: {
+      name: "get_token_holders",
+      description: `Deep holder analysis for a token using OKX + Jupiter DataAPI.
+Returns bundle %, bot holders %, top 10 concentration %, total fees SOL, dev status, and funding address.
+Use before deploying a position to verify token safety beyond what screening already checked.`,
+      parameters: {
+        type: "object",
+        properties: {
+          mint: { type: "string", description: "Token mint address (base58)" },
+        },
+        required: ["mint"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "get_token_info",
+      description: `Get token security info, ATH price, and KOL/cluster activity from OKX.
+Returns sniper %, suspicious %, risk level (1–5), dev holding %, dev sold-all tag, smart money buy tag, rug history count, and KOL cluster data.`,
+      parameters: {
+        type: "object",
+        properties: {
+          mint: { type: "string", description: "Token mint address (base58)" },
+        },
+        required: ["mint"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
       name: "get_wallet_positions",
       description: `Get all open DLMM positions for any Solana wallet address.
 Use to check another wallet's positions. Returns same structure as get_my_positions.`,
@@ -328,6 +361,129 @@ Use to check another wallet's positions. Returns same structure as get_my_positi
           },
         },
         required: ["wallet_address"],
+      },
+    },
+  },
+
+  // ═══════════════════════════════════════════
+  //  SMART WALLETS
+  // ═══════════════════════════════════════════
+
+  {
+    type: "function",
+    function: {
+      name: "add_smart_wallet",
+      description: `Add a Solana wallet address to the smart money tracker.
+Smart wallet activity in a candidate pool boosts its confluenceScore by +0.10 during screening.
+Use for wallets known to make high-quality DLMM LP entries (verified alpha traders, top performers).`,
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: "Solana wallet address (base58)" },
+          label:   { type: "string", description: "Human-readable label (e.g. 'trader_X', 'whale_1')" },
+        },
+        required: ["address"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "remove_smart_wallet",
+      description: `Remove a wallet from the smart money tracker.`,
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: "Solana wallet address to remove" },
+        },
+        required: ["address"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "list_smart_wallets",
+      description: `List all wallets in the smart money tracker with their labels and added dates.`,
+      parameters: { type: "object", properties: {} },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "get_smart_wallet_stats",
+      description: `Show self-learning progress: wallets observed but not yet promoted.
+Lists win rate, total observations, and how close each wallet is to promotion threshold (3+ observations, ≥65% win rate).`,
+      parameters: { type: "object", properties: {} },
+    },
+  },
+
+  // ═══════════════════════════════════════════
+  //  BACKTESTING
+  // ═══════════════════════════════════════════
+
+  {
+    type: "function",
+    function: {
+      name: "run_backtest",
+      description: `Backtest the Fibonacci strategy on a pool using historical OHLCV data.
+Replays entry/exit logic on past candles and returns win rate, avg PnL, exit reason breakdown, and per-zone performance.
+
+Candle coverage by aggregate:
+  aggregate=5  → ~3.5 days of history (recommended)
+  aggregate=15 → ~10 days
+  aggregate=60 → ~42 days
+
+Returns summary stats + individual trade list. PnL is approximate (IL simplified, fees estimated).`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: { type: "string",  description: "Pool address to backtest" },
+          bin_step:     { type: "number",  description: "Pool bin step (e.g. 100)" },
+          fee_pct:      { type: "number",  description: "Pool base fee % (e.g. 1.0)" },
+          aggregate:    { type: "number",  enum: [1, 5, 15, 60], description: "Candle size in minutes. Default 5." },
+          candle_limit: { type: "number",  description: "Indicator window size. Default 100." },
+          preset:       { type: "string",  enum: ["fibonacci", "conservative", "aggressive", "trending"], description: "Strategy preset to simulate. Default: current config." },
+        },
+        required: ["pool_address", "bin_step", "fee_pct"],
+      },
+    },
+  },
+
+  // ═══════════════════════════════════════════
+  //  STRATEGY LIBRARY
+  // ═══════════════════════════════════════════
+
+  {
+    type: "function",
+    function: {
+      name: "list_strategies",
+      description: `List all available LP strategy presets with descriptions.
+Presets: fibonacci (default), conservative, aggressive, trending.`,
+      parameters: { type: "object", properties: {} },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "apply_strategy",
+      description: `Apply a strategy preset, updating screening and management config in bulk.
+Available: fibonacci, conservative, aggressive, trending.
+This will overwrite the relevant config keys — use list_strategies to see what each changes.`,
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            enum: ["fibonacci", "conservative", "aggressive", "trending"],
+            description: "Strategy preset name to apply",
+          },
+        },
+        required: ["name"],
       },
     },
   },

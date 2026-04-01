@@ -21,15 +21,27 @@ This is a mechanical rule-application task. All position data is pre-loaded. App
 Portfolio: ${portfolioCompact}
 Management Config: ${mgmtConfig}
 
-STOP LOSS RULES (Fibonacci strategy):
-1. PnL <= -20% → MANDATORY CLOSE (stop loss)
-2. OOR > ${config.management.outOfRangeWaitMinutes}m AND active_bin > ${config.management.outOfRangeBinsToClose} bins from range → CLOSE (price moved past Fib support)
-3. Low yield (fee/TVL < ${config.management.minFeePerTvl24h}% after 60m) → CLOSE
+MANDATORY CLOSE RULES (no LLM judgment needed):
+1. PnL <= -20% → CLOSE (stop loss)
+2. PnL >= ${config.management.takeProfitMaxPct}% → CLOSE (take profit)
+3. OOR > ${config.management.outOfRangeWaitMinutes}m AND active_bin > ${config.management.outOfRangeBinsToClose} bins from range → CLOSE (price left Fib zone)
+4. Low yield: fee/TVL < ${config.management.minFeePerTvl24h}% after 60m → CLOSE
+
+LLM DECISION ZONE (PnL between ${config.management.takeProfitFeePct}% and ${config.management.takeProfitMaxPct}%):
+- At >= ${config.management.takeProfitFeePct}% profit: evaluate whether to hold or close
+- Close if: momentum fading, volume declining, Fib level broken, token showing weakness
+- Hold if: volume still strong, position still active, Fib level holding as support
+- State your reasoning explicitly before deciding
+
+DISCRETIONARY CLOSE (any PnL above stop loss):
+- You MAY close at any time if you see clear signals the position has deteriorated:
+  volume collapse, sharp negative price trend, OOR building, organic score dropping
+- Threshold: you need a concrete reason — not just "looks risky"
 
 BEHAVIORAL CORE:
 1. PATIENCE IS PROFIT: Fib support levels often hold. Don't close on first small dip.
-2. GAS EFFICIENCY: close_position costs gas. After close, swap_token is MANDATORY for any token worth >= $0.10.
-3. REASONING-BASED EXIT: You may close BEFORE hitting -20% if you have clear reasoning — volume collapse, fib level broken, token dumping. State reasoning explicitly.
+2. GAS EFFICIENCY: After close, swap_token is MANDATORY for any token worth >= $0.10.
+3. AUTO TAKE PROFIT: At ${config.management.takeProfitMaxPct}% close immediately, no second-guessing.
 
 ${lessons ? `LESSONS LEARNED:\n${lessons}\n` : ""}Timestamp: ${new Date().toISOString()}
 `;
@@ -72,6 +84,7 @@ ${lessons}` : ""}
 ═══════════════════════════════════════════
 
 SIGNAL MEANING:
+- ATH_ZONE (above fib_236) = pre-position entry — price still near ATH, range covers 0.236→0.618 anticipating pullback
 - PRIMARY zone (fib_236 → fib_382) = ideal entry — shallow pullback, strong momentum
 - SECONDARY zone (fib_382 → fib_618) = valid but lower conviction
 - EMA20 > EMA50 = uptrend confirmed, pullback is a retracement not a reversal

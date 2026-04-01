@@ -9,6 +9,30 @@
 import { config } from "../config.js";
 import { log } from "../logger.js";
 import { analyzeSignal } from "./chart.js";
+import { getTokenAdvancedInfo, getTokenPriceInfo } from "./okx.js";
+import { checkSmartWalletActivity } from "../smart-wallets.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function loadJsonSet(filename) {
+  try {
+    const p = path.join(__dirname, "..", filename);
+    if (!fs.existsSync(p)) return new Set();
+    return new Set(JSON.parse(fs.readFileSync(p, "utf8")));
+  } catch { return new Set(); }
+}
+
+function isBlacklisted(mint) {
+  return loadJsonSet("token-blacklist.json").has(mint);
+}
+
+function isDevBlocked(devAddress) {
+  if (!devAddress) return false;
+  return loadJsonSet("dev-blocklist.json").has(devAddress);
+}
 
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
@@ -31,8 +55,12 @@ async function discoverPools({ page_size = 50 } = {}) {
     `tvl<=${s.maxTvl}`,
     `dlmm_bin_step>=${s.minBinStep}`,
     `dlmm_bin_step<=${s.maxBinStep}`,
+    `fee_active_tvl_ratio>=${s.minFeeActiveTvlRatio}`,
+    `fee>=${s.minFee ?? 25}`,
     `base_token_organic_score>=${s.minOrganic}`,
     "quote_token_organic_score>=60",
+    s.minTokenAgeHours != null ? `base_token_age_hours>=${s.minTokenAgeHours}` : null,
+    s.maxTokenAgeHours != null ? `base_token_age_hours<=${s.maxTokenAgeHours}` : null,
   ].filter(Boolean).join("&&");
 
   const url =
@@ -126,17 +154,88 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   const occupiedPools = new Set(positions.map(p => p.pool));
   const occupiedMints = new Set(positions.map(p => p.base_mint).filter(Boolean));
 
-  const minFeeRatio = config.screening.minFeeActiveTvlRatio ?? 0.01;
   const eligible = pools
     .filter(p => !occupiedPools.has(p.pool) && !occupiedMints.has(p.base?.mint))
     .filter(p => {
-      // Token age >= 1 hour (memecoins need at least some price history for valid Fib)
-      if (p.token_age_hours != null && p.token_age_hours < 1) return false;
-      // Pool must have minimum fee activity (5m window already in pool data)
-      if (p.fee_active_tvl_ratio != null && p.fee_active_tvl_ratio < minFeeRatio) return false;
+      // Token blacklist
+      if (isBlacklisted(p.base?.mint)) {
+        log("screening", `  ${p.name}: SKIP — token blacklisted`);
+        return false;
+      }
+      // Dev blocklist (deployer field from pool data)
+      if (isDevBlocked(p.base?.deployer)) {
+        log("screening", `  ${p.name}: SKIP — dev blocked`);
+        return false;
+      }
       return true;
     })
     .slice(0, limit);
+
+  if (eligible.length === 0) {
+    return { candidates: [], total_screened: pools.length, fib_analyzed: 0 };
+  }
+
+
+  if (eligible.length === 0) {
+    return { candidates: [], total_screened: pools.length, fib_analyzed: 0 };
+  }
+
+  // ── OKX bundle / honeypot / dev filter ───────────────────────────────────
+  const maxBundlePct = config.screening.maxBundlePct;
+  {
+    const okxResults = await Promise.all(
+      eligible.map(p => getTokenAdvancedInfo(p.base?.mint))
+    );
+    const before = eligible.length;
+    eligible.splice(0, eligible.length,
+      ...eligible.filter((p, i) => {
+        const okx = okxResults[i];
+        if (!okx) return true; // API miss → don't filter out
+        if (okx.honeypot) {
+          log("screening", `  ${p.name}: SKIP — honeypot`);
+          return false;
+        }
+        if (maxBundlePct != null && okx.bundlePct > maxBundlePct) {
+          log("screening", `  ${p.name}: SKIP — bundle ${okx.bundlePct}% > max ${maxBundlePct}%`);
+          return false;
+        }
+        if (isDevBlocked(okx.creator)) {
+          log("screening", `  ${p.name}: SKIP — creator blocked (OKX)`);
+          return false;
+        }
+        p._okx = okx;
+        return true;
+      })
+    );
+    log("screening", `OKX filter: ${eligible.length}/${before} pools passed`);
+  }
+
+  if (eligible.length === 0) {
+    return { candidates: [], total_screened: pools.length, fib_analyzed: 0 };
+  }
+
+  // ── ATH proximity filter ─────────────────────────────────────────────────
+  const athFilterPct = config.screening.athFilterPct;
+  if (athFilterPct != null) {
+    const priceResults = await Promise.all(
+      eligible.map(p => getTokenPriceInfo(p.base?.mint))
+    );
+    const before = eligible.length;
+    eligible.splice(0, eligible.length,
+      ...eligible.filter((p, i) => {
+        const pr = priceResults[i];
+        if (!pr?.ath || !pr?.currentPrice) return true;
+        const distFromAth = (pr.ath - pr.currentPrice) / pr.ath * 100;
+        if (distFromAth < athFilterPct) {
+          log("screening", `  ${p.name}: SKIP — price ${distFromAth.toFixed(1)}% from ATH (min ${athFilterPct}%)`);
+          return false;
+        }
+        p._ath = pr.ath;
+        return true;
+      })
+    );
+    log("screening", `ATH filter: ${eligible.length}/${before} pools passed`);
+  }
 
   if (eligible.length === 0) {
     return { candidates: [], total_screened: pools.length, fib_analyzed: 0 };
@@ -183,6 +282,8 @@ export async function getTopCandidates({ limit = 20 } = {}) {
 
     candidates.push({
       ...pool,
+      ath:              pool._ath            ?? null,
+      okx:              pool._okx            ?? null,
       fib_signal: {
         signal:             analysis.signal,
         reason:             analysis.reason,
@@ -192,6 +293,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
         confluenceScore:    analysis.confluenceScore ?? 0,
         pricePosition:      analysis.pricePosition ?? null,
         inPrimaryZone:      analysis.inPrimaryZone ?? false,
+        inAthZone:          analysis.inAthZone ?? false,
         hasHiddenDivergence: analysis.hasHiddenDivergence ?? false,
         rsi:                analysis.rsi ?? null,
         rsiSlope:           analysis.rsiSlope ?? null,
@@ -209,6 +311,32 @@ export async function getTopCandidates({ limit = 20 } = {}) {
         val: analysis.volumeProfile?.val ?? null,
       },
     });
+  }
+
+  // ── Smart wallet activity check ──────────────────────────────────────────────
+  if (candidates.length > 0) {
+    try {
+      const poolAddresses = candidates.map(c => c.pool);
+      const smartMoneyMap = await checkSmartWalletActivity(poolAddresses);
+      if (smartMoneyMap.size > 0) {
+        for (const c of candidates) {
+          const walletLabels = smartMoneyMap.get(c.pool);
+          if (walletLabels && walletLabels.length > 0) {
+            c.smart_money = { present: true, wallets: walletLabels };
+            // Boost confluence score by +0.10 for smart money presence
+            c.fib_signal.confluenceScore = Math.min(
+              1,
+              Math.round((c.fib_signal.confluenceScore + 0.10) * 100) / 100
+            );
+            log("screening", `  ${c.name}: SMART MONEY ✓ (${walletLabels.join(", ")}) — score boosted`);
+          } else {
+            c.smart_money = { present: false, wallets: [] };
+          }
+        }
+      }
+    } catch (e) {
+      log("screening", `Smart wallet check failed (non-fatal): ${e.message}`);
+    }
   }
 
   // Sort by confluence score descending (best signal first)

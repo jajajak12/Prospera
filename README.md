@@ -1,6 +1,6 @@
 # Prospera
 
-Autonomous DLMM liquidity provider agent for Meteora pools on Solana. Combines Fibonacci retracement + Volume Profile entry signals with multi-layer token safety filters and self-learning position management.
+Autonomous DLMM liquidity provider agent for Meteora pools on Solana. Combines Fibonacci retracement + Volume Profile entry signals with multi-layer token safety filters, backtesting, and self-learning position management.
 
 ---
 
@@ -9,9 +9,11 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana. Combines F
 Prospera is a fully autonomous LP agent that:
 - Discovers trending Meteora DLMM pools via the Pool Discovery API
 - Filters by Fibonacci + Volume Profile entry signals (ATH-based Fib levels from daily candles)
+- Optionally backtests each candidate on historical OHLCV before deploying
 - Runs multi-layer token safety checks (organic score, OKX honeypot/bundle, token age, blacklists)
 - Manages open positions with tiered rules (stop loss, LLM decision zone, auto take-profit)
 - Learns from closed positions to evolve screening thresholds and detect smart money wallets
+- Sends a daily morning briefing via Telegram at 08:00
 
 ---
 
@@ -68,6 +70,45 @@ Applied in order — any failure eliminates the pool:
 3. **OKX DEX filter** — honeypot detection, bundle % check, creator address cross-check
 4. **ATH proximity filter** (optional) — skip tokens too close to ATH (configurable `athFilterPct`)
 5. **Fibonacci signal filter** — Fib zone, volume profile, EMA, RSI, ATR
+6. **Auto-backtest filter** (optional) — historical win rate check on each candidate before deploy
+
+---
+
+## Backtesting
+
+Prospera includes a built-in backtesting engine (`backtest.js`) that replays Fibonacci entry/exit logic on historical OHLCV data from GeckoTerminal.
+
+### Manual Use
+
+Ask via Telegram:
+> "backtest pool `<address>` bin_step 100 fee 1.0"
+
+Or compare strategy presets:
+> "backtest pool `<address>` bin_step 100 fee 1.0 preset conservative"
+
+### Auto-Backtest (Pre-Deploy Filter)
+
+When `autoBacktest: true`, every screening candidate is backtested before the LLM decides to deploy. Candidates with a win rate below `minBacktestWinRate` are discarded automatically.
+
+**Graceful fallback for new tokens:**
+
+| Situation | Behavior |
+|-----------|----------|
+| Enough history (≥ 3 simulated trades) | Normal win rate filter |
+| Few candles → tries smaller aggregate (15m → 5m → 1m) | Fallback |
+| Still < 3 trades (very new token) | Skip filter — candidate kept |
+| API timeout / fetch failure | Skip filter — candidate kept |
+
+### Backtest Parameters
+
+| Aggregate | History covered |
+|-----------|----------------|
+| 1m | ~16.7 hours |
+| 5m | ~3.5 days (default) |
+| 15m | ~10 days |
+| 60m | ~42 days |
+
+> **Note:** PnL is approximate — fees estimated at 40% in-range utilization, IL simplified. Best used for ranking candidates and comparing presets, not for exact profit prediction.
 
 ---
 
@@ -134,6 +175,7 @@ Four built-in strategy presets. Switch via `apply_strategy`:
 ```
 index.js              Main entry: REPL + cron + Telegram bot
 agent.js              ReAct loop (OpenRouter LLM → tool call → repeat)
+backtest.js           Backtesting engine: historical OHLCV replay + PnL simulation
 config.js             Runtime config + tiered deploy amount logic
 prompt.js             System prompts per role (SCREENER / MANAGER / GENERAL)
 state.js              Position registry, trailing TP, PnL tracking
@@ -166,13 +208,13 @@ tools/
 
 ---
 
-## Available Tools (21)
+## Available Tools (23)
 
 **Screening:** `get_chart_candidates`, `get_pool_detail`
 
 **Deployment:** `get_active_bin`, `deploy_position`
 
-**Management:** `get_my_positions`, `get_position_pnl`, `claim_fees`, `close_position`, `set_position_note`, `add_pool_note`
+**Management:** `get_my_positions`, `get_position_pnl`, `claim_fees`, `close_position`, `set_position_note`
 
 **Wallet:** `get_wallet_balance`, `swap_token`, `get_wallet_positions`
 
@@ -182,7 +224,9 @@ tools/
 
 **Strategy:** `list_strategies`, `apply_strategy`
 
-**Config & Learning:** `update_config`, `get_performance_history`, `add_lesson`, `list_lessons`
+**Backtesting:** `run_backtest`
+
+**Config & Learning:** `update_config`
 
 ---
 
@@ -192,6 +236,7 @@ tools/
 |-------|-----------------|
 | Management | Every 3 minutes |
 | Screening | Every 15 minutes |
+| Morning Briefing | Daily at 08:00 |
 
 ---
 
@@ -250,3 +295,6 @@ DRY_RUN=true node index.js
 | `maxBundlePct` | 30 | Max bundle % (OKX filter) |
 | `fibConfluenceRequired` | true | Require Fib confluence for entry |
 | `candleLimit` | 100 | OHLCV candles for analysis |
+| `autoBacktest` | false | Enable pre-deploy backtest filter |
+| `minBacktestWinRate` | 0.50 | Minimum win rate to pass backtest filter |
+| `backtestAggregate` | 15 | Candle size for auto-backtest (minutes) |

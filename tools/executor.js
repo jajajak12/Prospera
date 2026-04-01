@@ -16,9 +16,14 @@ import {
   closePosition,
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
+import { getTokenAdvancedInfo, getTokenPriceInfo, getTokenClusterList } from "./okx.js";
+import { getJupiterTokenInfo } from "./token.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
 import { setPositionInstruction } from "../state.js";
 import { addPoolNote } from "../pool-memory.js";
+import { addSmartWallet, removeSmartWallet, loadSmartWallets, observePoolParticipants, getObservationStats } from "../smart-wallets.js";
+import { runBacktest } from "../backtest.js";
+import { listStrategies, getStrategy } from "../strategy-library.js";
 import { config, reloadScreeningThresholds } from "../config.js";
 import fs from "fs";
 import path from "path";
@@ -38,6 +43,30 @@ export function registerCronRestarter(fn) { _cronRestarter = fn; }
 const toolMap = {
   get_chart_candidates:  getTopCandidates,
   get_pool_detail:       getPoolDetail,
+
+  get_token_holders: async ({ mint }) => {
+    const s = config.screening;
+    const [okx, jup] = await Promise.all([
+      getTokenAdvancedInfo(mint),
+      getJupiterTokenInfo(mint),
+    ]);
+    const flags = [];
+    if (okx?.honeypot)                                                   flags.push("HONEYPOT");
+    if (okx?.bundlePct    > (s.maxBundlePct     ?? 30))                  flags.push(`bundle ${okx.bundlePct}% > max ${s.maxBundlePct ?? 30}%`);
+    if (jup?.botHoldersPct != null && jup.botHoldersPct > (s.maxBotHoldersPct ?? 30)) flags.push(`bot_holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}%`);
+    if (jup?.top10Pct      != null && jup.top10Pct      > (s.maxTop10Pct      ?? 60)) flags.push(`top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 60}%`);
+    if (jup?.feesSOL       != null && jup.feesSOL       < (s.minTokenFeesSol  ?? 30)) flags.push(`fees ${jup.feesSOL} SOL < min ${s.minTokenFeesSol ?? 30}`);
+    return { mint, okx, jupiter: jup, flags, pass: flags.length === 0 };
+  },
+
+  get_token_info: async ({ mint }) => {
+    const [advanced, price, cluster] = await Promise.all([
+      getTokenAdvancedInfo(mint),
+      getTokenPriceInfo(mint),
+      getTokenClusterList(mint),
+    ]);
+    return { mint, advanced, price, cluster };
+  },
   get_position_pnl:      getPositionPnl,
   get_active_bin:        getActiveBin,
   deploy_position:       deployPosition,
@@ -55,6 +84,86 @@ const toolMap = {
   },
 
   add_pool_note: addPoolNote,
+
+  // ── Backtesting ────────────────────────────────────────────────────────────
+  run_backtest: ({ pool_address, bin_step, fee_pct, aggregate = 5, candle_limit = 100, preset = null }) =>
+    runBacktest({ poolAddress: pool_address, binStep: bin_step, feePct: fee_pct, aggregate, candleLimit: candle_limit, preset }),
+
+  // ── Smart Wallets ──────────────────────────────────────────────────────────
+  add_smart_wallet:    ({ address, label }) => addSmartWallet(address, label),
+  remove_smart_wallet: ({ address }) => removeSmartWallet(address),
+  list_smart_wallets:  () => {
+    const wallets = loadSmartWallets();
+    return { wallets, count: wallets.length };
+  },
+  get_smart_wallet_stats: () => {
+    const stats = getObservationStats();
+    return {
+      observed_count:    stats.length,
+      promotion_threshold: { min_observations: 3, min_win_rate_pct: 65 },
+      wallets: stats,
+    };
+  },
+
+  // ── Strategy Library ───────────────────────────────────────────────────────
+  list_strategies: () => ({ strategies: listStrategies() }),
+
+  apply_strategy: ({ name }) => {
+    const preset = getStrategy(name);
+    if (!preset) {
+      return { success: false, error: `Unknown strategy: "${name}". Use list_strategies to see options.` };
+    }
+
+    const applied = {};
+
+    // Apply screening overrides
+    if (preset.screening) {
+      for (const [key, val] of Object.entries(preset.screening)) {
+        if (config.screening[key] !== undefined || key in config.screening) {
+          config.screening[key] = val;
+          applied[key] = val;
+        }
+      }
+    }
+
+    // Apply management overrides
+    if (preset.management) {
+      for (const [key, val] of Object.entries(preset.management)) {
+        if (config.management[key] !== undefined || key in config.management) {
+          config.management[key] = val;
+          applied[key] = val;
+        }
+      }
+    }
+
+    // Apply strategy overrides
+    if (preset.strategy) {
+      for (const [key, val] of Object.entries(preset.strategy)) {
+        config.strategy[key] = val;
+        applied[key] = val;
+      }
+    }
+
+    // Persist to user-config.json
+    let userConfig = {};
+    if (fs.existsSync(USER_CONFIG_PATH)) {
+      try { userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")); } catch { /**/ }
+    }
+    Object.assign(userConfig, applied);
+    userConfig.preset = name;
+    userConfig._lastStrategyApplied = new Date().toISOString();
+    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+
+    log("strategy", `Applied preset "${name}": ${Object.keys(applied).join(", ")}`);
+    addLesson(`[STRATEGY] Switched to preset "${name}" — ${preset.description}`, ["strategy", "config_change"]);
+
+    return {
+      success: true,
+      strategy: name,
+      description: preset.description,
+      applied,
+    };
+  },
 
   get_performance_history: getPerformanceHistory,
 
@@ -127,6 +236,7 @@ const toolMap = {
       managementModel:       ["llm", "managementModel"],
       screeningModel:        ["llm", "screeningModel"],
       generalModel:          ["llm", "generalModel"],
+      solMode:               ["management", "solMode"],
       // strategy
       binsBelow:             ["strategy", "binsBelow"],
       binsExtraLow:          ["strategy", "binsExtraLow"],
@@ -290,6 +400,17 @@ export async function executeTool(name, args) {
           addPoolNote({ pool_address: poolAddr, note }).catch?.(() => {});
         }
 
+        // Smart wallet self-learning: observe pool participants at close
+        {
+          const poolAddr = result.pool || args.pool_address;
+          const pnlPct   = result.pnl_pct ?? null;
+          if (poolAddr && pnlPct != null) {
+            let ownWallet = null;
+            try { const { Keypair } = await import("@solana/web3.js"); const bs58 = (await import("bs58")).default; ownWallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY)).publicKey.toString(); } catch { /**/ }
+            observePoolParticipants(poolAddr, pnlPct, ownWallet).catch(() => {});
+          }
+        }
+
         // Auto-swap base token back to SOL
         if (!args.skip_swap && result.base_mint) {
           try {
@@ -375,6 +496,14 @@ async function runSafetyChecks(name, args) {
             pass: false,
             reason: `Already holding base token ${args.base_mint} in another pool. One position per token only.`,
           };
+        }
+      }
+
+      // Blocked launchpad check
+      const blockedLaunchpads = config.blocklists?.blockedLaunchpads ?? [];
+      if (blockedLaunchpads.length > 0 && args.launchpad) {
+        if (blockedLaunchpads.includes(args.launchpad)) {
+          return { pass: false, reason: `Launchpad "${args.launchpad}" is blocked.` };
         }
       }
 
