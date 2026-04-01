@@ -26,7 +26,7 @@ import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
-import { runBacktest } from "./backtest.js";
+import { runBacktest, runBacktestWithSweep } from "./backtest.js";
 
 log("startup", "Fibonacci LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -496,14 +496,15 @@ async function runPeriodicBacktest() {
 
   const results = [];
   for (const p of pools) {
-    let bt = null;
+    let bt = null; let sweepBest = null; let sweepAll = [];
     for (const agg of [15, 5, 1]) {
       try {
-        bt = await runBacktest({ poolAddress: p.pool, binStep: p.bin_step, feePct: p.fee_pct, aggregate: agg, candleLimit: 500 });
+        const res = await runBacktestWithSweep({ poolAddress: p.pool, binStep: p.bin_step, feePct: p.fee_pct, aggregate: agg, candleLimit: 200 });
+        bt = res.backtest; sweepBest = res.sweepBest; sweepAll = res.sweepAll ?? [];
         if (bt && bt.totalTrades >= 3) break;
-      } catch { bt = null; }
+      } catch { bt = null; sweepBest = null; }
     }
-    results.push({ ...p, bt });
+    results.push({ ...p, bt, sweepBest, sweepAll });
   }
 
   // ── Build suggestions ───────────────────────────────────────────────────────
@@ -511,12 +512,11 @@ async function runPeriodicBacktest() {
   const suggestions = [];
 
   if (withData.length > 0) {
-    const avgBtWr   = withData.reduce((s, r) => s + r.bt.winRate, 0) / withData.length;
-    const avgActual = withData.reduce((s, r) => s + (r.actual_pnl ?? 0), 0) / withData.length;
+    const avgBtWr = withData.reduce((s, r) => s + r.bt.winRate, 0) / withData.length;
 
     // Suggest raising minBacktestWinRate if most pools backtest poorly
     if (avgBtWr < 0.45 && !config.screening.autoBacktest) {
-      suggestions.push(`Aktifkan auto-backtest filter (win rate rata-rata backtest: ${(avgBtWr*100).toFixed(0)}%)`);
+      suggestions.push(`Aktifkan auto-backtest filter (WR rata-rata: ${(avgBtWr*100).toFixed(0)}%)`);
     }
 
     // Suggest bin_step focus if one range clearly outperforms
@@ -532,13 +532,36 @@ async function runPeriodicBacktest() {
       if (avg > bestWr) { bestWr = avg; bestBucket = bucket; }
     }
     if (bestBucket && bestWr > 0.60) {
-      suggestions.push(`Bin step ${bestBucket} unggul (WR ${(bestWr*100).toFixed(0)}%) — pertimbangkan fokuskan minBinStep/maxBinStep`);
+      suggestions.push(`Bin step ${bestBucket} unggul (WR ${(bestWr*100).toFixed(0)}%) — pertimbangkan fokuskan range bin step`);
     }
 
     // Suggest stop loss tightening if many stop-loss exits
     const slHits = withData.filter(r => r.close_reason === "stop_loss").length;
     if (slHits >= Math.ceil(withData.length * 0.5)) {
-      suggestions.push(`${slHits}/${withData.length} posisi kena stop loss — pertimbangkan naikkan minBacktestWinRate atau perketat confluence`);
+      suggestions.push(`${slHits}/${withData.length} posisi kena stop loss — pertimbangkan perketat confluence`);
+    }
+
+    // Parameter sweep recommendation — aggregate best params across all pools
+    const sweepable = withData.filter(r => r.sweepBest);
+    if (sweepable.length >= 2) {
+      // Find most common best rsiMin
+      const rsiVotes = {};
+      const confVotes = {};
+      for (const r of sweepable) {
+        rsiVotes[r.sweepBest.rsiMin]           = (rsiVotes[r.sweepBest.rsiMin] || 0) + 1;
+        confVotes[r.sweepBest.minConfluenceScore] = (confVotes[r.sweepBest.minConfluenceScore] || 0) + 1;
+      }
+      const bestRsi  = Object.entries(rsiVotes).sort((a, b) => b[1] - a[1])[0];
+      const bestConf = Object.entries(confVotes).sort((a, b) => b[1] - a[1])[0];
+      const curRsi   = 48;
+      const curConf  = config.screening.minConfluenceScore ?? 0.30;
+
+      if (bestRsi && Number(bestRsi[0]) !== curRsi) {
+        suggestions.push(`Sweep: RSI min ${curRsi} → ${bestRsi[0]} (konsensus ${bestRsi[1]}/${sweepable.length} pools)`);
+      }
+      if (bestConf && Math.abs(Number(bestConf[0]) - curConf) >= 0.05) {
+        suggestions.push(`Sweep: confluence min ${curConf} → ${bestConf[0]} (konsensus ${bestConf[1]}/${sweepable.length} pools)`);
+      }
     }
 
     if (suggestions.length === 0) {
@@ -549,10 +572,11 @@ async function runPeriodicBacktest() {
   // ── Build Telegram message ──────────────────────────────────────────────────
   const lines = results.map(r => {
     if (!r.bt || r.bt.totalTrades < 3) return `  • ${r.pool_name} — data tidak cukup`;
-    const wr  = `WR ${(r.bt.winRate*100).toFixed(0)}%`;
-    const avg = `avgPnL ${r.bt.avgPnlPct?.toFixed(1)}%`;
-    const act = r.actual_pnl != null ? ` | live ${r.actual_pnl >= 0 ? "+" : ""}${r.actual_pnl.toFixed(1)}%` : "";
-    return `  • ${r.pool_name} — ${wr} ${avg} (${r.bt.totalTrades}t)${act}`;
+    const wr   = `WR ${(r.bt.winRate*100).toFixed(0)}%`;
+    const avg  = `avgPnL ${r.bt.avgPnlPct?.toFixed(1)}%`;
+    const act  = r.actual_pnl != null ? ` | live ${r.actual_pnl >= 0 ? "+" : ""}${r.actual_pnl.toFixed(1)}%` : "";
+    const best = r.sweepBest ? ` | best: RSI${r.sweepBest.rsiMin} conf${r.sweepBest.minConfluenceScore}` : "";
+    return `  • ${r.pool_name} — ${wr} ${avg} (${r.bt.totalTrades}t)${act}${best}`;
   });
 
   const msg =

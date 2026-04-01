@@ -118,8 +118,9 @@ function analyzeWindow(window, fibLevels, binStep, cfg) {
   const rsiValues = calcRSI(candles, 14);
   const rsi       = rsiValues[rsiValues.length - 1];
   const rsiSlope  = calcRSISlope(rsiValues, 5);
+  const rsiMin    = cfg.rsiMin ?? 48;
   if (rsi != null) {
-    if (rsi < 48)    return { signal: "SKIP", reason: `RSI too low (${rsi?.toFixed(1)})` };
+    if (rsi < rsiMin)  return { signal: "SKIP", reason: `RSI too low (${rsi?.toFixed(1)})` };
     if (rsiSlope <= 0) return { signal: "SKIP", reason: "RSI slope declining" };
   }
 
@@ -150,7 +151,8 @@ function analyzeWindow(window, fibLevels, binStep, cfg) {
   const confluenceScore = Math.round(Math.min(1, Math.max(0, score)) * 100) / 100;
 
   // Require minimum confluence if configured
-  if (cfg.fibConfluenceRequired && confluenceScore < 0.3) {
+  const minConfluence = cfg.minConfluenceScore ?? 0.30;
+  if (cfg.fibConfluenceRequired && confluenceScore < minConfluence) {
     return { signal: "SKIP", reason: `Confluence too low (${confluenceScore})` };
   }
 
@@ -423,5 +425,115 @@ export async function runBacktest({
   };
 
   log("backtest", `Done: ${trades.length} trades | WR: ${result.summary.winRate}% | Avg PnL: ${avgPnl.toFixed(2)}% | Total: ${totalPnl.toFixed(2)}%`);
+
+  // Attach flat fields for backward-compat with callers that use top-level keys
+  result.totalTrades = result.summary.totalTrades;
+  result.winRate     = result.summary.winRate / 100;
+  result.avgPnlPct   = result.summary.avgPnlPct;
+  result.totalPnlPct = result.summary.totalPnlPct;
+
   return result;
+}
+
+// ─── Parameter Sweep ──────────────────────────────────────────────────────────
+
+/**
+ * Run a lightweight parameter sweep on pre-fetched candle data.
+ * Tests combinations of rsiMin and minConfluenceScore.
+ * Returns ranked results — best combo first (by win rate, then avg PnL).
+ *
+ * Pure CPU — no API calls. Fast even for 1000 candles.
+ *
+ * @param {Array}  candles       - Intraday OHLCV candles
+ * @param {Object} fibLevels     - Pre-calculated Fib levels
+ * @param {number} binStep
+ * @param {number} feePct
+ * @param {Object} baseCfg       - Base config (stopLossPct etc.)
+ * @returns {Array} ranked sweep results
+ */
+function sweepParams(candles, fibLevels, binStep, feePct, baseCfg, candleLimit = 100) {
+  const RSI_CANDIDATES         = [40, 44, 48, 52];
+  const CONFLUENCE_CANDIDATES  = [0.25, 0.30, 0.35, 0.40];
+
+  const results = [];
+
+  for (const rsiMin of RSI_CANDIDATES) {
+    for (const minConfluenceScore of CONFLUENCE_CANDIDATES) {
+      const cfg = { ...baseCfg, rsiMin, minConfluenceScore, fibConfluenceRequired: true };
+
+      const trades  = [];
+      let skipUntil = 0;
+
+      for (let i = candleLimit; i < candles.length; i++) {
+        if (i < skipUntil) continue;
+
+        const window = candles.slice(i - candleLimit, i);
+        const sig    = analyzeWindow(window, fibLevels, binStep, cfg);
+        if (sig.signal !== "ENTRY") continue;
+
+        const t = simulatePosition(candles, i, candles[i].close, sig.binsBelow, binStep, feePct, cfg);
+        trades.push(t);
+        skipUntil = t.exitIdx + 1;
+      }
+
+      if (trades.length < 3) continue; // not enough trades to be meaningful
+
+      const wins    = trades.filter(t => t.win).length;
+      const winRate = wins / trades.length;
+      const avgPnl  = trades.reduce((s, t) => s + t.pnlPct, 0) / trades.length;
+
+      results.push({ rsiMin, minConfluenceScore, trades: trades.length, winRate, avgPnlPct: +avgPnl.toFixed(2) });
+    }
+  }
+
+  // Sort: win rate desc, then avgPnl desc
+  results.sort((a, b) => b.winRate - a.winRate || b.avgPnlPct - a.avgPnlPct);
+  return results;
+}
+
+/**
+ * Run backtest + parameter sweep for a single pool.
+ * Returns { backtest, sweepBest } where sweepBest is the top-ranked param combo.
+ */
+export async function runBacktestWithSweep({ poolAddress, binStep, feePct, aggregate = 15, candleLimit = 100 }) {
+  const [candles, dailyCandles] = await Promise.all([
+    fetchOHLCVAggregate(poolAddress, aggregate, 1000),
+    fetchDailyOHLCV(poolAddress, 1000),
+  ]);
+
+  if (candles.length < candleLimit + 10) {
+    throw new Error(`Not enough candle data (${candles.length} candles)`);
+  }
+
+  // Build Fib levels
+  let swingHigh, swingLow;
+  if (dailyCandles && dailyCandles.length >= 1) {
+    swingHigh = Math.max(...dailyCandles.map(c => c.high));
+    swingLow  = Math.min(...dailyCandles.map(c => c.low));
+    if (dailyCandles.length <= 3) {
+      swingHigh = Math.max(swingHigh, ...candles.map(c => c.high));
+      swingLow  = Math.min(swingLow,  ...candles.map(c => c.low));
+    }
+  } else {
+    swingHigh = Math.max(...candles.map(c => c.high));
+    swingLow  = Math.min(...candles.map(c => c.low));
+  }
+
+  const fibLevels = calcFibLevels(swingHigh, swingLow);
+
+  const baseCfg = {
+    stopLossPct:           -20,
+    takeProfitMaxPct:      25,
+    outOfRangeBinsToClose: 20,
+    outOfRangeWaitMinutes: 10,
+    fibConfluenceRequired: true,
+  };
+
+  const sweepResults = sweepParams(candles, fibLevels, binStep, feePct, baseCfg, candleLimit);
+  const sweepBest    = sweepResults[0] ?? null;
+
+  // Also run baseline backtest using current default params
+  const baseline = await runBacktest({ poolAddress, binStep, feePct, aggregate, candleLimit });
+
+  return { backtest: baseline, sweepBest, sweepAll: sweepResults.slice(0, 5) };
 }
