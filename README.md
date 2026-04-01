@@ -65,12 +65,13 @@ Clamped to [35, 90]. `bins_above` is always 0.
 
 Applied in order — any failure eliminates the pool:
 
-1. **Meteora API filters** — organic score, holders, mcap, volume, TVL, bin step, fee/TVL ratio, token age
+1. **Meteora API filters** — organic score, holders, mcap, TVL, bin step, fee/TVL ratio, token age
 2. **Blacklists** — `token-blacklist.json` (mints) and `dev-blocklist.json` (deployer addresses)
-3. **OKX DEX filter** — honeypot detection, bundle % check, creator address cross-check
-4. **ATH proximity filter** (optional) — skip tokens too close to ATH (configurable `athFilterPct`)
-5. **Fibonacci signal filter** — Fib zone, volume profile, EMA, RSI, ATR
-6. **Auto-backtest filter** (optional) — historical win rate check on each candidate before deploy
+3. **Token volume filter** — actual 5m volume across ALL DEXes via Dexscreener (`volume.m5` summed per token). Accurate for tokens as young as 1 hour — no 24h averaging
+4. **OKX DEX filter** — honeypot detection, bundle % check, creator address cross-check
+5. **ATH proximity filter** (optional) — skip tokens too close to ATH (configurable `athFilterPct`)
+6. **Fibonacci signal filter** — Fib zone, volume profile, EMA, RSI, ATR
+7. **Auto-backtest filter** (optional) — historical win rate check on each candidate before deploy
 
 ---
 
@@ -291,7 +292,7 @@ DRY_RUN=true node index.js
 |-----|---------|-------------|
 | `maxPositions` | 2 | Max concurrent open positions |
 | `minBinStep` / `maxBinStep` | 80 / 200 | Pool bin step range |
-| `minVolume` | 20000 | Min 5m volume ($) |
+| `minVolume` | 20000 | Min actual 5m volume across all DEXes ($) — sourced from Dexscreener |
 | `minMcap` / `maxMcap` | 150k / 10M | Token market cap range |
 | `minTokenAgeHours` / `maxTokenAgeHours` | 1 / 1440 | Token age range (1h – 2 months) |
 | `stopLossPct` | −20 | Stop loss threshold |
