@@ -1,45 +1,50 @@
 /**
- * token.js — Jupiter DataAPI + GeckoTerminal token volume client
+ * token.js — Jupiter DataAPI + Dexscreener token volume client
  *
- * Jupiter endpoint: https://datapi.jup.ag/v1  (no key required)
- * GeckoTerminal:    https://api.geckoterminal.com/api/v2  (no key required)
+ * Jupiter endpoint:    https://datapi.jup.ag/v1         (no key required)
+ * Dexscreener tokens: https://api.dexscreener.com/tokens/v1  (no key required)
  *
  * Used in get_token_holders, get_token_info, and volume screening filter.
  */
 
-const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
-const GECKO_HEADERS = { Accept: "application/json;version=20230302" };
+const DEXSCREENER_BASE = "https://api.dexscreener.com/tokens/v1";
 
 /**
- * Batch-fetch 5m token volume across all DEXes for up to 30 mints at once.
- * Uses GeckoTerminal multi-token endpoint which aggregates across all pools/DEXes.
+ * Batch-fetch actual 5m token volume across ALL DEXes.
+ * Uses Dexscreener which returns volume.m5 per pair — we sum across all pairs
+ * for each token to get true cross-DEX 5m volume.
+ *
+ * Dexscreener supports up to 30 addresses per call (comma-separated).
  *
  * Returns a Map<mint, volume5mUsd>
- * volume5mUsd = h24 / 288  (average 5-minute volume)
  *
- * If a mint is missing from the response, it is omitted from the map (caller
- * should treat missing = skip filter rather than reject).
+ * If a mint is missing from the response, it is omitted from the map
+ * (caller should treat missing = skip filter rather than reject).
  */
 export async function batchGetTokenVolume5m(mints) {
   const result = new Map();
   if (!mints || mints.length === 0) return result;
 
-  // GeckoTerminal multi-token endpoint supports up to 30 addresses per call
+  // Dexscreener supports up to 30 addresses per request
   const chunks = [];
   for (let i = 0; i < mints.length; i += 30) chunks.push(mints.slice(i, i + 30));
 
   await Promise.all(chunks.map(async (chunk) => {
     try {
-      const url = `${GECKO_BASE}/networks/solana/tokens/multi/${chunk.join(",")}`;
-      const res = await fetch(url, { headers: GECKO_HEADERS, signal: AbortSignal.timeout(10000) });
+      const url = `${DEXSCREENER_BASE}/solana/${chunk.join(",")}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
       if (!res.ok) return;
       const json = await res.json();
-      for (const item of (json?.data ?? [])) {
-        const mint    = item?.attributes?.address;
-        const h24     = parseFloat(item?.attributes?.volume_usd?.h24 ?? 0) || 0;
-        const vol5m   = h24 / 288; // avg 5-minute volume
-        if (mint) result.set(mint, vol5m);
+      const pairs = Array.isArray(json) ? json : (json?.pairs ?? []);
+
+      // Sum volume.m5 across all pairs for each token (base token)
+      const totals = new Map();
+      for (const pair of pairs) {
+        const mint = pair?.baseToken?.address;
+        const m5   = parseFloat(pair?.volume?.m5 ?? 0) || 0;
+        if (mint) totals.set(mint, (totals.get(mint) ?? 0) + m5);
       }
+      for (const [mint, vol] of totals) result.set(mint, vol);
     } catch { /* skip chunk on error */ }
   }));
 
