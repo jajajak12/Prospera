@@ -1,6 +1,6 @@
 # Prospera
 
-Autonomous DLMM liquidity provider agent for Meteora pools on Solana. Combines Fibonacci retracement + Volume Profile entry signals with multi-layer token safety filters, backtesting, and self-learning position management.
+Autonomous DLMM liquidity provider agent for Meteora pools on Solana. Combines Fibonacci retracement + Volume Profile entry signals with multi-layer token safety filters, automated backtesting with parameter optimization, and self-learning position management.
 
 ---
 
@@ -74,41 +74,46 @@ Applied in order — any failure eliminates the pool:
 
 ---
 
-## Backtesting
+## Backtesting & Parameter Optimization
 
 Prospera includes a built-in backtesting engine (`backtest.js`) that replays Fibonacci entry/exit logic on historical OHLCV data from GeckoTerminal.
 
-### Manual Use
+### Periodic Auto-Backtest (02:00 daily)
 
-Ask via Telegram:
+Every night at 02:00, Prospera automatically:
+1. Fetches up to 8 recently closed pools (last 7 days)
+2. Runs backtest + parameter sweep on each
+3. Sends a Telegram report with results and optimization suggestions
+
+**Parameter sweep** tests 16 combinations of:
+- RSI minimum threshold: `40 / 44 / 48 / 52`
+- Confluence score minimum: `0.25 / 0.30 / 0.35 / 0.40`
+
+The sweep is pure CPU (no extra API calls) and ranks combinations by win rate + avg PnL. Suggestions are cross-pool consensus — e.g. "RSI min 44 performed better in 3/5 pools". Changes are **informational only** — you decide whether to apply them via `update_config`.
+
+### On-Demand via Telegram
+
+```
+/backtest        — last 7 days
+/backtest 30d    — last 30 days
+/backtest all    — all time
+```
+
+Or ask the LLM directly:
 > "backtest pool `<address>` bin_step 100 fee 1.0"
-
-Or compare strategy presets:
-> "backtest pool `<address>` bin_step 100 fee 1.0 preset conservative"
-
-### Auto-Backtest (Pre-Deploy Filter)
-
-When `autoBacktest: true`, every screening candidate is backtested before the LLM decides to deploy. Candidates with a win rate below `minBacktestWinRate` are discarded automatically.
-
-**Graceful fallback for new tokens:**
-
-| Situation | Behavior |
-|-----------|----------|
-| Enough history (≥ 3 simulated trades) | Normal win rate filter |
-| Few candles → tries smaller aggregate (15m → 5m → 1m) | Fallback |
-| Still < 3 trades (very new token) | Skip filter — candidate kept |
-| API timeout / fetch failure | Skip filter — candidate kept |
 
 ### Backtest Parameters
 
 | Aggregate | History covered |
 |-----------|----------------|
 | 1m | ~16.7 hours |
-| 5m | ~3.5 days (default) |
-| 15m | ~10 days |
+| 5m | ~3.5 days |
+| 15m | ~10 days (default for periodic) |
 | 60m | ~42 days |
 
-> **Note:** PnL is approximate — fees estimated at 40% in-range utilization, IL simplified. Best used for ranking candidates and comparing presets, not for exact profit prediction.
+**Graceful fallback for new tokens:** if a pool has insufficient history at the requested aggregate, automatically falls back to a smaller timeframe (15m → 5m → 1m). If still < 3 simulated trades, the pool is skipped without penalty.
+
+> **Note:** PnL is approximate — fees estimated at 40% in-range utilization, IL simplified. Best used for signal quality ranking and parameter tuning, not exact profit projection.
 
 ---
 
@@ -224,7 +229,7 @@ tools/
 
 **Strategy:** `list_strategies`, `apply_strategy`
 
-**Backtesting:** `run_backtest`
+**Backtesting:** `run_backtest` (manual per-pool; periodic sweep runs automatically at 02:00)
 
 **Config & Learning:** `update_config`
 
@@ -237,6 +242,7 @@ tools/
 | Management | Every 3 minutes |
 | Screening | Every 15 minutes |
 | Morning Briefing | Daily at 08:00 |
+| Periodic Backtest | Daily at 02:00 |
 
 ---
 
@@ -295,6 +301,6 @@ DRY_RUN=true node index.js
 | `maxBundlePct` | 30 | Max bundle % (OKX filter) |
 | `fibConfluenceRequired` | true | Require Fib confluence for entry |
 | `candleLimit` | 100 | OHLCV candles for analysis |
-| `autoBacktest` | false | Enable pre-deploy backtest filter |
-| `minBacktestWinRate` | 0.50 | Minimum win rate to pass backtest filter |
-| `backtestAggregate` | 15 | Candle size for auto-backtest (minutes) |
+| `autoBacktest` | false | Enable pre-deploy backtest filter (optional — periodic cron runs regardless) |
+| `minBacktestWinRate` | 0.50 | Minimum win rate to pass pre-deploy filter |
+| `backtestAggregate` | 15 | Candle size for backtest (minutes) |
