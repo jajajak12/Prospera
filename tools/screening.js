@@ -10,7 +10,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import { analyzeSignal } from "./chart.js";
 import { getTokenAdvancedInfo, getTokenPriceInfo } from "./okx.js";
-import { batchGetTokenVolume5m } from "./token.js";
+import { batchGetTokenVolume5m, getJupiterTokenInfo } from "./token.js";
 import { checkSmartWalletActivity } from "../smart-wallets.js";
 import fs from "fs";
 import path from "path";
@@ -234,6 +234,40 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       })
     );
     log("screening", `OKX filter: ${eligible.length}/${before} pools passed`);
+  }
+
+  if (eligible.length === 0) {
+    return { candidates: [], total_screened: pools.length, fib_analyzed: 0 };
+  }
+
+  // ── Jupiter token safety filter (top10, bot holders, fees SOL) ──────────
+  {
+    const s = config.screening;
+    const jupResults = await Promise.all(
+      eligible.map(p => getJupiterTokenInfo(p.base?.mint).catch(() => null))
+    );
+    const before = eligible.length;
+    eligible.splice(0, eligible.length,
+      ...eligible.filter((p, i) => {
+        const jup = jupResults[i];
+        if (!jup) return true; // API miss → keep
+        if (jup.top10Pct != null && jup.top10Pct > (s.maxTop10Pct ?? 20)) {
+          log("screening", `  ${p.name}: SKIP — top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 20}%`);
+          return false;
+        }
+        if (jup.botHoldersPct != null && jup.botHoldersPct > (s.maxBotHoldersPct ?? 30)) {
+          log("screening", `  ${p.name}: SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}%`);
+          return false;
+        }
+        if (jup.feesSOL != null && jup.feesSOL < (s.minTokenFeesSol ?? 25)) {
+          log("screening", `  ${p.name}: SKIP — fees ${jup.feesSOL} SOL < min ${s.minTokenFeesSol ?? 25}`);
+          return false;
+        }
+        p._jup = jup;
+        return true;
+      })
+    );
+    log("screening", `Jupiter filter: ${eligible.length}/${before} pools passed`);
   }
 
   if (eligible.length === 0) {
