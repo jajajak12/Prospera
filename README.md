@@ -65,13 +65,16 @@ Clamped to [35, 90]. `bins_above` is always 0.
 
 Applied in order — any failure eliminates the pool:
 
+Applied in order from cheapest to most expensive — any failure eliminates the pool immediately:
+
 1. **Meteora API filters** — organic score, holders, mcap, TVL, bin step, fee/TVL ratio, token age
 2. **Blacklists** — `token-blacklist.json` (mints) and `dev-blocklist.json` (deployer addresses)
-3. **Token volume filter** — actual 5m volume across ALL DEXes via Dexscreener (`volume.m5` summed per token). Accurate for tokens as young as 1 hour — no 24h averaging
+3. **Token volume filter** — actual last-5m volume across ALL DEXes via Dexscreener (`volume.m5` summed per token). Accurate for tokens as young as 1 hour — no 24h averaging
 4. **OKX DEX filter** — honeypot detection, bundle % check, creator address cross-check
-5. **ATH proximity filter** (optional) — skip tokens too close to ATH (configurable `athFilterPct`)
-6. **Fibonacci signal filter** — Fib zone, volume profile, EMA, RSI, ATR
-7. **Auto-backtest filter** (optional) — historical win rate check on each candidate before deploy
+5. **Jupiter token safety** — top 10 holder concentration (`maxTop10Pct`), bot holder % (`maxBotHoldersPct`), min fees SOL (`minTokenFeesSol`)
+6. **ATH proximity filter** (optional) — skip tokens too close to ATH (configurable `athFilterPct`)
+7. **Fibonacci signal filter** — Fib zone, volume profile, EMA, RSI, ATR (most expensive — only runs on tokens that passed all above)
+8. **Auto-backtest filter** (optional) — historical win rate check on each candidate before deploy
 
 ---
 
@@ -300,6 +303,9 @@ DRY_RUN=true node index.js
 | `takeProfitFeePct` | 5 | LLM decision zone starts here |
 | `outOfRangeBinsToClose` | 20 | OOR bin distance to trigger close |
 | `maxBundlePct` | 30 | Max bundle % (OKX filter) |
+| `maxTop10Pct` | 20 | Max top 10 holders concentration % (Jupiter) |
+| `maxBotHoldersPct` | 30 | Max bot holder % (Jupiter) |
+| `minTokenFeesSol` | 25 | Min fees earned in SOL (Jupiter) |
 | `fibConfluenceRequired` | true | Require Fib confluence for entry |
 | `candleLimit` | 100 | OHLCV candles for analysis |
 | `autoBacktest` | false | Enable pre-deploy backtest filter (optional — periodic cron runs regardless) |
