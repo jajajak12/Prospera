@@ -595,12 +595,6 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
   if (inPrimaryZone)       score += 0.10;
   if (hasHiddenDivergence) score += 0.15;
   if (rsiSlope > 3)        score += 0.05;
-  // ATH zone: no PA penalty (we're pre-positioning, support below 618 not yet tested)
-  // Fib zone: +0.15 PA support found, −0.20 not found
-  if (!inAthZone) {
-    if (paConfluence) score += 0.15;
-    else              score -= 0.20;
-  }
 
   const confluenceScore = Math.round(Math.min(1, Math.max(0, score)) * 100) / 100;
 
@@ -614,9 +608,7 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     `EMA20>EMA50 ✓`,
     `Vol: POC=${pocInZone ? "in" : "out"} VAL=${valInZone ? "in" : "out"}`,
     `bins=${binsBelow}↓/${binsAbove}↑`,
-    paConfluence
-      ? `PA support ✓ @${fmt(nearestSupport)}`
-      : `PA support ✗ below 0.618 (score−0.20)`,
+    nearestSupport != null ? `support @${fmt(nearestSupport)}` : `support=fib786`,
   ];
   if (hasHiddenDivergence) parts.push("HiddenDiv ✓");
   if (atrWarning)          parts.push(atrWarning);
@@ -629,7 +621,6 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     binsBelow,
     binsAbove,
     supportPrice:    Math.round(supportTarget * 1e8) / 1e8,
-    paConfluence,
     nearestSupportBelow618: nearestSupport != null ? Math.round(nearestSupport * 1e8) / 1e8 : null,
     ath:             Math.round(swingHigh * 1e8) / 1e8,
     atl:             Math.round(swingLow  * 1e8) / 1e8,

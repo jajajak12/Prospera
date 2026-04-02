@@ -48,8 +48,6 @@ Base score from price position (0.6 weight) + POC volume strength (0.4 weight).
 | Primary zone | +0.10 |
 | Hidden Bullish Divergence | +0.15 |
 | RSI slope > 3 | +0.05 |
-| Price action support below Fib 0.618 found | +0.15 |
-| No price action support found (fib zone only) | −0.20 |
 | Smart wallet present in pool | +0.10 |
 
 ### bins_below Calculation
