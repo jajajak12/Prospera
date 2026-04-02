@@ -1,6 +1,6 @@
 # Prospera
 
-Autonomous DLMM liquidity provider agent for Meteora pools on Solana. Combines Fibonacci retracement + Volume Profile entry signals with multi-layer token safety filters, automated backtesting with parameter optimization, and self-learning position management.
+Autonomous DLMM liquidity provider agent for Meteora pools on Solana. Combines Fibonacci retracement entry signals with multi-layer token safety filters, automated backtesting with conservative auto-apply, self-healing crash recovery, and self-learning position management.
 
 ---
 
@@ -14,6 +14,7 @@ Prospera is a fully autonomous LP agent that:
 - Manages open positions with tiered rules (stop loss, LLM decision zone, auto take-profit)
 - Learns from closed positions to evolve screening thresholds and detect smart money wallets
 - Sends a daily morning briefing via Telegram at 08:00
+- Self-heals on crash — global error handlers notify Telegram and let PM2 auto-restart
 
 ---
 
@@ -29,7 +30,7 @@ Fibonacci is drawn from **all-time-low → ATH** using daily OHLCV candles (Geck
 |--------|-----------|---------|
 | **Price** | Above Fib 0.618 (not broken support) | Token still in valid range |
 | **EMA Trend** | EMA20 > EMA50 | Confirmed uptrend |
-| **RSI Momentum** | RSI > 48 + rising slope | Bullish momentum |
+| **RSI Momentum** | RSI > `rsiMin` (default 48) + rising slope | Bullish momentum |
 | **ATR Check** | ATR% < bin\_step% × 4 | Volatility compatible with pool |
 
 ### Zone Tiers
@@ -49,6 +50,8 @@ Base score from price position (0.6 weight) + POC volume strength (0.4 weight).
 | RSI slope > 3 | +0.05 |
 | Smart wallet present in pool | +0.10 |
 
+Candidates below `minConfluenceScore` are filtered out before the LLM sees them.
+
 ### bins_below Calculation
 
 - **ATH Zone**: calculated from Fib 0.236 → Fib 0.618 (range sits below current price, ready for pullback)
@@ -60,22 +63,18 @@ Clamped to [35, 90]. `bins_above` is always 0.
 
 ## Token Safety Filters
 
-Applied in order — any failure eliminates the pool:
-
 Applied in order from cheapest to most expensive — any failure eliminates the pool immediately:
 
 1. **GeckoTerminal discovery** — trending Solana tokens across all DEXes (~40 tokens, 2 pages)
-2. **Dexscreener volume** — 5m cross-DEX volume filter (`minVolume`)
-3. **mcap pre-filter** — from GeckoTerminal data
-4. **OKX** — bundle %, honeypot check (moved to step 4, combined with step below)
-5. **Meteora Pool Discovery** — find DLMM pool; filter by TVL, `fee_active_tvl_ratio` (1d), bin_step, organic score, holders, mcap, token age
 2. **Blacklists** — `token-blacklist.json` (mints) and `dev-blocklist.json` (deployer addresses)
-3. **Token volume filter** — actual last-5m volume across ALL DEXes via Dexscreener (`volume.m5` summed per token). Accurate for tokens as young as 1 hour — no 24h averaging
-4. **OKX DEX filter** — honeypot detection, bundle % check, creator address cross-check
-5. **Jupiter token safety** — top 10 holder concentration (`maxTop10Pct`), bot holder % (`maxBotHoldersPct`), min fees SOL (`minTokenFeesSol`)
-6. **ATH proximity filter** (optional) — skip tokens too close to ATH (configurable `athFilterPct`)
-7. **Fibonacci signal filter** — Fib zone, volume profile, EMA, RSI, ATR (most expensive — only runs on tokens that passed all above)
-8. **Auto-backtest filter** (optional) — historical win rate check on each candidate before deploy
+3. **Dexscreener volume** — actual last-5m volume across ALL DEXes (`minVolume`)
+4. **mcap pre-filter** — from GeckoTerminal data (`minMcap` / `maxMcap`)
+5. **OKX DEX filter** — honeypot detection, bundle % check, creator address cross-check
+6. **Jupiter token safety** — top 10 holder concentration, bot holder %, cumulative fees SOL (`minTokenFeesSol`)
+7. **Meteora Pool Discovery** — find DLMM pool; filter by TVL, `fee_active_tvl_ratio` (1d timeframe), bin_step, organic score, holders, mcap, token age
+8. **ATH proximity filter** (optional) — skip tokens too close to ATH (`athFilterPct`)
+9. **Fibonacci signal filter** — Fib zone, EMA, RSI, ATR, confluenceScore gate (most expensive — runs last)
+10. **Auto-backtest filter** (optional) — historical win rate check on each candidate before deploy
 
 ---
 
@@ -88,13 +87,36 @@ Prospera includes a built-in backtesting engine (`backtest.js`) that replays Fib
 Every night at 02:00, Prospera automatically:
 1. Fetches up to 8 recently closed pools (last 7 days)
 2. Runs backtest + parameter sweep on each
-3. Sends a Telegram report with results and optimization suggestions
+3. Evaluates consensus across pools
+4. If criteria are met, sends a **Telegram proposal** for confirmation
 
 **Parameter sweep** tests 16 combinations of:
 - RSI minimum threshold: `40 / 44 / 48 / 52`
 - Confluence score minimum: `0.25 / 0.30 / 0.35 / 0.40`
 
-The sweep is pure CPU (no extra API calls) and ranks combinations by win rate + avg PnL. Suggestions are cross-pool consensus — e.g. "RSI min 44 performed better in 3/5 pools". Changes are **informational only** — you decide whether to apply them via `update_config`.
+### Conservative Auto-Apply Rules
+
+A sweep result is proposed (not immediately applied) only if **all** of these conditions are met:
+
+| Guard | Value |
+|-------|-------|
+| Win rate improvement vs baseline | ≥ +7% average across pools |
+| Majority consensus | > 50% of tested pools agree |
+| Max RSI change per run | ±4 points |
+| Max confluence change per run | ±0.05 |
+
+When conditions are met, Prospera sends a Telegram preview:
+
+```
+🔬 Sweep proposal (WR +12%, 4 pools):
+  rsiMin: 48 → 44
+  minConfluenceScore: 0.30 → 0.35
+
+Ketik /apply_sweep untuk apply, /reject_sweep untuk batalkan.
+Config lama akan di-backup otomatis sebelum di-apply.
+```
+
+Reply `/apply_sweep` to apply (old config is backed up as `user-config.YYYYMMDD.backup.json`), or `/reject_sweep` to cancel.
 
 ### On-Demand via Telegram
 
@@ -103,9 +125,6 @@ The sweep is pure CPU (no extra API calls) and ranks combinations by win rate + 
 /backtest 30d    — last 30 days
 /backtest all    — all time
 ```
-
-Or ask the LLM directly:
-> "backtest pool `<address>` bin_step 100 fee 1.0"
 
 ### Backtest Parameters
 
@@ -156,6 +175,36 @@ Capped by `maxDeployAmount` (default 50 SOL).
 
 ---
 
+## Crash Recovery & Health Check
+
+### Self-Healing
+
+Prospera catches unhandled errors at the process level:
+
+- **`uncaughtException`** — logs error, sends Telegram alert, graceful shutdown → PM2 auto-restarts
+- **`unhandledRejection`** — logs + Telegram warning, process continues
+
+PM2 is configured via `ecosystem.config.cjs`:
+
+```js
+restart_delay: 5000   // wait 5s before restart
+max_restarts: 10      // cap burst restarts
+min_uptime: 10s       // must survive 10s to count as stable
+```
+
+### Health Check HTTP Server
+
+Runs on port `3000` (configurable via `HEALTH_PORT` env var):
+
+| Endpoint | Returns |
+|----------|---------|
+| `GET /health` | `status`, `uptime_seconds`, last screening/management timestamps |
+| `GET /status` | + open positions count, error count, wallet SOL, busy flags |
+
+Use [UptimeRobot](https://uptimerobot.com) (free) to ping `/health` every 5 minutes and get notified if the agent goes down.
+
+---
+
 ## Darwinian Signal Weighting
 
 Self-learning system that tracks which entry signals historically predict profitable trades.
@@ -169,7 +218,7 @@ Self-learning system that tracks which entry signals historically predict profit
 4. Signals with lower values in wins → weight −0.05 (min 0.3)
 5. Weights are injected into the SCREENER prompt: `⬆ strong`, `→ neutral`, `⬇ weak`
 
-The LLM naturally prioritises ⬆ signals when selecting among candidates. Weights evolve continuously as more positions close. Stored in `signal-weights.json`.
+The LLM naturally prioritises ⬆ signals when selecting among candidates. Stored in `signal-weights.json`.
 
 ---
 
@@ -203,25 +252,27 @@ Four built-in strategy presets. Switch via `apply_strategy`:
 ## Architecture
 
 ```
-index.js              Main entry: REPL + cron + Telegram bot
+index.js              Main entry: REPL + cron + Telegram bot + health server
 agent.js              ReAct loop (OpenRouter LLM → tool call → repeat)
 backtest.js           Backtesting engine: historical OHLCV replay + PnL simulation
 config.js             Runtime config + tiered deploy amount logic
 prompt.js             System prompts per role (SCREENER / MANAGER / GENERAL)
 state.js              Position registry, trailing TP, PnL tracking
-lessons.js            Learning engine: performance → threshold evolution
+lessons.js            Learning engine: performance → threshold evolution (binsByStep)
 pool-memory.js        Per-pool deploy history + snapshots
 smart-wallets.js      Smart money tracker with self-learning auto-promotion
 strategy-library.js   Strategy presets (fibonacci / conservative / aggressive / trending)
+signal-weights.js     Darwinian adaptive signal weights
+ecosystem.config.cjs  PM2 config: autorestart, restart_delay, max_restarts
 
 tools/
-  chart.js            Signal engine: GeckoTerminal OHLCV + Fib (ATH-based) + VP + EMA + RSI + ATR
+  chart.js            Signal engine: GeckoTerminal OHLCV + Fib (ATH-based) + EMA + RSI + ATR
   screening.js        Pool discovery + multi-layer filters + Fib signal + smart wallet check
   definitions.js      Tool schemas (OpenAI function-calling format)
   executor.js         Tool dispatch + safety checks + post-close hooks
   dlmm.js             Meteora DLMM SDK (deploy, close, claim, positions)
   wallet.js           SOL/token balances + Jupiter swap
-  okx.js              OKX DEX Web3 API (honeypot, bundle %, ATH price, smart money)
+  okx.js              OKX DEX Web3 API (honeypot, bundle %, ATH price)
   token.js            Jupiter DataAPI (bot holders, top10, fees SOL)
   study.js            LPAgent API integration for real-time PnL
 ```
@@ -238,25 +289,17 @@ tools/
 
 ---
 
-## Available Tools (23)
+## Telegram Commands
 
-**Screening:** `get_chart_candidates`, `get_pool_detail`
-
-**Deployment:** `get_active_bin`, `deploy_position`
-
-**Management:** `get_my_positions`, `get_position_pnl`, `claim_fees`, `close_position`, `set_position_note`
-
-**Wallet:** `get_wallet_balance`, `swap_token`, `get_wallet_positions`
-
-**Token Safety:** `get_token_holders`, `get_token_info`
-
-**Smart Wallets:** `add_smart_wallet`, `remove_smart_wallet`, `list_smart_wallets`, `get_smart_wallet_stats`
-
-**Strategy:** `list_strategies`, `apply_strategy`
-
-**Backtesting:** `run_backtest` (manual per-pool; periodic sweep runs automatically at 02:00)
-
-**Config & Learning:** `update_config`
+| Command | Description |
+|---------|-------------|
+| `/status` | Agent uptime, wallet balance, open positions, last cycle times |
+| `/positions` | List open positions with PnL |
+| `/close <n>` | Close position by number |
+| `/set <n> <note>` | Set instruction for a position |
+| `/backtest [7d\|30d\|all]` | Run periodic backtest on recently closed pools |
+| `/apply_sweep` | Apply pending sweep proposal (after Telegram preview) |
+| `/reject_sweep` | Cancel pending sweep proposal |
 
 ---
 
@@ -267,7 +310,7 @@ tools/
 | Management | Every 3 minutes |
 | Screening | Every 15 minutes |
 | Morning Briefing | Daily at 08:00 |
-| Periodic Backtest | Daily at 02:00 |
+| Periodic Backtest + Sweep | Daily at 02:00 |
 
 ---
 
@@ -280,22 +323,12 @@ tools/
 | `OPENROUTER_API_KEY` | Yes | LLM API key (OpenRouter) |
 | `LPAGENT_API_KEY` | Yes | LPAgent primary API key (real-time PnL) |
 | `LPAGENT_API_KEY_BACKUP` | No | LPAgent backup key — instant failover if primary fails |
-| `TELEGRAM_BOT_TOKEN` | No | Telegram notifications |
+| `TELEGRAM_BOT_TOKEN` | No | Telegram notifications + command interface |
 | `TELEGRAM_CHAT_ID` | No | Telegram chat target |
 | `HELIUS_API_KEY` | No | Auto-added as RPC fallback if set |
+| `HEALTH_PORT` | No | Health check HTTP server port (default: 3000) |
 
 ### RPC Failover
-
-Prospera automatically fails over to backup RPC endpoints when the primary is unavailable. Configure fallbacks in `user-config.json`:
-
-```json
-"rpcFallbacks": [
-  "https://solana-mainnet.g.alchemy.com/v2/YOUR_KEY",
-  "https://rpc.ankr.com/solana",
-  "https://solana-rpc.publicnode.com",
-  "https://api.mainnet-beta.solana.com"
-]
-```
 
 | Priority | Provider | Notes |
 |----------|----------|-------|
@@ -305,7 +338,7 @@ Prospera automatically fails over to backup RPC endpoints when the primary is un
 | Fallback 3 | PublicNode | Reliable public endpoint |
 | Last Resort | Official Solana | Always up, slowest under congestion |
 
-Automatically resets to primary after 5 minutes of stability. `HELIUS_API_KEY` is auto-added as a fallback if set.
+Automatically resets to primary after 5 minutes of stability.
 
 ---
 
@@ -316,12 +349,11 @@ cp .env.example .env
 # fill in WALLET_PRIVATE_KEY, RPC_URL, OPENROUTER_API_KEY, LPAGENT_API_KEY
 
 npm install
-node index.js
 ```
 
-With PM2:
+With PM2 (recommended):
 ```bash
-pm2 start index.js --name prospera
+pm2 start ecosystem.config.cjs
 pm2 save
 pm2 logs prospera
 ```
@@ -339,22 +371,25 @@ DRY_RUN=true node index.js
 |-----|---------|-------------|
 | `maxPositions` | 2 | Max concurrent open positions |
 | `minBinStep` / `maxBinStep` | 80 / 200 | Pool bin step range |
-| `minVolume` | 20000 | Min actual 5m volume across all DEXes ($) — sourced from Dexscreener |
-| `minFeeActiveTvlRatio` | 0.05 | Min fee/active TVL ratio for Meteora pool (evaluated on 1d timeframe) |
-| `minMcap` / `maxMcap` | 150k / 10M | Token market cap range |
-| `minTokenAgeHours` / `maxTokenAgeHours` | 1 / 1440 | Token age range (1h – 2 months) |
+| `minVolume` | 20000 | Min actual 5m volume across all DEXes ($) |
+| `minFeeActiveTvlRatio` | 0.05 | Min fee/active TVL ratio for Meteora pool (1d timeframe) |
+| `minMcap` / `maxMcap` | 150k / 5M | Token market cap range |
+| `minTvl` / `maxTvl` | 5000 / 300000 | Pool TVL range ($) |
+| `minTokenAgeHours` / `maxTokenAgeHours` | 1 / 1440 | Token age range |
+| `minTokenFeesSol` | 30 | Min cumulative fees in SOL (Jupiter — tips + priority + trading) |
+| `rsiMin` | 48 | Minimum RSI for entry signal (auto-tuned by backtest sweep) |
+| `minConfluenceScore` | 0 | Minimum confluence score gate (auto-tuned by backtest sweep) |
 | `stopLossPct` | −20 | Stop loss threshold |
 | `takeProfitMaxPct` | 25 | Auto take-profit threshold |
 | `takeProfitFeePct` | 5 | LLM decision zone starts here |
+| `partialHarvestPct` | 10 | Auto-close at this PnL to lock gains (set null to disable) |
 | `outOfRangeBinsToClose` | 20 | OOR bin distance to trigger close |
 | `maxBundlePct` | 30 | Max bundle % (OKX filter) |
-| `maxTop10Pct` | 20 | Max top 10 holders concentration % (Jupiter) |
-| `maxBotHoldersPct` | 30 | Max bot holder % (Jupiter) |
-| `minTokenFeesSol` | 30 | Min fees earned in SOL (Jupiter — cumulative: tips + priority + trading fees) |
+| `maxTop10Pct` | 20 | Max top 10 holders concentration % |
+| `maxBotHoldersPct` | 30 | Max bot holder % |
 | `rpcFallbacks` | [] | Ordered list of fallback RPC endpoints |
 | `fibConfluenceRequired` | true | Require Fib confluence for entry |
 | `candleLimit` | 100 | OHLCV candles for analysis |
-| `partialHarvestPct` | 10 | Auto-close PnL threshold between soft TP and max TP — locks gains early (set null to disable) |
-| `autoBacktest` | false | Enable pre-deploy backtest filter (optional — periodic cron runs regardless) |
+| `autoBacktest` | false | Enable pre-deploy backtest filter |
 | `minBacktestWinRate` | 0.50 | Minimum win rate to pass pre-deploy filter |
 | `backtestAggregate` | 15 | Candle size for backtest (minutes) |
