@@ -48,14 +48,12 @@ Base score from price position (0.6 weight) + POC volume strength (0.4 weight).
 | Primary zone | +0.10 |
 | Hidden Bullish Divergence | +0.15 |
 | RSI slope > 3 | +0.05 |
-| Price action support below Fib 0.618 found | +0.15 |
-| No price action support found (fib zone only) | −0.20 |
 | Smart wallet present in pool | +0.10 |
 
 ### bins_below Calculation
 
 - **ATH Zone**: calculated from Fib 0.236 → Fib 0.618 (range sits below current price, ready for pullback)
-- **Fib Zone**: calculated from current price → nearest swing low below Fib 0.618 minus one ATR buffer. Falls back to Fib 0.786 if no swing low found.
+- **Fib Zone**: calculated from current price → Fib 0.786 minus one ATR buffer.
 
 Clamped to [35, 90]. `bins_above` is always 0.
 
