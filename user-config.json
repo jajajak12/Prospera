@@ -16,10 +16,10 @@
   "maxBundlePct": 30,
   "maxBotHoldersPct": 30,
   "maxTop10Pct": 20,
-  "minTokenFeesSol": 25,
+  "minTokenFeesSol": 30,
   "athFilterPct": null,
   "minMcap": 150000,
-  "maxMcap": 10000000,
+  "maxMcap": 5000000,
   "minVolume": 20000,
   "minBinStep": 80,
   "maxBinStep": 200,
@@ -54,5 +54,6 @@
   "minBacktestWinRate": 0.5,
   "backtestAggregate": 15,
   "_lastStrategyApplied": "2026-04-01T07:52:23.022Z",
-  "_lastAgentTune": "2026-04-02T09:25:29.039Z"
+  "_lastAgentTune": "2026-04-02T11:21:11.968Z",
+  "maxTvl": 300000
 }
