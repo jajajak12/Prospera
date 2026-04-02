@@ -45,8 +45,8 @@ async function fetchWithKey(walletAddress, apiKey) {
 /**
  * Fetch open LP positions for a wallet.
  * Strategy:
- *   - Try primary key up to 3 times (with backoff)
- *   - If all 3 fail, try backup key once
+ *   - Try primary key once
+ *   - If primary fails (any error incl. 429), immediately try backup key
  *   - If backup also fails, return null → caller skips cycle
  *
  * Returns raw data array, [] for empty, or null if all keys fail.
@@ -57,28 +57,21 @@ export async function fetchLPAgentOpenPositions(walletAddress) {
     return null;
   }
 
-  // ── Primary key: up to 3 attempts ────────────────────────────
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const result = await fetchWithKey(walletAddress, LPAGENT_PRIMARY);
-    if (result !== null) return result; // success (including [])
+  // ── Primary key ───────────────────────────────────────────────
+  const primary = await fetchWithKey(walletAddress, LPAGENT_PRIMARY);
+  if (primary !== null) return primary;
 
-    if (attempt < 3) {
-      console.log(`[LPAGENT] Primary key attempt ${attempt}/3 failed — retrying in ${attempt * 2}s...`);
-      await new Promise(r => setTimeout(r, attempt * 2000));
-    }
-  }
-
-  // ── Backup key: 1 attempt ─────────────────────────────────────
+  // ── Backup key (immediate failover) ───────────────────────────
   if (LPAGENT_BACKUP) {
-    console.log("[LPAGENT] Primary key failed 3x — trying backup key...");
-    const result = await fetchWithKey(walletAddress, LPAGENT_BACKUP);
-    if (result !== null) {
+    console.log("[LPAGENT] Primary key failed — trying backup key...");
+    const backup = await fetchWithKey(walletAddress, LPAGENT_BACKUP);
+    if (backup !== null) {
       console.log("[LPAGENT] Backup key succeeded");
-      return result;
+      return backup;
     }
-    console.error("[LPAGENT] Backup key also failed — skipping cycle");
+    console.error("[LPAGENT] Both keys failed — skipping cycle");
   } else {
-    console.error("[LPAGENT] Primary key failed 3x, no backup key set — skipping cycle");
+    console.error("[LPAGENT] Primary key failed, no backup key set — skipping cycle");
   }
 
   return null;
