@@ -1,6 +1,7 @@
 {
   "preset": "fibonacci",
   "rpcUrl": "",
+  "rpcFallbacks": [],
   "deployAmountSol": 0.5,
   "maxPositions": 2,
   "minSolToOpen": 0.6,

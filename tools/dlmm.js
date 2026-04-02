@@ -1,5 +1,4 @@
 import {
-  Connection,
   Keypair,
   PublicKey,
   sendAndConfirmTransaction,
@@ -8,6 +7,7 @@ import BN from "bn.js";
 import bs58 from "bs58";
 import { config } from "../config.js";
 import { log } from "../logger.js";
+import { getConnection, withRpcFallback, reportRpcSuccess, reportRpcError } from "../rpc.js";
 import {
   trackPosition,
   markOutOfRange,
@@ -39,18 +39,8 @@ async function getDLMM() {
   return { DLMM: _DLMM, StrategyType: _StrategyType };
 }
 
-// ─── Lazy wallet/connection init ──────────────────────────────
-// Avoids crashing on import when WALLET_PRIVATE_KEY is not yet set
-// (e.g. during screening-only tests).
-let _connection = null;
+// ─── Lazy wallet init ─────────────────────────────────────────
 let _wallet = null;
-
-function getConnection() {
-  if (!_connection) {
-    _connection = new Connection(process.env.RPC_URL, "confirmed");
-  }
-  return _connection;
-}
 
 function getWallet() {
   if (!_wallet) {
@@ -180,10 +170,11 @@ export async function deployPosition({
   const isWideRange = totalBins > 69;
   const newPosition = Keypair.generate();
 
-  log("deploy", `Pool: ${pool_address}`);
-  log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins${isWideRange ? " — WIDE RANGE" : ""})`);
-  log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`);
-  log("deploy", `Position: ${newPosition.publicKey.toString()}`);
+  const deployCtx = { pool: pool_address, pair: pool_name };
+  log("deploy", `Pool: ${pool_address}`, deployCtx);
+  log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins${isWideRange ? " — WIDE RANGE" : ""})`, deployCtx);
+  log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`, deployCtx);
+  log("deploy", `Position: ${newPosition.publicKey.toString()}`, deployCtx);
 
   try {
     const txHashes = [];
@@ -205,7 +196,7 @@ export async function deployPosition({
       const createTxArray = Array.isArray(createTxs) ? createTxs : [createTxs];
       for (let i = 0; i < createTxArray.length; i++) {
         const signers = i === 0 ? [wallet, newPosition] : [wallet];
-        const txHash = await sendAndConfirmTransaction(getConnection(), createTxArray[i], signers);
+        const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, createTxArray[i], signers), "deploy:create");
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
@@ -221,7 +212,7 @@ export async function deployPosition({
       });
       const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
       for (let i = 0; i < addTxArray.length; i++) {
-        const txHash = await sendAndConfirmTransaction(getConnection(), addTxArray[i], [wallet]);
+        const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, addTxArray[i], [wallet]), "deploy:add_liquidity");
         txHashes.push(txHash);
         log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
       }
@@ -235,11 +226,11 @@ export async function deployPosition({
         strategy: { maxBinId, minBinId, strategyType },
         slippage: 1000, // 10% in bps
       });
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet, newPosition]);
+      const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet, newPosition]), "deploy:standard");
       txHashes.push(txHash);
     }
 
-    log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}`);
+    log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}`, deployCtx);
 
     _positionsCacheAt = 0;
     trackPosition({
@@ -534,7 +525,7 @@ export async function claimFees({ position_address }) {
 
     const txHashes = [];
     for (const tx of txs) {
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
+      const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet]), "claim");
       txHashes.push(txHash);
     }
     log("claim", `SUCCESS txs: ${txHashes.join(", ")}`);
@@ -558,7 +549,8 @@ export async function closePosition({ position_address, reason }) {
   const tracked = getTrackedPosition(position_address);
 
   try {
-    log("close", `Closing position: ${position_address}`);
+    const closeCtx = { position: position_address, pool: tracked?.pool, pair: tracked?.pool_name, reason };
+    log("close", `Closing position: ${position_address}`, closeCtx);
     const wallet = getWallet();
     const poolAddress = await lookupPoolForPosition(position_address, wallet.publicKey.toString());
     // Clear cached pool so SDK loads fresh position fee state
@@ -573,9 +565,9 @@ export async function closePosition({ position_address, reason }) {
     const recentlyClaimed = tracked?.last_claim_at && (Date.now() - new Date(tracked.last_claim_at).getTime()) < 60_000;
     try {
       if (recentlyClaimed) {
-        log("close", `Step 1: Skipping claim — fees already claimed ${Math.round((Date.now() - new Date(tracked.last_claim_at).getTime()) / 1000)}s ago`);
+        log("close", `Step 1: Skipping claim — fees already claimed ${Math.round((Date.now() - new Date(tracked.last_claim_at).getTime()) / 1000)}s ago`, closeCtx);
       } else {
-        log("close", `Step 1: Claiming fees for ${position_address}`);
+        log("close", `Step 1: Claiming fees for ${position_address}`, closeCtx);
         const positionData = await pool.getPosition(positionPubKey);
         const claimTxs = await pool.claimSwapFee({
           owner: wallet.publicKey,
@@ -583,7 +575,7 @@ export async function closePosition({ position_address, reason }) {
         });
         if (claimTxs && claimTxs.length > 0) {
           for (const tx of claimTxs) {
-            const claimHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
+            const claimHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet]), "close:claim");
             txHashes.push(claimHash);
           }
           log("close", `Step 1 OK: ${txHashes.join(", ")}`);
@@ -594,7 +586,7 @@ export async function closePosition({ position_address, reason }) {
     }
 
     // ─── Step 2: Remove Liquidity & Close ──────────────────────
-    log("close", `Step 2: Removing liquidity and closing account`);
+    log("close", `Step 2: Removing liquidity and closing account`, closeCtx);
     const closeTx = await pool.removeLiquidity({
       user: wallet.publicKey,
       position: positionPubKey,
@@ -605,10 +597,10 @@ export async function closePosition({ position_address, reason }) {
     });
 
     for (const tx of Array.isArray(closeTx) ? closeTx : [closeTx]) {
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
+      const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet]), "close:remove_liquidity");
       txHashes.push(txHash);
     }
-    log("close", `SUCCESS txs: ${txHashes.join(", ")}`);
+    log("close", `SUCCESS txs: ${txHashes.join(", ")}`, closeCtx);
     // Wait for RPC to reflect withdrawn balances before returning — prevents
     // agent from seeing zero balance when attempting post-close swap
     await new Promise(r => setTimeout(r, 5000));

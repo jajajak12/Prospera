@@ -1,5 +1,4 @@
 import {
-  Connection,
   PublicKey,
   LAMPORTS_PER_SOL,
   VersionedTransaction,
@@ -8,14 +7,9 @@ import {
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { getConnection } from "../rpc.js";
 
-let _connection = null;
 let _wallet = null;
-
-function getConnection() {
-  if (!_connection) _connection = new Connection(process.env.RPC_URL, "confirmed");
-  return _connection;
-}
 
 function getWallet() {
   if (!_wallet) {

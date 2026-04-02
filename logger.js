@@ -14,8 +14,12 @@ if (!fs.existsSync(LOG_DIR)) {
 
 /**
  * General log function.
+ *
+ * @param {string} category
+ * @param {string} message
+ * @param {Object} [ctx] - Optional context: { pool, position, pair, reason, token, step }
  */
-export function log(category, message) {
+export function log(category, message, ctx = null) {
   const level = category.includes("error") ? "error"
     : category.includes("warn") ? "warn"
     : "info";
@@ -23,7 +27,21 @@ export function log(category, message) {
   if (LEVELS[level] < currentLevel) return;
 
   const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] [${category.toUpperCase()}] ${message}`;
+
+  // Build context suffix
+  let ctxStr = "";
+  if (ctx && typeof ctx === "object") {
+    const parts = [];
+    if (ctx.pair)     parts.push(`pair=${ctx.pair}`);
+    if (ctx.pool)     parts.push(`pool=${ctx.pool.slice(0, 8)}`);
+    if (ctx.position) parts.push(`pos=${ctx.position.slice(0, 8)}`);
+    if (ctx.token)    parts.push(`token=${ctx.token.slice(0, 8)}`);
+    if (ctx.reason)   parts.push(`reason=${ctx.reason}`);
+    if (ctx.step)     parts.push(`step=${ctx.step}`);
+    if (parts.length) ctxStr = ` | ${parts.join(" ")}`;
+  }
+
+  const line = `[${timestamp}] [${category.toUpperCase()}] ${message}${ctxStr}`;
 
   // Console output
   console.log(line);
