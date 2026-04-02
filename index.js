@@ -13,8 +13,14 @@
  */
 
 import "dotenv/config";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import cron from "node-cron";
 import readline from "readline";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
@@ -562,11 +568,37 @@ async function runPeriodicBacktest() {
       const curRsi   = 48;
       const curConf  = config.screening.minConfluenceScore ?? 0.30;
 
-      if (bestRsi && Number(bestRsi[0]) !== curRsi) {
-        suggestions.push(`Sweep: RSI min ${curRsi} → ${bestRsi[0]} (konsensus ${bestRsi[1]}/${sweepable.length} pools)`);
+      // Auto-apply sweep consensus if majority agrees (>50% of pools)
+      const applied = {};
+      const majority = sweepable.length >= 2 ? Math.ceil(sweepable.length * 0.5) : 2;
+
+      if (bestRsi && Number(bestRsi[0]) !== curRsi && bestRsi[1] >= majority) {
+        applied.rsiMin = Number(bestRsi[0]);
+        suggestions.push(`✅ RSI min auto-applied: ${curRsi} → ${bestRsi[0]} (konsensus ${bestRsi[1]}/${sweepable.length} pools)`);
+      } else if (bestRsi && Number(bestRsi[0]) !== curRsi) {
+        suggestions.push(`Sweep: RSI min ${curRsi} → ${bestRsi[0]} — konsensus lemah (${bestRsi[1]}/${sweepable.length}), tidak di-apply`);
       }
-      if (bestConf && Math.abs(Number(bestConf[0]) - curConf) >= 0.05) {
-        suggestions.push(`Sweep: confluence min ${curConf} → ${bestConf[0]} (konsensus ${bestConf[1]}/${sweepable.length} pools)`);
+
+      if (bestConf && Math.abs(Number(bestConf[0]) - curConf) >= 0.05 && bestConf[1] >= majority) {
+        applied.minConfluenceScore = Number(bestConf[0]);
+        suggestions.push(`✅ Confluence min auto-applied: ${curConf} → ${bestConf[0]} (konsensus ${bestConf[1]}/${sweepable.length} pools)`);
+      } else if (bestConf && Math.abs(Number(bestConf[0]) - curConf) >= 0.05) {
+        suggestions.push(`Sweep: confluence min ${curConf} → ${bestConf[0]} — konsensus lemah (${bestConf[1]}/${sweepable.length}), tidak di-apply`);
+      }
+
+      if (Object.keys(applied).length > 0) {
+        try {
+          let userCfg = {};
+          if (fs.existsSync(USER_CONFIG_PATH)) {
+            userCfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+          }
+          Object.assign(userCfg, applied, { _lastAgentTune: new Date().toISOString() });
+          fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userCfg, null, 2));
+          reloadScreeningThresholds();
+          log("cron", `Sweep auto-applied: ${JSON.stringify(applied)}`);
+        } catch (e) {
+          log("cron", `Sweep auto-apply failed: ${e.message}`);
+        }
       }
     }
 

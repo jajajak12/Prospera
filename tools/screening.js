@@ -403,7 +403,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       // GeckoTerminal pool from discovery (may be any DEX) used for OHLCV candles.
       // Meteora pool address used as fallback if geckoPoolAddress is unavailable.
       const gtPool = token.geckoPoolAddress || pool.pool;
-      return analyzeSignal(gtPool, binStep, currentPrice, s.candleLimit ?? 50);
+      return analyzeSignal(gtPool, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? 48 });
     })
   );
 
@@ -478,13 +478,26 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     }
   }
 
-  // Sort by confluence score descending
-  candidates.sort((a, b) => (b.fib_signal.confluenceScore ?? 0) - (a.fib_signal.confluenceScore ?? 0));
+  // Filter by minConfluenceScore if configured
+  const minConf = s.minConfluenceScore ?? 0;
+  const beforeConf = candidates.length;
+  const filtered = minConf > 0
+    ? candidates.filter(c => {
+        if ((c.fib_signal.confluenceScore ?? 0) < minConf) {
+          log("screening", `  ${c.name}: SKIP — confluenceScore ${c.fib_signal.confluenceScore} < min ${minConf}`);
+          return false;
+        }
+        return true;
+      })
+    : candidates;
 
-  log("screening", `Fibonacci filter: ${candidates.length}/${withPool.length} pools passed`);
+  // Sort by confluence score descending
+  filtered.sort((a, b) => (b.fib_signal.confluenceScore ?? 0) - (a.fib_signal.confluenceScore ?? 0));
+
+  log("screening", `Fibonacci filter: ${filtered.length}/${withPool.length} pools passed${minConf > 0 && filtered.length < beforeConf ? ` (${beforeConf - filtered.length} below minConfluenceScore ${minConf})` : ""}`);
 
   return {
-    candidates,
+    candidates: filtered,
     total_screened: geckoTokens.length,
     fib_analyzed:   withPool.length,
     fib_passed:     candidates.length,

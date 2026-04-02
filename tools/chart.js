@@ -416,7 +416,7 @@ function calcBinsAbove(currentPrice, targetPrice, binStep) {
  * @param {number} candleLimit
  * @returns {Promise<SignalResult>}
  */
-export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLimit = 50) {
+export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLimit = 50, opts = {}) {
   // ── Fetch OHLCV (1m for indicators) + Daily (for ATH-based Fibonacci) ──────
   let candles, dailyCandles;
   try {
@@ -522,10 +522,11 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
   }
 
   // ── Check 4: RSI Momentum ──────────────────────────────────────────────────
+  const rsiMin = opts.rsiMin ?? 48;
   if (rsi != null) {
-    if (rsi < 48) {
+    if (rsi < rsiMin) {
       return skip(
-        `RSI momentum weak — RSI=${rsi.toFixed(1)} < 48. Pullback lacks bullish momentum.`,
+        `RSI momentum weak — RSI=${rsi.toFixed(1)} < ${rsiMin}. Pullback lacks bullish momentum.`,
         currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
       );
     }

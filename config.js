@@ -175,6 +175,8 @@ export function reloadScreeningThresholds() {
     if (fresh.autoBacktest          !== undefined) s.autoBacktest      = fresh.autoBacktest;
     if (fresh.minBacktestWinRate    != null)       s.minBacktestWinRate = fresh.minBacktestWinRate;
     if (fresh.backtestAggregate     != null)       s.backtestAggregate  = fresh.backtestAggregate;
+    if (fresh.rsiMin                != null)       s.rsiMin             = fresh.rsiMin;
+    if (fresh.minConfluenceScore    != null)       s.minConfluenceScore = fresh.minConfluenceScore;
     if (fresh.binsExtraLow  != null) config.strategy.binsExtraLow  = fresh.binsExtraLow;
     if (fresh.binsExtraMid  != null) config.strategy.binsExtraMid  = fresh.binsExtraMid;
     if (fresh.binsExtraHigh != null) config.strategy.binsExtraHigh = fresh.binsExtraHigh;
