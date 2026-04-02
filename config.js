@@ -73,6 +73,8 @@ export const config = {
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.1,
     positionSizePct:       u.positionSizePct       ?? 0.35,
+    // Partial harvest — auto-close at this PnL% (between soft TP and max TP). null = disabled.
+    partialHarvestPct:     u.partialHarvestPct     ?? 10,
     // Trailing take-profit (disabled by default for Fibonacci strategy)
     trailingTakeProfit:    u.trailingTakeProfit    ?? false,
     trailingTriggerPct:    u.trailingTriggerPct    ?? 5,
@@ -178,5 +180,6 @@ export function reloadScreeningThresholds() {
     if (fresh.binsExtraMid  != null) config.strategy.binsExtraMid  = fresh.binsExtraMid;
     if (fresh.binsExtraHigh != null) config.strategy.binsExtraHigh = fresh.binsExtraHigh;
     if (fresh.binsByStep    != null) config.strategy.binsByStep    = fresh.binsByStep;
+    if (fresh.partialHarvestPct !== undefined) config.management.partialHarvestPct = fresh.partialHarvestPct;
   } catch { /* ignore */ }
 }

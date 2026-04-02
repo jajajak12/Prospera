@@ -37,6 +37,7 @@
   "minTvl": 5000,
   "maxSteps": 12,
   "positionSizePct": 0.35,
+  "partialHarvestPct": 10,
   "trailingTakeProfit": false,
   "binsExtraLow": 0,
   "binsExtraMid": 0,

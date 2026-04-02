@@ -126,10 +126,13 @@ Or ask the LLM directly:
 |-----------|--------|
 | PnL ≤ −20% | Mandatory close (stop loss) |
 | PnL ≥ 25% | Mandatory close (auto take-profit) |
+| PnL ≥ 10% (partial harvest) | Mandatory close — lock gains, let screening redeploy if still valid |
 | OOR > 10 min AND active bin > 20 bins out | Mandatory close (left Fib zone) |
 | Fee/TVL < 1% after 60 min | Mandatory close (low yield) |
-| PnL 5%–25% | LLM evaluates: hold or close based on volume/momentum |
+| PnL 5%–10% | LLM evaluates: hold or close based on volume/momentum |
 | Any PnL above stop loss | LLM may close on concrete deterioration signals |
+
+`partialHarvestPct` is configurable (default 10%). Set to `null` to disable.
 
 After any close, base token is automatically swapped back to SOL via Jupiter (skips tokens worth < $0.10).
 
@@ -146,6 +149,23 @@ Deploy size scales automatically with wallet balance:
 | +5 SOL per bracket | +1 SOL |
 
 Capped by `maxDeployAmount` (default 50 SOL).
+
+---
+
+## Darwinian Signal Weighting
+
+Self-learning system that tracks which entry signals historically predict profitable trades.
+
+**Signals tracked:** `organic_score`, `fee_tvl_ratio`, `volume_5m`, `confluence_score`, `fib_zone`, `bin_step`, `volatility`
+
+**How it works:**
+1. Every time a position closes with PnL ≥ +5% (win) or ≤ −5% (loss), a signal snapshot is saved
+2. After 6+ observations: for each signal, compare average normalised value in wins vs losses
+3. Signals with higher values in wins → weight +0.05 (max 2.5)
+4. Signals with lower values in wins → weight −0.05 (min 0.3)
+5. Weights are injected into the SCREENER prompt: `⬆ strong`, `→ neutral`, `⬇ weak`
+
+The LLM naturally prioritises ⬆ signals when selecting among candidates. Weights evolve continuously as more positions close. Stored in `signal-weights.json`.
 
 ---
 
@@ -305,6 +325,7 @@ DRY_RUN=true node index.js
 | `minTokenFeesSol` | 25 | Min fees earned in SOL (Jupiter) |
 | `fibConfluenceRequired` | true | Require Fib confluence for entry |
 | `candleLimit` | 100 | OHLCV candles for analysis |
+| `partialHarvestPct` | 10 | Auto-close PnL threshold between soft TP and max TP — locks gains early (set null to disable) |
 | `autoBacktest` | false | Enable pre-deploy backtest filter (optional — periodic cron runs regardless) |
 | `minBacktestWinRate` | 0.50 | Minimum win rate to pass pre-deploy filter |
 | `backtestAggregate` | 15 | Candle size for backtest (minutes) |

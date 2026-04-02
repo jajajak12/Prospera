@@ -15,6 +15,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { sendMessage } from "./telegram.js";
+import { updateSignalWeights } from "./signal-weights.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -60,7 +61,9 @@ function save(data) {
  * @param {number} perf.minutes_in_range
  * @param {number} perf.minutes_held
  * @param {string} perf.close_reason
- * @param {number} [perf.fib_entry_pct] - Where in Fib zone was entry (0=fib236, 100=fib618)
+ * @param {number} [perf.fib_entry_pct]     - Where in Fib zone was entry (0=fib236, 100=fib618)
+ * @param {number} [perf.confluence_score] - Fibonacci confluence score at entry (0-1)
+ * @param {string} [perf.fib_zone]         - ATH_ZONE / PRIMARY / SECONDARY
  */
 export async function recordPerformance(perf) {
   const data = load();
@@ -82,6 +85,9 @@ export async function recordPerformance(perf) {
   };
 
   data.performance.push(entry);
+
+  // Update Darwinian signal weights
+  updateSignalWeights(entry);
 
   const lesson = derivLesson(entry);
   if (lesson) {

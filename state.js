@@ -56,7 +56,9 @@ export function trackPosition({
   initial_value_usd,
   mcap,
   volume_5m,
-  fib_entry_pct = null,  // Where in fib zone was entry? (0% = fib236, 100% = fib618)
+  fib_entry_pct = null,     // Where in fib zone was entry? (0% = fib236, 100% = fib618)
+  confluence_score = null,  // Fibonacci confluence score at entry (0-1)
+  fib_zone = null,          // ATH_ZONE / PRIMARY / SECONDARY
 }) {
   const state = load();
   state.positions[position] = {
@@ -76,7 +78,9 @@ export function trackPosition({
     initial_value_usd,
     mcap,
     volume_5m,
-    fib_entry_pct,       // Fibonacci-specific: zone position at entry
+    fib_entry_pct,
+    confluence_score,
+    fib_zone,
     deployed_at: new Date().toISOString(),
     out_of_range_since: null,
     last_claim_at: null,

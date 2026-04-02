@@ -171,7 +171,13 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 2, reason: `hard take profit (${p.pnl_pct.toFixed(1)}% >= ${tpMax}%)` });
         continue;
       }
-      // Rule 2b: soft take profit — LLM decides
+      // Rule 2b: partial harvest — auto-close between soft TP and hard TP
+      const ph = config.management.partialHarvestPct;
+      if (ph && !pnlSuspect && p.pnl_pct != null && p.pnl_pct >= ph && p.pnl_pct < tpMax) {
+        actionMap.set(p.position, { action: "CLOSE", rule: "2b", reason: `partial harvest — locked ${p.pnl_pct.toFixed(1)}% gain (threshold: ${ph}%)` });
+        continue;
+      }
+      // Rule 2c: soft take profit — LLM decides
       if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct >= config.management.takeProfitFeePct) {
         actionMap.set(p.position, { action: "INSTRUCTION", rule: 2, reason: `PnL ${p.pnl_pct.toFixed(1)}% hit soft TP (${config.management.takeProfitFeePct}%). Close to lock gains OR provide reasoning to hold.` });
         continue;

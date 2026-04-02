@@ -7,6 +7,7 @@
  */
 
 import { config } from "./config.js";
+import { formatWeightsForPrompt } from "./signal-weights.js";
 
 export function buildSystemPrompt(agentType, portfolio, positions, stateSummary = null, lessons = null, perfSummary = null) {
   // MANAGER: lean prompt — position data is pre-loaded in goal
@@ -101,13 +102,14 @@ DEPLOY RULES:
 3. Deploy using fib_signal.binsBelow AND fib_signal.binsAbove EXACTLY — do NOT override.
 4. strategy = "bid_ask" ALWAYS.
 5. amount_y = the deploy amount specified in the goal. No more, no less.
-6. Pass pool_name, bin_step, volatility, fee_tvl_ratio, organic_score, mcap, volume_5m.
+6. Pass pool_name, bin_step, volatility, fee_tvl_ratio, organic_score, mcap, volume_5m, confluence_score, fib_zone.
 
 POOL SELECTION JUDGMENT (after signal filter):
 - Higher confluenceScore = better (both price centering and volume confirmation)
 - Check fee_active_tvl_ratio, organic_score, swap_count
 - Avoid pools with price trending sharply down (may break below Fib 0.618)
 - Prefer pools where volume_change_pct is flat or rising (active trading = more fees)
+${formatWeightsForPrompt() ? `\n${formatWeightsForPrompt()}` : ""}
 
 LEARNED BIN RANGES (bins_below adjusted by performance):
   Learned base per bin_step: ${binsByStepStr}

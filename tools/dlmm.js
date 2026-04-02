@@ -110,6 +110,8 @@ export async function deployPosition({
   initial_value_usd,
   mcap,
   volume_5m,
+  confluence_score,
+  fib_zone,
 }) {
   pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
@@ -256,6 +258,8 @@ export async function deployPosition({
       initial_value_usd,
       mcap,
       volume_5m,
+      confluence_score: confluence_score ?? null,
+      fib_zone: fib_zone ?? null,
     });
 
     const actualBinStep = pool.lbPair.binStep;
@@ -685,6 +689,8 @@ export async function closePosition({ position_address, reason }) {
         organic_score: tracked.organic_score || null,
         mcap: tracked.mcap || null,
         volume_5m: tracked.volume_5m || null,
+        confluence_score: tracked.confluence_score ?? null,
+        fib_zone: tracked.fib_zone ?? null,
         amount_sol: tracked.amount_sol,
         fees_earned_usd: feesUsd,
         final_value_usd: finalValueUsd,
