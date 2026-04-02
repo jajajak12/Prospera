@@ -100,6 +100,41 @@ export function detectSwing(candles) {
   return { swingHigh, swingLow, highIndex, lowIndex };
 }
 
+// ─── Price Action S/R Detection ──────────────────────────────────────────────
+
+/**
+ * Find local swing lows (support levels) from candle data.
+ * A swing low is a candle whose low is lower than `lookback` candles on each side.
+ */
+function findSwingLows(candles, lookback = 5) {
+  const levels = [];
+  for (let i = lookback; i < candles.length - lookback; i++) {
+    const price = candles[i].low;
+    let isLow = true;
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j !== i && candles[j].low <= price) { isLow = false; break; }
+    }
+    if (isLow) levels.push(price);
+  }
+  return levels;
+}
+
+/**
+ * Find local swing highs (resistance levels) from candle data.
+ */
+function findSwingHighs(candles, lookback = 5) {
+  const levels = [];
+  for (let i = lookback; i < candles.length - lookback; i++) {
+    const price = candles[i].high;
+    let isHigh = true;
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j !== i && candles[j].high >= price) { isHigh = false; break; }
+    }
+    if (isHigh) levels.push(price);
+  }
+  return levels;
+}
+
 // ─── Fibonacci Levels ────────────────────────────────────────────────────────
 
 /**
@@ -526,12 +561,23 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
   const rawPosition   = zoneWidth > 0 ? (fib.fib236 - currentPrice) / zoneWidth : 0.5;
   const pricePosition = Math.max(0, rawPosition); // clamp: ATH zone → 0
 
+  // ── Price Action S/R: find real support below Fib 0.618 ──────────────────
+  const dailySR    = dailyCandles ? [...findSwingLows(dailyCandles), ...findSwingHighs(dailyCandles)] : [];
+  const intradaySR = [...findSwingLows(candles), ...findSwingHighs(candles)];
+  const srLevels   = [...dailySR, ...intradaySR];
+
+  const supportsBelow = srLevels.filter(l => l < fib.fib618).sort((a, b) => b - a);
+  const nearestSupport = supportsBelow[0] ?? null;
+  const paConfluence   = nearestSupport != null;
+
   // ── bins_below ────────────────────────────────────────────────────────────
   // ATH zone: range starts at fib 0.236 (not current price) → fib 0.618
   //   All liquidity sits in the anticipated pullback zone, not above it.
-  // Fib zone: current price → fib 0.786
+  // Fib zone: current price → nearest support below fib618 (or fib786)
   const atrBuffer = atr ?? (fib.fib618 * binStepPct / 100);
-  const supportTarget = inAthZone ? fib.fib618 : fib.fib786;
+  const supportTarget = inAthZone
+    ? fib.fib618
+    : (nearestSupport ?? fib.fib786);
   const rangeTop  = inAthZone ? fib.fib236 : currentPrice;
   const binsBelow = calcBinsToTarget(rangeTop, supportTarget - atrBuffer, binStep);
 
@@ -549,6 +595,12 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
   if (inPrimaryZone)       score += 0.10;
   if (hasHiddenDivergence) score += 0.15;
   if (rsiSlope > 3)        score += 0.05;
+  // ATH zone: no PA penalty (we're pre-positioning, support below 618 not yet tested)
+  // Fib zone: +0.15 PA support found, −0.20 not found
+  if (!inAthZone) {
+    if (paConfluence) score += 0.15;
+    else              score -= 0.20;
+  }
 
   const confluenceScore = Math.round(Math.min(1, Math.max(0, score)) * 100) / 100;
 
@@ -562,6 +614,9 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     `EMA20>EMA50 ✓`,
     `Vol: POC=${pocInZone ? "in" : "out"} VAL=${valInZone ? "in" : "out"}`,
     `bins=${binsBelow}↓/${binsAbove}↑`,
+    paConfluence
+      ? `PA support ✓ @${fmt(nearestSupport)}`
+      : `PA support ✗ below 0.618 (score−0.20)`,
   ];
   if (hasHiddenDivergence) parts.push("HiddenDiv ✓");
   if (atrWarning)          parts.push(atrWarning);
@@ -574,6 +629,8 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     binsBelow,
     binsAbove,
     supportPrice:    Math.round(supportTarget * 1e8) / 1e8,
+    paConfluence,
+    nearestSupportBelow618: nearestSupport != null ? Math.round(nearestSupport * 1e8) / 1e8 : null,
     ath:             Math.round(swingHigh * 1e8) / 1e8,
     atl:             Math.round(swingLow  * 1e8) / 1e8,
     currentPrice,
