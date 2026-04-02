@@ -371,23 +371,11 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
   }
 
   _positionsInflight = (async () => { try {
-    // ── Pure LPAgent — no Meteora fallback ────────────────────────
-    // Retry up to 3x with backoff before giving up.
-    let lpAgentData = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      lpAgentData = await fetchLPAgentOpenPositions(walletAddress);
-      // null = API error/unavailable → retry
-      // [] = valid empty (no open positions) → stop retrying
-      if (lpAgentData !== null) break;
-      if (attempt < 3) {
-        log("positions", `LPAgent attempt ${attempt} failed — retrying in ${attempt * 2}s...`);
-        await new Promise(r => setTimeout(r, attempt * 2000));
-      }
-    }
+    // ── Pure LPAgent — study.js already handles retry + backup key ─
+    const lpAgentData = await fetchLPAgentOpenPositions(walletAddress);
 
     if (lpAgentData === null) {
-      // LPAgent unavailable — return error, do NOT fall back to Meteora
-      log("positions_error", "LPAgent unavailable after 3 attempts. Skipping cycle.");
+      log("positions_error", "LPAgent unavailable. Skipping cycle.");
       return { wallet: walletAddress, total_positions: 0, positions: [], error: "LPAgent unavailable — check LPAGENT_API_KEY in .env" };
     }
 
