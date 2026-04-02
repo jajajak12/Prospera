@@ -8,10 +8,19 @@ Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
 ## Identitas Proyek
 
 **Prospera** — autonomous DLMM LP agent di Meteora, Solana.
-- Strategi: Fibonacci retracement + Volume Profile entry signals
-- Single-sided bid_ask, SOL-quoted pools
+- Strategi: Fibonacci retracement entry signals, single-sided bid_ask
+- Bahasa: **JavaScript** (ES modules) — bukan TypeScript
 - PM2 process ID: `1` (name: `prospera`)
 - GitHub: `https://github.com/jajajak12/Prospera` branch `main`
+
+---
+
+## Filosofi
+
+- **Teknikal-first**, bukan volatility-based
+- Kualitas sinyal > kuantitas — lebih baik skip deal bagus daripada masuk posisi buruk
+- Safety selalu diutamakan: blacklist, holder distribution, bundle % wajib dicek
+- Setiap keputusan harus didasarkan pada confluence yang kuat
 
 ---
 
@@ -23,6 +32,14 @@ Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
 4. `bypassPermissions` aktif — tidak perlu minta konfirmasi untuk tool calls
 5. Jangan tambah fitur di luar yang diminta
 6. Setelah implementasi besar: update `PROJECT_CONTEXT.md`
+
+## Aturan Coding
+
+- Code modular, clean, readable — mudah di-maintain
+- Gunakan early return
+- Error handling robust dengan retry dan fallback
+- Tambahkan comment hanya untuk logic yang tidak obvious (Fib, confluence, safety)
+- Jangan tambah docstring/comment ke code yang tidak diubah
 
 ---
 
@@ -128,6 +145,16 @@ screeningModel: qwen/qwen3.5-flash-02-23
 | 5 | Official Solana |
 
 Auto-reset ke primary setelah 5 menit stabil.
+
+---
+
+## Safety Rules (Non-Negotiable)
+
+- Selalu respect blacklist (token & dev wallet)
+- Cek holder distribution dan bundle % sebelum deploy (via OKX + Jupiter)
+- RPC failover harus aktif
+- Volume Profile (POC/VAL) bersifat **informational only** — bukan hard gate
+- `autoBacktest` default **false** — jangan asumsi aktif kecuali user minta
 
 ---
 
