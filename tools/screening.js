@@ -187,7 +187,7 @@ async function findMeteoraDlmmPool(mint) {
     `${POOL_DISCOVERY_BASE}/pools?` +
     `page_size=5` +
     `&filter_by=${encodeURIComponent(filters)}` +
-    `&timeframe=${s.timeframe}`;
+    `&timeframe=1d`;
 
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
