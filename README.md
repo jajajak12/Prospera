@@ -7,8 +7,8 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana. Combines F
 ## Overview
 
 Prospera is a fully autonomous LP agent that:
-- Discovers trending Meteora DLMM pools via the Pool Discovery API
-- Filters by Fibonacci + Volume Profile entry signals (ATH-based Fib levels from daily candles)
+- Discovers trending Solana tokens across all DEXes via GeckoTerminal, then finds their Meteora DLMM pools
+- Filters by Fibonacci entry signals (ATH-based Fib levels from GeckoTerminal candles)
 - Optionally backtests each candidate on historical OHLCV before deploying
 - Runs multi-layer token safety checks (organic score, OKX honeypot/bundle, token age, blacklists)
 - Manages open positions with tiered rules (stop loss, LLM decision zone, auto take-profit)
@@ -64,7 +64,11 @@ Applied in order — any failure eliminates the pool:
 
 Applied in order from cheapest to most expensive — any failure eliminates the pool immediately:
 
-1. **Meteora API filters** — organic score, holders, mcap, TVL, bin step, fee/TVL ratio, token age
+1. **GeckoTerminal discovery** — trending Solana tokens across all DEXes (~40 tokens, 2 pages)
+2. **Dexscreener volume** — 5m cross-DEX volume filter (`minVolume`)
+3. **mcap pre-filter** — from GeckoTerminal data
+4. **OKX** — bundle %, honeypot check (moved to step 4, combined with step below)
+5. **Meteora Pool Discovery** — find DLMM pool; filter by TVL, `fee_active_tvl_ratio` (1d), bin_step, organic score, holders, mcap, token age
 2. **Blacklists** — `token-blacklist.json` (mints) and `dev-blocklist.json` (deployer addresses)
 3. **Token volume filter** — actual last-5m volume across ALL DEXes via Dexscreener (`volume.m5` summed per token). Accurate for tokens as young as 1 hour — no 24h averaging
 4. **OKX DEX filter** — honeypot detection, bundle % check, creator address cross-check
@@ -336,6 +340,7 @@ DRY_RUN=true node index.js
 | `maxPositions` | 2 | Max concurrent open positions |
 | `minBinStep` / `maxBinStep` | 80 / 200 | Pool bin step range |
 | `minVolume` | 20000 | Min actual 5m volume across all DEXes ($) — sourced from Dexscreener |
+| `minFeeActiveTvlRatio` | 0.05 | Min fee/active TVL ratio for Meteora pool (evaluated on 1d timeframe) |
 | `minMcap` / `maxMcap` | 150k / 10M | Token market cap range |
 | `minTokenAgeHours` / `maxTokenAgeHours` | 1 / 1440 | Token age range (1h – 2 months) |
 | `stopLossPct` | −20 | Stop loss threshold |
@@ -345,7 +350,7 @@ DRY_RUN=true node index.js
 | `maxBundlePct` | 30 | Max bundle % (OKX filter) |
 | `maxTop10Pct` | 20 | Max top 10 holders concentration % (Jupiter) |
 | `maxBotHoldersPct` | 30 | Max bot holder % (Jupiter) |
-| `minTokenFeesSol` | 25 | Min fees earned in SOL (Jupiter) |
+| `minTokenFeesSol` | 30 | Min fees earned in SOL (Jupiter — cumulative: tips + priority + trading fees) |
 | `rpcFallbacks` | [] | Ordered list of fallback RPC endpoints |
 | `fibConfluenceRequired` | true | Require Fib confluence for entry |
 | `candleLimit` | 100 | OHLCV candles for analysis |
