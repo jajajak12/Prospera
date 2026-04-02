@@ -348,7 +348,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const candidates = topResult?.candidates || [];
 
     if (candidates.length === 0) {
-      screenReport = `No Fibonacci entry signals found. Total screened: ${topResult?.total_screened ?? 0}, Fib analyzed: ${topResult?.fib_analyzed ?? 0}. All pools either outside Fib zone or lack volume support at key levels.`;
+      screenReport = `No Fibonacci entry signals found. Total screened: ${topResult?.total_screened ?? 0}, Fib analyzed: ${topResult?.fib_analyzed ?? 0}. All pools either outside Fib zone or did not pass EMA/RSI/ATR filters.`;
       return screenReport;
     }
 

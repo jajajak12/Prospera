@@ -509,23 +509,11 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     );
   }
 
-  // ── Check 2: Volume Confirmation ───────────────────────────────────────────
-  // In ATH zone: price hasn't pulled back yet so POC/VAL won't be in fib zone.
-  // Require only that POC is above fib 0.618 (healthy volume distribution).
-  // In fib zone: require POC or VAL within zone (standard check).
+  // ── Volume Profile (informational) ────────────────────────────────────────
   const pocInZone = vp.poc >= fib.fib618 && vp.poc <= fib.fib236;
   const valInZone = vp.val >= fib.fib618 && vp.val <= fib.fib236;
-  const pocAbove618 = vp.poc >= fib.fib618;
-  const volumeConfirmed = inAthZone ? pocAbove618 : (pocInZone || valInZone);
 
-  if (!volumeConfirmed) {
-    const reason = inAthZone
-      ? `ATH zone: POC=${fmt(vp.poc)} below Fib 0.618 (${fmt(fib.fib618)}) — volume distribution too low`
-      : `No volume support in Fib zone — POC=${fmt(vp.poc)} (${pocInZone ? "in" : "out"}), VAL=${fmt(vp.val)} (${valInZone ? "in" : "out"})`;
-    return skip(reason, currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val });
-  }
-
-  // ── Check 3: EMA Trend Filter ──────────────────────────────────────────────
+  // ── Check 2: EMA Trend Filter ──────────────────────────────────────────────
   if (ema20 != null && ema50 != null && ema20 <= ema50) {
     return skip(
       `EMA trend bearish — EMA20 (${fmt(ema20)}) <= EMA50 (${fmt(ema50)}). Fib pullback invalid in downtrend.`,
@@ -568,7 +556,6 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
 
   const supportsBelow = srLevels.filter(l => l < fib.fib618).sort((a, b) => b - a);
   const nearestSupport = supportsBelow[0] ?? null;
-  const paConfluence   = nearestSupport != null;
 
   // ── bins_below ────────────────────────────────────────────────────────────
   // ATH zone: range starts at fib 0.236 (not current price) → fib 0.618

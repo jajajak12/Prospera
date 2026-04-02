@@ -28,7 +28,6 @@ Fibonacci is drawn from **all-time-low → ATH** using daily OHLCV candles (Geck
 | Signal | Condition | Purpose |
 |--------|-----------|---------|
 | **Price** | Above Fib 0.618 (not broken support) | Token still in valid range |
-| **Volume Profile** | POC/VAL in fib zone (or POC ≥ 0.618 for ATH zone) | Volume distribution healthy |
 | **EMA Trend** | EMA20 > EMA50 | Confirmed uptrend |
 | **RSI Momentum** | RSI > 48 + rising slope | Bullish momentum |
 | **ATR Check** | ATR% < bin\_step% × 4 | Volatility compatible with pool |
