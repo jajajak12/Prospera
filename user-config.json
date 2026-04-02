@@ -23,7 +23,7 @@
   "minVolume": 20000,
   "minBinStep": 80,
   "maxBinStep": 200,
-  "minFeeActiveTvlRatio": 0.01,
+  "minFeeActiveTvlRatio": 0.05,
   "minTokenAgeHours": 1,
   "maxTokenAgeHours": 1440,
   "blockedLaunchpads": [],
