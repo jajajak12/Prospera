@@ -70,9 +70,8 @@ export const config = {
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 1,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60,
     minSolToOpen:          u.minSolToOpen          ?? 0.6,
-    deployAmountSol:       u.deployAmountSol       ?? 0.5,
+    minDeployAmountSol:    u.minDeployAmountSol    ?? (u.deployAmountSol ?? 0.5), // minimum validation — actual deploy is tiered: floor(sol/5)+1
     gasReserve:            u.gasReserve            ?? 0.1,
-    positionSizePct:       u.positionSizePct       ?? 0.35,
     // Partial harvest — auto-close at this PnL% (between soft TP and max TP). null = disabled.
     partialHarvestPct:     u.partialHarvestPct     ?? 10,
     // Trailing take-profit (disabled by default for Fibonacci strategy)

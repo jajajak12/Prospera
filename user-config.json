@@ -7,7 +7,7 @@
     "https://solana-rpc.publicnode.com",
     "https://api.mainnet-beta.solana.com"
   ],
-  "deployAmountSol": 0.5,
+  "minDeployAmountSol": 0.5,
   "maxPositions": 2,
   "minSolToOpen": 0.6,
   "timeframe": "5m",
@@ -42,7 +42,6 @@
   "gasReserve": 0.1,
   "minTvl": 5000,
   "maxSteps": 12,
-  "positionSizePct": 0.35,
   "partialHarvestPct": 10,
   "trailingTakeProfit": false,
   "binsExtraLow": 0,
@@ -52,7 +51,8 @@
   "candleLimit": 100,
   "fibConfluenceRequired": true,
   "autoBacktest": false,
-  "minBacktestWinRate": 0.50,
+  "minBacktestWinRate": 0.5,
   "backtestAggregate": 15,
-  "_lastStrategyApplied": "2026-04-01T07:52:23.022Z"
+  "_lastStrategyApplied": "2026-04-01T07:52:23.022Z",
+  "_lastAgentTune": "2026-04-02T09:25:29.039Z"
 }

@@ -149,6 +149,7 @@ FIBONACCI RULES (always apply when deploying):
 - bins_above = 0 always
 - strategy = bid_ask always
 - Stop loss: -20% PnL OR OOR > ${config.management.outOfRangeBinsToClose} bins
+- Deploy amount is TIERED based on wallet balance: floor(deployable_SOL/5)+1 SOL, capped at maxDeployAmount. It is NOT a fixed value — the exact amount is always passed to you in the task goal.
 
 SWAP AFTER CLOSE: After any close_position, immediately swap base tokens back to SOL.
 Skip tokens worth < $0.10. Always check token USD value before swapping.

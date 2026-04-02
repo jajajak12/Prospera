@@ -222,9 +222,8 @@ const toolMap = {
       trailingTriggerPct:    ["management", "trailingTriggerPct"],
       trailingDropPct:       ["management", "trailingDropPct"],
       minSolToOpen:          ["management", "minSolToOpen"],
-      deployAmountSol:       ["management", "deployAmountSol"],
+      minDeployAmountSol:    ["management", "minDeployAmountSol"],
       gasReserve:            ["management", "gasReserve"],
-      positionSizePct:       ["management", "positionSizePct"],
       minFeePerTvl24h:       ["management", "minFeePerTvl24h"],
       // risk
       maxPositions:          ["risk", "maxPositions"],
@@ -526,7 +525,7 @@ async function runSafetyChecks(name, args) {
         return { pass: false, reason: "Must provide a positive SOL amount (amount_y)." };
       }
 
-      const minDeploy = Math.max(0.1, config.management.deployAmountSol);
+      const minDeploy = Math.max(0.1, config.management.minDeployAmountSol);
       if (amountY < minDeploy) {
         return { pass: false, reason: `Amount ${amountY} SOL is below minimum deploy amount (${minDeploy} SOL).` };
       }

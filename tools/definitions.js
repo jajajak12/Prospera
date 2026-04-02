@@ -276,7 +276,7 @@ WARNING: Real on-chain transaction.`,
 
 VALID KEYS:
 Screening: minTvl, maxTvl, minVolume, minOrganic, minHolders, minMcap, maxMcap, minBinStep, maxBinStep, timeframe, candleLimit, fibConfluenceRequired, autoBacktest, minBacktestWinRate, backtestAggregate
-Management: minClaimAmount, outOfRangeBinsToClose, outOfRangeWaitMinutes, stopLossPct, takeProfitFeePct, minSolToOpen, deployAmountSol, gasReserve, positionSizePct
+Management: minClaimAmount, outOfRangeBinsToClose, outOfRangeWaitMinutes, stopLossPct, takeProfitFeePct, minSolToOpen, minDeployAmountSol, gasReserve
 Risk: maxPositions, maxDeployAmount
 Schedule: managementIntervalMin, screeningIntervalMin
 Models: managementModel, screeningModel, generalModel`,
