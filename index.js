@@ -14,6 +14,7 @@
 
 import "dotenv/config";
 import fs from "fs";
+import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron";
@@ -58,13 +59,93 @@ import { config, reloadScreeningThresholds, computeDeployAmount } from "./config
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, getStateSummary } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest, runBacktestWithSweep } from "./backtest.js";
 
 log("startup", "Fibonacci LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || config.llm.screeningModel}`);
+
+// ═══════════════════════════════════════════
+//  HEALTH TRACKING
+// ═══════════════════════════════════════════
+const _startTime = Date.now();
+let _errorCount = 0;
+let _lastWalletBalance = null;
+
+// ═══════════════════════════════════════════
+//  CRASH RECOVERY — Global Error Handlers
+// ═══════════════════════════════════════════
+async function gracefulShutdown(reason) {
+  log("shutdown", `Graceful shutdown: ${reason}`);
+  stopCronJobs();
+  stopPolling();
+  // State sudah auto-persisted di setiap mutasi — tidak perlu flush manual
+  log("shutdown", "Shutdown complete.");
+}
+
+process.on("uncaughtException", (err) => {
+  _errorCount++;
+  log("crash", `uncaughtException: ${err.message}\n${err.stack}`);
+  sendMessage(`🚨 Uncaught Exception!\n${err.message}\n\nAgent akan restart otomatis...`).catch(() => {});
+  gracefulShutdown("uncaughtException").finally(() => process.exit(1));
+});
+
+process.on("unhandledRejection", (reason) => {
+  _errorCount++;
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  log("crash", `unhandledRejection: ${msg}`);
+  sendMessage(`⚠️ Unhandled Rejection!\n${msg}`).catch(() => {});
+});
+
+// ═══════════════════════════════════════════
+//  HEALTH CHECK HTTP SERVER
+// ═══════════════════════════════════════════
+function startHealthServer() {
+  const PORT = process.env.HEALTH_PORT || 3000;
+  const server = http.createServer((req, res) => {
+    const url = req.url?.split("?")[0];
+    res.setHeader("Content-Type", "application/json");
+
+    if (url === "/health") {
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        status: "ok",
+        uptime_seconds: Math.floor((Date.now() - _startTime) / 1000),
+        last_screening: timers.screeningLastRun ? new Date(timers.screeningLastRun).toISOString() : null,
+        last_management: timers.managementLastRun ? new Date(timers.managementLastRun).toISOString() : null,
+        timestamp: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    if (url === "/status") {
+      const summary = getStateSummary?.() ?? {};
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        status: "running",
+        uptime_seconds: Math.floor((Date.now() - _startTime) / 1000),
+        open_positions: summary.openPositions ?? null,
+        last_screening: timers.screeningLastRun ? new Date(timers.screeningLastRun).toISOString() : null,
+        last_management: timers.managementLastRun ? new Date(timers.managementLastRun).toISOString() : null,
+        error_count: _errorCount,
+        wallet_sol: _lastWalletBalance,
+        screening_busy: _screeningBusy,
+        management_busy: _managementBusy,
+        timestamp: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: "Not found" }));
+  });
+
+  server.on("error", (e) => log("health", `Health server error: ${e.message}`));
+  server.listen(PORT, () => log("health", `Health server on port ${PORT}`));
+  return server;
+}
 
 // Deploy amount is computed dynamically per wallet balance — see computeDeployAmount()
 
@@ -359,6 +440,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       getMyPositions({ force: true }),
       getWalletBalances(),
     ]);
+    if (preBalance?.sol != null) _lastWalletBalance = preBalance.sol;
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
       _screeningBusy = false;
@@ -985,6 +1067,35 @@ if (isTTY) {
       return;
     }
 
+    if (text === "/status") {
+      try {
+        const [wallet, { positions, total_positions }] = await Promise.all([
+          getWalletBalances().catch(() => null),
+          getMyPositions({ force: true }).catch(() => ({ positions: [], total_positions: 0 })),
+        ]);
+        const uptime  = Math.floor((Date.now() - _startTime) / 1000);
+        const uptimeStr = uptime < 3600 ? `${Math.floor(uptime/60)}m` : `${Math.floor(uptime/3600)}h ${Math.floor((uptime%3600)/60)}m`;
+        const mgmt = timers.managementLastRun ? `${Math.floor((Date.now()-timers.managementLastRun)/60000)}m ago` : "belum";
+        const scrn = timers.screeningLastRun  ? `${Math.floor((Date.now()-timers.screeningLastRun)/60000)}m ago` : "belum";
+        const posLines = total_positions === 0
+          ? "  Tidak ada posisi terbuka"
+          : positions.map((p, i) => {
+              const pnl = p.pnl_usd >= 0 ? `+$${p.pnl_usd}` : `-$${Math.abs(p.pnl_usd)}`;
+              return `  ${i+1}. ${p.pair} | ${pnl} | ${p.in_range ? "in range" : "⚠️ OOR"}`;
+            }).join("\n");
+        await sendMessage(
+          `📡 Agent Status\n\n` +
+          `Uptime: ${uptimeStr}\n` +
+          `Wallet: ${wallet ? `${wallet.sol} SOL ($${wallet.sol_usd})` : "?"}\n` +
+          `Errors: ${_errorCount}\n\n` +
+          `Posisi (${total_positions}):\n${posLines}\n\n` +
+          `Management: ${mgmt}\n` +
+          `Screening: ${scrn}`
+        );
+      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+      return;
+    }
+
     if (text === "/apply_sweep") {
       const proposal = loadSweepProposal();
       if (!proposal) { await sendMessage("Tidak ada sweep proposal yang pending."); return; }
@@ -1198,6 +1309,7 @@ Commands:
 } else {
   // Non-TTY (pm2) mode — start immediately
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
+  startHealthServer();
   startCronJobs();
   setTimeout(
     () => runManagementCycle().catch(e => log("cron_error", `Startup management failed: ${e.message}`)),
