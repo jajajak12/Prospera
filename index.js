@@ -20,7 +20,35 @@ import cron from "node-cron";
 import readline from "readline";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
+const USER_CONFIG_PATH         = path.join(__dirname, "user-config.json");
+const SWEEP_PROPOSAL_PATH      = path.join(__dirname, "sweep-proposal.json");
+
+// ── Sweep proposal helpers ───────────────────────────────────────────────────
+function saveSweepProposal(p) {
+  fs.writeFileSync(SWEEP_PROPOSAL_PATH, JSON.stringify(p, null, 2));
+}
+function loadSweepProposal() {
+  try { return fs.existsSync(SWEEP_PROPOSAL_PATH) ? JSON.parse(fs.readFileSync(SWEEP_PROPOSAL_PATH, "utf8")) : null; }
+  catch { return null; }
+}
+function clearSweepProposal() {
+  if (fs.existsSync(SWEEP_PROPOSAL_PATH)) fs.unlinkSync(SWEEP_PROPOSAL_PATH);
+}
+function applySweepProposal(proposal) {
+  let userCfg = {};
+  if (fs.existsSync(USER_CONFIG_PATH)) {
+    userCfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+  }
+  // Backup sebelum apply
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  fs.writeFileSync(
+    path.join(__dirname, `user-config.${stamp}.backup.json`),
+    JSON.stringify(userCfg, null, 2)
+  );
+  Object.assign(userCfg, proposal.changes, { _lastAgentTune: new Date().toISOString() });
+  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userCfg, null, 2));
+  reloadScreeningThresholds();
+}
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
@@ -556,49 +584,78 @@ async function runPeriodicBacktest() {
     // Parameter sweep recommendation — aggregate best params across all pools
     const sweepable = withData.filter(r => r.sweepBest);
     if (sweepable.length >= 2) {
-      // Find most common best rsiMin
-      const rsiVotes = {};
-      const confVotes = {};
+      const curRsi  = config.screening.rsiMin          ?? 48;
+      const curConf = config.screening.minConfluenceScore ?? 0.30;
+
+      // Vote tally
+      const rsiVotes = {}, confVotes = {};
       for (const r of sweepable) {
-        rsiVotes[r.sweepBest.rsiMin]           = (rsiVotes[r.sweepBest.rsiMin] || 0) + 1;
+        rsiVotes[r.sweepBest.rsiMin]             = (rsiVotes[r.sweepBest.rsiMin]             || 0) + 1;
         confVotes[r.sweepBest.minConfluenceScore] = (confVotes[r.sweepBest.minConfluenceScore] || 0) + 1;
       }
       const bestRsi  = Object.entries(rsiVotes).sort((a, b) => b[1] - a[1])[0];
       const bestConf = Object.entries(confVotes).sort((a, b) => b[1] - a[1])[0];
-      const curRsi   = 48;
-      const curConf  = config.screening.minConfluenceScore ?? 0.30;
+      const majority = Math.ceil(sweepable.length * 0.5);
 
-      // Auto-apply sweep consensus if majority agrees (>50% of pools)
-      const applied = {};
-      const majority = sweepable.length >= 2 ? Math.ceil(sweepable.length * 0.5) : 2;
+      // WR improvement: average (sweepBest.winRate - baseline.winRate) across pools
+      const avgWrImprovement = sweepable.reduce((s, r) => s + (r.sweepBest.winRate - r.bt.winRate), 0) / sweepable.length;
+      const MIN_WR_IMPROVEMENT = 0.07; // +7%
 
-      if (bestRsi && Number(bestRsi[0]) !== curRsi && bestRsi[1] >= majority) {
-        applied.rsiMin = Number(bestRsi[0]);
-        suggestions.push(`✅ RSI min auto-applied: ${curRsi} → ${bestRsi[0]} (konsensus ${bestRsi[1]}/${sweepable.length} pools)`);
-      } else if (bestRsi && Number(bestRsi[0]) !== curRsi) {
-        suggestions.push(`Sweep: RSI min ${curRsi} → ${bestRsi[0]} — konsensus lemah (${bestRsi[1]}/${sweepable.length}), tidak di-apply`);
-      }
+      const proposed = {};
 
-      if (bestConf && Math.abs(Number(bestConf[0]) - curConf) >= 0.05 && bestConf[1] >= majority) {
-        applied.minConfluenceScore = Number(bestConf[0]);
-        suggestions.push(`✅ Confluence min auto-applied: ${curConf} → ${bestConf[0]} (konsensus ${bestConf[1]}/${sweepable.length} pools)`);
-      } else if (bestConf && Math.abs(Number(bestConf[0]) - curConf) >= 0.05) {
-        suggestions.push(`Sweep: confluence min ${curConf} → ${bestConf[0]} — konsensus lemah (${bestConf[1]}/${sweepable.length}), tidak di-apply`);
-      }
-
-      if (Object.keys(applied).length > 0) {
-        try {
-          let userCfg = {};
-          if (fs.existsSync(USER_CONFIG_PATH)) {
-            userCfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-          }
-          Object.assign(userCfg, applied, { _lastAgentTune: new Date().toISOString() });
-          fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userCfg, null, 2));
-          reloadScreeningThresholds();
-          log("cron", `Sweep auto-applied: ${JSON.stringify(applied)}`);
-        } catch (e) {
-          log("cron", `Sweep auto-apply failed: ${e.message}`);
+      // RSI: majority consensus + WR improvement + max ±4 pts per run
+      if (bestRsi && bestRsi[1] >= majority && avgWrImprovement >= MIN_WR_IMPROVEMENT) {
+        const raw   = Number(bestRsi[0]);
+        const delta = Math.max(-4, Math.min(4, raw - curRsi));
+        const clamped = curRsi + delta;
+        if (clamped !== curRsi) {
+          proposed.rsiMin = clamped;
+          suggestions.push(`Sweep: RSI min ${curRsi} → ${clamped} (konsensus ${bestRsi[1]}/${sweepable.length}, WR +${(avgWrImprovement*100).toFixed(0)}%)`);
         }
+      } else if (bestRsi && Number(bestRsi[0]) !== curRsi) {
+        const reason = bestRsi[1] < majority
+          ? `konsensus lemah (${bestRsi[1]}/${sweepable.length})`
+          : `WR improvement +${(avgWrImprovement*100).toFixed(0)}% < 7%`;
+        suggestions.push(`Sweep: RSI min ${curRsi} → ${bestRsi[0]} — ${reason}, tidak di-apply`);
+      }
+
+      // Confluence: majority consensus + WR improvement + max ±0.05 per run
+      if (bestConf && bestConf[1] >= majority && avgWrImprovement >= MIN_WR_IMPROVEMENT) {
+        const raw   = Number(bestConf[0]);
+        const delta = Math.max(-0.05, Math.min(0.05, raw - curConf));
+        const clamped = Math.round((curConf + delta) * 100) / 100;
+        if (Math.abs(clamped - curConf) >= 0.01) {
+          proposed.minConfluenceScore = clamped;
+          suggestions.push(`Sweep: confluence min ${curConf} → ${clamped} (konsensus ${bestConf[1]}/${sweepable.length}, WR +${(avgWrImprovement*100).toFixed(0)}%)`);
+        }
+      } else if (bestConf && Math.abs(Number(bestConf[0]) - curConf) >= 0.05) {
+        const reason = bestConf[1] < majority
+          ? `konsensus lemah (${bestConf[1]}/${sweepable.length})`
+          : `WR improvement +${(avgWrImprovement*100).toFixed(0)}% < 7%`;
+        suggestions.push(`Sweep: confluence min ${curConf} → ${bestConf[0]} — ${reason}, tidak di-apply`);
+      }
+
+      // Send Telegram preview + save proposal (user must confirm via /apply_sweep)
+      if (Object.keys(proposed).length > 0) {
+        const proposal = {
+          changes: proposed,
+          curRsi, curConf,
+          avgWrImprovement: +avgWrImprovement.toFixed(3),
+          pools: sweepable.length,
+          createdAt: new Date().toISOString(),
+        };
+        saveSweepProposal(proposal);
+        const previewLines = Object.entries(proposed).map(([k, v]) => {
+          const cur = k === "rsiMin" ? curRsi : curConf;
+          return `  ${k}: ${cur} → ${v}`;
+        });
+        await sendMessage(
+          `🔬 Sweep proposal (WR +${(avgWrImprovement*100).toFixed(0)}%, ${sweepable.length} pools):\n` +
+          previewLines.join("\n") + "\n\n" +
+          `Ketik /apply_sweep untuk apply, /reject_sweep untuk batalkan.\n` +
+          `Config lama akan di-backup otomatis sebelum di-apply.`
+        ).catch(() => {});
+        log("cron", `Sweep proposal saved: ${JSON.stringify(proposed)}`);
       }
     }
 
@@ -925,6 +982,30 @@ if (isTTY) {
         setPositionInstruction(pos.position, note);
         await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
       } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+      return;
+    }
+
+    if (text === "/apply_sweep") {
+      const proposal = loadSweepProposal();
+      if (!proposal) { await sendMessage("Tidak ada sweep proposal yang pending."); return; }
+      try {
+        applySweepProposal(proposal);
+        clearSweepProposal();
+        const lines = Object.entries(proposal.changes).map(([k, v]) => `  ${k}: ${v}`);
+        await sendMessage(`✅ Sweep applied:\n${lines.join("\n")}\n\nConfig lama sudah di-backup.`);
+        log("telegram", `Sweep applied by user: ${JSON.stringify(proposal.changes)}`);
+      } catch (e) {
+        await sendMessage(`❌ Apply gagal: ${e.message}`);
+      }
+      return;
+    }
+
+    if (text === "/reject_sweep") {
+      const proposal = loadSweepProposal();
+      if (!proposal) { await sendMessage("Tidak ada sweep proposal yang pending."); return; }
+      clearSweepProposal();
+      await sendMessage("❌ Sweep proposal dibatalkan.");
+      log("telegram", "Sweep proposal rejected by user");
       return;
     }
 
