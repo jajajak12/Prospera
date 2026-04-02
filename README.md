@@ -272,13 +272,36 @@ tools/
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `WALLET_PRIVATE_KEY` | Yes | Solana wallet private key (base58) |
-| `RPC_URL` | Yes | Solana RPC endpoint |
+| `RPC_URL` | Yes | Primary Solana RPC endpoint (recommended: Helius) |
 | `OPENROUTER_API_KEY` | Yes | LLM API key (OpenRouter) |
 | `LPAGENT_API_KEY` | Yes | LPAgent primary API key (real-time PnL) |
-| `LPAGENT_API_KEY_BACKUP` | No | LPAgent backup key |
+| `LPAGENT_API_KEY_BACKUP` | No | LPAgent backup key — instant failover if primary fails |
 | `TELEGRAM_BOT_TOKEN` | No | Telegram notifications |
 | `TELEGRAM_CHAT_ID` | No | Telegram chat target |
-| `HELIUS_API_KEY` | No | Enhanced Solana data |
+| `HELIUS_API_KEY` | No | Auto-added as RPC fallback if set |
+
+### RPC Failover
+
+Prospera automatically fails over to backup RPC endpoints when the primary is unavailable. Configure fallbacks in `user-config.json`:
+
+```json
+"rpcFallbacks": [
+  "https://solana-mainnet.g.alchemy.com/v2/YOUR_KEY",
+  "https://rpc.ankr.com/solana",
+  "https://solana-rpc.publicnode.com",
+  "https://api.mainnet-beta.solana.com"
+]
+```
+
+| Priority | Provider | Notes |
+|----------|----------|-------|
+| Primary | Helius (`RPC_URL`) | Fastest, lowest latency for trading |
+| Fallback 1 | Alchemy | Very fast, generous free tier |
+| Fallback 2 | Ankr | Stable, decentralized |
+| Fallback 3 | PublicNode | Reliable public endpoint |
+| Last Resort | Official Solana | Always up, slowest under congestion |
+
+Automatically resets to primary after 5 minutes of stability. `HELIUS_API_KEY` is auto-added as a fallback if set.
 
 ---
 
@@ -323,6 +346,7 @@ DRY_RUN=true node index.js
 | `maxTop10Pct` | 20 | Max top 10 holders concentration % (Jupiter) |
 | `maxBotHoldersPct` | 30 | Max bot holder % (Jupiter) |
 | `minTokenFeesSol` | 25 | Min fees earned in SOL (Jupiter) |
+| `rpcFallbacks` | [] | Ordered list of fallback RPC endpoints |
 | `fibConfluenceRequired` | true | Require Fib confluence for entry |
 | `candleLimit` | 100 | OHLCV candles for analysis |
 | `partialHarvestPct` | 10 | Auto-close PnL threshold between soft TP and max TP — locks gains early (set null to disable) |
