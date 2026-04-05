@@ -67,11 +67,11 @@ Applied in order from cheapest to most expensive — any failure eliminates the 
 
 1. **GeckoTerminal discovery** — trending Solana tokens across all DEXes (~40 tokens, 2 pages)
 2. **Blacklists** — `token-blacklist.json` (mints) and `dev-blocklist.json` (deployer addresses)
-3. **Dexscreener volume** — actual last-5m volume across ALL DEXes (`minVolume`)
+3. **Dexscreener 1h volume** — actual last-1h volume across ALL DEXes (`minVolume`), more stable than 5m snapshot
 4. **mcap pre-filter** — from GeckoTerminal data (`minMcap` / `maxMcap`)
 5. **OKX DEX filter** — honeypot detection, bundle % check, creator address cross-check
 6. **Jupiter token safety** — top 10 holder concentration, bot holder %, cumulative fees SOL (`minTokenFeesSol`)
-7. **Meteora Pool Discovery** — find DLMM pool; filter by TVL, `fee_active_tvl_ratio` (1d timeframe), bin_step, organic score, holders, mcap, token age
+7. **Meteora Pool Discovery** — bulk fetch all qualifying DLMM pools in one request (`page_size=100`, `timeframe=24h`), match by `token_x.address` client-side; age filter applied client-side
 8. **ATH proximity filter** (optional) — skip tokens too close to ATH (`athFilterPct`)
 9. **Fibonacci signal filter** — Fib zone, EMA, RSI, ATR, confluenceScore gate (most expensive — runs last)
 10. **Auto-backtest filter** (optional) — historical win rate check on each candidate before deploy
@@ -209,7 +209,7 @@ Use [UptimeRobot](https://uptimerobot.com) (free) to ping `/health` every 5 minu
 
 Self-learning system that tracks which entry signals historically predict profitable trades.
 
-**Signals tracked:** `organic_score`, `fee_tvl_ratio`, `volume_5m`, `confluence_score`, `fib_zone`, `bin_step`, `volatility`
+**Signals tracked:** `organic_score`, `fee_tvl_ratio`, `volume_h1`, `confluence_score`, `fib_zone`, `bin_step`, `volatility`
 
 **How it works:**
 1. Every time a position closes with PnL ≥ +5% (win) or ≤ −5% (loss), a signal snapshot is saved
@@ -371,8 +371,8 @@ DRY_RUN=true node index.js
 |-----|---------|-------------|
 | `maxPositions` | 2 | Max concurrent open positions |
 | `minBinStep` / `maxBinStep` | 80 / 200 | Pool bin step range |
-| `minVolume` | 20000 | Min actual 5m volume across all DEXes ($) |
-| `minFeeActiveTvlRatio` | 0.05 | Min fee/active TVL ratio for Meteora pool (1d timeframe) |
+| `minVolume` | 20000 | Min actual **1h** volume across all DEXes ($) — Dexscreener `volume.h1` |
+| `minFeeActiveTvlRatio` | 0.05 | Min fee/active TVL ratio for Meteora pool (24h timeframe) |
 | `minMcap` / `maxMcap` | 150k / 5M | Token market cap range |
 | `minTvl` / `maxTvl` | 5000 / 300000 | Pool TVL range ($) |
 | `minTokenAgeHours` / `maxTokenAgeHours` | 1 / 1440 | Token age range |

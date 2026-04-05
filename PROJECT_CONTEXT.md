@@ -10,13 +10,14 @@ Ringkasan perubahan arsitektur, fitur, dan keputusan penting per sesi.
 Flow baru menggantikan Meteora trending sebagai sumber discovery:
 
 1. **GeckoTerminal** — ambil trending token Solana dari semua DEX (2 halaman, ~40 token)
-2. **Dexscreener** — filter 5m cross-DEX volume ≥ `minVolume` ($20k default)
+2. **Dexscreener** — filter **1h** cross-DEX volume ≥ `minVolume` ($20k default) via `batchGetTokenVolumeH1`
 3. **mcap pre-filter** — dari data GT jika tersedia
 4. **OKX** — bundle/honeypot/creator check
 5. **Jupiter DataAPI** — top10 holders, bot holders, fees SOL
-6. **Meteora pool lookup** — cari DLMM pool untuk token (`findMeteoraDlmmPool`), filter TVL/fee/bin\_step/organic/holders
-7. **Fibonacci analysis** — pakai GT candles + Meteora `bin_step`
-8. **Smart wallet boost** — +0.10 ke confluenceScore jika smart money terdeteksi
+6. **Meteora bulk fetch** — `fetchMeteoraDlmmPoolMap()`: satu request page_size=100, filter API-level (tvl/bin\_step/fee/organic/holders/mcap), match client-side by `token_x.address`
+7. **Client-side age filter** — `base_token_age_hours` diterapkan client-side (bukan API filter)
+8. **Fibonacci analysis** — pakai GT candles + Meteora `bin_step`
+9. **Smart wallet boost** — +0.10 ke confluenceScore jika smart money terdeteksi
 
 ### Management Loop
 - **Deterministic rules** dijalankan di `index.js` SEBELUM LLM:
@@ -81,6 +82,17 @@ Flow baru menggantikan Meteora trending sebagai sumber discovery:
 | Token aktif tidak terdeteksi (contoh: `771oWnZy...`) | Meteora `category=trending` tidak mencakup token baru/kecil | Ganti dengan GeckoTerminal-first discovery |
 | LPAgent 429 burst | double retry: study.js 3x + dlmm.js 3x = 12 request | Hapus retry loop, langsung failover ke backup key |
 | Prospera melaporkan `deployAmountSol` dan `positionSizePct` sebagai parameter aktif | Field lama tidak dibersihkan dari config/prompt | Rename + hapus, tambahkan dokumentasi tiered formula di prompt |
+| **0 entry selama 4 hari** (Apr 2026) | 3 bug kritis di screening pipeline (lihat tabel bawah) | Fix di `token.js`, `screening.js`, `logger.js` |
+
+### Bug Kritis Screening (diperbaiki Apr 2026)
+
+| Bug | Dampak | Root Cause | Fix |
+|-----|--------|-----------|-----|
+| Volume filter 5m terlalu ketat | Hanya 1/39 token lolos setiap cycle | `volume.m5` ($20k/5m = $240k/jam) | Ganti ke `volume.h1`, threshold tetap $20k |
+| Meteora API HTTP 400 | Semua pool lookup return null | `timeframe=1d` tidak valid (valid: `24h`) | Ganti ke `timeframe=24h` |
+| `base_token_address` filter invalid | Pool lookup selalu 0 hasil per-token | Parameter tidak didukung Meteora API | Bulk fetch semua pool, match client-side by `token_x.address` |
+| `base_token_age_hours` filter invalid | Pool universe = 0 ketika age filter aktif | Parameter tidak didukung Meteora API | Hapus dari query, filter client-side dari `token_x.created_at` |
+| EACCES crash mid-cycle | Screening berhenti di tengah saat log write | Log files dimiliki root setelah `sudo pm2` | `logger.js` try/catch di semua `appendFileSync` |
 
 ---
 
@@ -97,9 +109,9 @@ Flow baru menggantikan Meteora trending sebagai sumber discovery:
 - [x] GeckoTerminal-first screening pipeline
 
 ### Pending / Perlu Dipantau
-- [ ] Verifikasi `base_token_address=${mint}` didukung Meteora Pool Discovery API (test dari live screening)
 - [ ] Darwinian weights belum memiliki data (perlu 6+ posisi ditutup untuk mulai evolve)
-- [ ] Monitor apakah `fib_analyzed` sekarang menunjukkan angka > 0 di screening cycle berikutnya
+- [ ] Log files dari sesi root perlu di-chown: `sudo chown -R prospera:prospera /home/prospera/prospera/logs/`
+- [ ] Monitor entry rate setelah fix screening pipeline (diharapkan ada candidate saat market kondusif)
 
 ---
 
