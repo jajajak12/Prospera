@@ -49,7 +49,9 @@ export function log(category, message, ctx = null) {
   // File output (daily rotation)
   const dateStr = timestamp.split("T")[0];
   const logFile = path.join(LOG_DIR, `agent-${dateStr}.log`);
-  fs.appendFileSync(logFile, line + "\n");
+  try {
+    fs.appendFileSync(logFile, line + "\n");
+  } catch { /* ignore write errors (e.g. permission denied on rotated files) */ }
 }
 
 /**
@@ -89,7 +91,9 @@ export function logAction(action) {
   // File: full JSON for audit trail
   const dateStr = timestamp.split("T")[0];
   const actionsFile = path.join(LOG_DIR, `actions-${dateStr}.jsonl`);
-  fs.appendFileSync(actionsFile, JSON.stringify(entry) + "\n");
+  try {
+    fs.appendFileSync(actionsFile, JSON.stringify(entry) + "\n");
+  } catch { /* ignore write errors */ }
 }
 
 /**
@@ -105,5 +109,7 @@ export function logSnapshot(snapshot) {
 
   const dateStr = timestamp.split("T")[0];
   const snapshotFile = path.join(LOG_DIR, `snapshots-${dateStr}.jsonl`);
-  fs.appendFileSync(snapshotFile, JSON.stringify(entry) + "\n");
+  try {
+    fs.appendFileSync(snapshotFile, JSON.stringify(entry) + "\n");
+  } catch { /* ignore write errors */ }
 }

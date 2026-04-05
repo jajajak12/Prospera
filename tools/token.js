@@ -10,18 +10,18 @@
 const DEXSCREENER_BASE = "https://api.dexscreener.com/tokens/v1";
 
 /**
- * Batch-fetch actual 5m token volume across ALL DEXes.
- * Uses Dexscreener which returns volume.m5 per pair — we sum across all pairs
- * for each token to get true cross-DEX 5m volume.
+ * Batch-fetch 1h token volume across ALL DEXes.
+ * Uses Dexscreener which returns volume.h1 per pair — we sum across all pairs
+ * for each token to get true cross-DEX 1h volume.
  *
  * Dexscreener supports up to 30 addresses per call (comma-separated).
  *
- * Returns a Map<mint, volume5mUsd>
+ * Returns a Map<mint, volumeH1Usd>
  *
  * If a mint is missing from the response, it is omitted from the map
  * (caller should treat missing = skip filter rather than reject).
  */
-export async function batchGetTokenVolume5m(mints) {
+export async function batchGetTokenVolumeH1(mints) {
   const result = new Map();
   if (!mints || mints.length === 0) return result;
 
@@ -37,12 +37,12 @@ export async function batchGetTokenVolume5m(mints) {
       const json = await res.json();
       const pairs = Array.isArray(json) ? json : (json?.pairs ?? []);
 
-      // Sum volume.m5 across all pairs for each token (base token)
+      // Sum volume.h1 across all pairs for each token (base token)
       const totals = new Map();
       for (const pair of pairs) {
         const mint = pair?.baseToken?.address;
-        const m5   = parseFloat(pair?.volume?.m5 ?? 0) || 0;
-        if (mint) totals.set(mint, (totals.get(mint) ?? 0) + m5);
+        const h1   = parseFloat(pair?.volume?.h1 ?? 0) || 0;
+        if (mint) totals.set(mint, (totals.get(mint) ?? 0) + h1);
       }
       for (const [mint, vol] of totals) result.set(mint, vol);
     } catch { /* skip chunk on error */ }
@@ -50,6 +50,9 @@ export async function batchGetTokenVolume5m(mints) {
 
   return result;
 }
+
+// Keep legacy alias for backward compatibility
+export const batchGetTokenVolume5m = batchGetTokenVolumeH1;
 
 const JUPITER_BASE = "https://datapi.jup.ag/v1";
 

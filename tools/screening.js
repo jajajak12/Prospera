@@ -15,7 +15,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import { analyzeSignal } from "./chart.js";
 import { getTokenAdvancedInfo, getTokenPriceInfo } from "./okx.js";
-import { batchGetTokenVolume5m, getJupiterTokenInfo } from "./token.js";
+import { batchGetTokenVolumeH1, getJupiterTokenInfo } from "./token.js";
 import { checkSmartWalletActivity } from "../smart-wallets.js";
 import fs from "fs";
 import path from "path";
@@ -155,16 +155,16 @@ async function discoverTokensFromGecko({ pages = 2 } = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Find the best Meteora DLMM pool for a given base token mint.
- * All pool-level filters (TVL, fee/TVL, bin_step, organic, holders) are applied
- * at the Meteora API query level for efficiency.
- * Returns condensed pool object (highest active TVL) or null.
+ * Fetch all qualifying Meteora DLMM pools in one bulk request.
+ * Returns a Map<baseMint, bestPool> — best pool = highest active TVL per token.
+ *
+ * Note: Meteora pool-discovery API does NOT support filtering by base_token_address.
+ * We fetch all qualifying pools and match client-side by token_x.address.
  */
-async function findMeteoraDlmmPool(mint) {
+async function fetchMeteoraDlmmPoolMap() {
   const s = config.screening;
 
   const filters = [
-    `base_token_address=${mint}`,
     "pool_type=dlmm",
     "base_token_has_critical_warnings=false",
     "base_token_has_high_single_ownership=false",
@@ -179,26 +179,50 @@ async function findMeteoraDlmmPool(mint) {
     `base_token_holders>=${s.minHolders}`,
     `base_token_market_cap>=${s.minMcap}`,
     `base_token_market_cap<=${s.maxMcap}`,
-    s.minTokenAgeHours != null ? `base_token_age_hours>=${s.minTokenAgeHours}` : null,
-    s.maxTokenAgeHours != null ? `base_token_age_hours<=${s.maxTokenAgeHours}` : null,
+    // Note: base_token_age_hours is NOT a valid API filter — applied client-side below
   ].filter(Boolean).join("&&");
 
   const url =
     `${POOL_DISCOVERY_BASE}/pools?` +
-    `page_size=5` +
+    `page_size=100` +
     `&filter_by=${encodeURIComponent(filters)}` +
-    `&timeframe=1d`;
+    `&timeframe=24h` +
+    `&sort_by=volume_desc`;
 
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
-    if (!res.ok) return null;
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) {
+      log("screening", `Meteora API error: ${res.status}`);
+      return new Map();
+    }
     const data = await res.json();
-    const pools = (data.data ?? []).map(condensePool);
-    if (pools.length === 0) return null;
-    // Return pool with highest active TVL
-    return pools.sort((a, b) => (b.active_tvl ?? 0) - (a.active_tvl ?? 0))[0];
-  } catch {
-    return null;
+    let pools = (data.data ?? []).map(condensePool);
+
+    // Client-side age filter (API doesn't support base_token_age_hours)
+    if (s.minTokenAgeHours != null || s.maxTokenAgeHours != null) {
+      pools = pools.filter(p => {
+        const age = p.token_age_hours;
+        if (age == null) return true; // unknown age → keep
+        if (s.minTokenAgeHours != null && age < s.minTokenAgeHours) return false;
+        if (s.maxTokenAgeHours != null && age > s.maxTokenAgeHours) return false;
+        return true;
+      });
+    }
+
+    // Build Map<baseMint, bestPool> — keep highest active_tvl per token
+    const poolMap = new Map();
+    for (const pool of pools) {
+      const mint = pool.base?.mint;
+      if (!mint) continue;
+      const existing = poolMap.get(mint);
+      if (!existing || (pool.active_tvl ?? 0) > (existing.active_tvl ?? 0)) {
+        poolMap.set(mint, pool);
+      }
+    }
+    return poolMap;
+  } catch (err) {
+    log("screening", `Meteora bulk fetch error: ${err.message}`);
+    return new Map();
   }
 }
 
@@ -240,22 +264,22 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     return { candidates: [], total_screened: geckoTokens.length, fib_analyzed: 0 };
   }
 
-  // ── Step 2: 5m volume filter (Dexscreener — cross-DEX accurate) ──────────
+  // ── Step 2: 1h volume filter (Dexscreener — cross-DEX accurate) ──────────
   {
     const mints  = eligible.map(t => t.mint).filter(Boolean);
-    const volMap = await batchGetTokenVolume5m(mints).catch(() => new Map());
+    const volMap = await batchGetTokenVolumeH1(mints).catch(() => new Map());
     const before = eligible.length;
     eligible = eligible.filter(t => {
-      const vol5m = volMap.get(t.mint);
-      if (vol5m == null) return true; // API miss → keep
-      if (vol5m < s.minVolume) {
-        log("screening", `  ${t.symbol}: SKIP — 5m vol $${Math.round(vol5m)} < min $${s.minVolume}`);
+      const volH1 = volMap.get(t.mint);
+      if (volH1 == null) return true; // API miss → keep
+      if (volH1 < s.minVolume) {
+        log("screening", `  ${t.symbol}: SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume}`);
         return false;
       }
-      t._vol5m = Math.round(vol5m);
+      t._vol5m = Math.round(volH1); // keep field name for downstream compatibility
       return true;
     });
-    log("screening", `Volume filter: ${eligible.length}/${before} passed (min 5m vol $${s.minVolume})`);
+    log("screening", `Volume filter: ${eligible.length}/${before} passed (min 1h vol $${s.minVolume})`);
   }
 
   if (eligible.length === 0) {
@@ -367,16 +391,16 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   }
 
   // ── Step 7: Find Meteora DLMM pool for each passing token ────────────────
+  // Fetch all qualifying pools in one bulk request, then match by token mint.
   log("screening", `Finding Meteora DLMM pools for ${eligible.length} tokens...`);
-  const meteoraResults = await Promise.all(
-    eligible.map(t => findMeteoraDlmmPool(t.mint))
-  );
+  const meteoraPoolMap = await fetchMeteoraDlmmPoolMap();
+  log("screening", `Meteora pool universe: ${meteoraPoolMap.size} qualifying pools fetched`);
 
   const withPool = eligible
-    .map((t, i) => ({ token: t, pool: meteoraResults[i] }))
+    .map(t => ({ token: t, pool: meteoraPoolMap.get(t.mint) ?? null }))
     .filter(({ token, pool }) => {
       if (!pool) {
-        log("screening", `  ${token.symbol}: NO POOL — no Meteora DLMM pool matches filters`);
+        log("screening", `  ${token.symbol}: NO POOL — not in Meteora qualifying pool list`);
         return false;
       }
       return true;
@@ -421,7 +445,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
 
     candidates.push({
       ...pool,
-      volume_5m: token._vol5m ?? null,
+      volume_h1: token._vol5m ?? null,
       ath:       token._ath   ?? null,
       okx:       token._okx   ?? null,
       fib_signal: {
