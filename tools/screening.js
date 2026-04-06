@@ -25,6 +25,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
+// Cache pools rejected with "broken support" — price well below Fib 0.618, skip re-analysis for 45 min
+const _fibBrokenSupportCache = new Map(); // poolAddress → timestamp
+const FIB_BROKEN_CACHE_MS = 45 * 60 * 1000;
+
 function loadJsonSet(filename) {
   try {
     const p = path.join(__dirname, "..", filename);
@@ -415,10 +419,22 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   // ── Step 8: Fibonacci analysis ───────────────────────────────────────────
   // Use the GeckoTerminal pool for candles (guaranteed indexed since found in GT trending),
   // but use Meteora pool's bin_step and price for accurate bin range calculation.
-  log("screening", `Running Fibonacci analysis on ${withPool.length} pools...`);
+
+  // Filter out pools cached as "broken support" — price far below Fib 0.618, no recovery expected soon
+  const now = Date.now();
+  const toAnalyze = withPool.filter(({ pool }) => {
+    const cachedAt = _fibBrokenSupportCache.get(pool.pool);
+    if (cachedAt && now - cachedAt < FIB_BROKEN_CACHE_MS) {
+      const minsLeft = Math.ceil((FIB_BROKEN_CACHE_MS - (now - cachedAt)) / 60000);
+      log("screening", `  ${pool.name}: SKIP — broken support cached, recheck in ${minsLeft}m`);
+      return false;
+    }
+    return true;
+  });
+  log("screening", `Running Fibonacci analysis on ${toAnalyze.length} pools...`);
 
   const signalResults = await Promise.allSettled(
-    withPool.map(({ token, pool }) => {
+    toAnalyze.map(({ token, pool }) => {
       const currentPrice = pool.price ?? token.price;
       const binStep      = pool.bin_step;
       if (!currentPrice || !binStep) {
@@ -433,12 +449,17 @@ export async function getTopCandidates({ limit = 20 } = {}) {
 
   // ── Build candidates from ENTRY signals ──────────────────────────────────
   const candidates = [];
-  for (let i = 0; i < withPool.length; i++) {
-    const { token, pool } = withPool[i];
+  for (let i = 0; i < toAnalyze.length; i++) {
+    const { token, pool } = toAnalyze[i];
     const result   = signalResults[i];
     const analysis = result.status === "fulfilled"
       ? result.value
       : { signal: "SKIP", reason: `Analysis failed: ${result.reason?.message || result.reason}` };
+
+    // Cache pools rejected for broken support — price already below Fib 0.618
+    if (analysis.signal !== "ENTRY" && analysis.reason?.includes("broken support")) {
+      _fibBrokenSupportCache.set(pool.pool, now);
+    }
 
     log("screening", `  ${pool.name}: ${analysis.signal} — ${analysis.reason}`);
     if (analysis.signal !== "ENTRY") continue;
@@ -523,7 +544,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   return {
     candidates: filtered,
     total_screened: geckoTokens.length,
-    fib_analyzed:   withPool.length,
+    fib_analyzed:   toAnalyze.length,
     fib_passed:     candidates.length,
   };
 }

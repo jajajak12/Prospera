@@ -426,10 +426,18 @@ After acting, write a brief one-line result per position.
 // ═══════════════════════════════════════════
 //  SCREENING CYCLE
 // ═══════════════════════════════════════════
-export async function runScreeningCycle({ silent = false } = {}) {
+export async function runScreeningCycle({ silent = false, force = false } = {}) {
   if (_screeningBusy) {
     log("cron", "Screening skipped — previous cycle still running");
     return null;
+  }
+  // Prevent cron from re-firing too soon after a management-triggered screening
+  if (!force) {
+    const cooldownMs = config.schedule.screeningIntervalMin * 60 * 1000;
+    const elapsed = Date.now() - _screeningLastTriggered;
+    if (elapsed < cooldownMs) {
+      return null; // silently skip — cooldown still active
+    }
   }
   _screeningBusy = true;
   _screeningLastTriggered = Date.now();
