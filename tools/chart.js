@@ -406,10 +406,6 @@ function calcBinsAbove(currentPrice, targetPrice, binStep) {
  *   - Primary zone (0.236–0.382) + RSI < 55 → bins_above = 8 (catch bounce)
  *   - Otherwise → bins_above = 0
  *
- * ATR compatibility:
- *   - If ATR% > binStep% × 4 → SKIP (too volatile for this bin step, OOR every candle)
- *   - If ATR% > binStep% × 2 → flag warning in reason but allow entry
- *
  * @param {string} poolAddress
  * @param {number} binStep
  * @param {number} currentPrice
@@ -475,22 +471,8 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
   const rsi   = rsiValues[rsiValues.length - 1];
   const rsiSlope = calcRSISlope(rsiValues, 5);
 
-  // ── ATR Compatibility ──────────────────────────────────────────────────────
   // binStep is in basis points (e.g. 100 = 1% per bin)
   const binStepPct = binStep / 100;
-  let atrWarning = null;
-
-  if (atrPct != null) {
-    if (atrPct > binStepPct * 8) {
-      return skip(
-        `ATR (${atrPct.toFixed(2)}%/candle) exceeds bin_step (${binStepPct}%) × 8 — too volatile, position would go OOR every candle`,
-        currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
-      );
-    }
-    if (atrPct > binStepPct * 4) {
-      atrWarning = `ATR=${atrPct.toFixed(2)}% > binStep×4 (${(binStepPct * 4).toFixed(2)}%) — high volatility, OOR risk elevated`;
-    }
-  }
 
   // ── Check 1: Price not below Fib 0.618 (key support) ─────────────────────
   // Entry is allowed in three zones:
@@ -599,7 +581,6 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     nearestSupport != null ? `support @${fmt(nearestSupport)}` : `support=fib786`,
   ];
   if (hasHiddenDivergence) parts.push("HiddenDiv ✓");
-  if (atrWarning)          parts.push(atrWarning);
 
   return {
     signal:          "ENTRY",
