@@ -481,14 +481,14 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
   let atrWarning = null;
 
   if (atrPct != null) {
-    if (atrPct > binStepPct * 4) {
+    if (atrPct > binStepPct * 8) {
       return skip(
-        `ATR (${atrPct.toFixed(2)}%/candle) exceeds bin_step (${binStepPct}%) × 4 — too volatile, position would go OOR every candle`,
+        `ATR (${atrPct.toFixed(2)}%/candle) exceeds bin_step (${binStepPct}%) × 8 — too volatile, position would go OOR every candle`,
         currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
       );
     }
-    if (atrPct > binStepPct * 2) {
-      atrWarning = `ATR=${atrPct.toFixed(2)}% > binStep×2 (${(binStepPct * 2).toFixed(2)}%) — high volatility, OOR risk elevated`;
+    if (atrPct > binStepPct * 4) {
+      atrWarning = `ATR=${atrPct.toFixed(2)}% > binStep×4 (${(binStepPct * 4).toFixed(2)}%) — high volatility, OOR risk elevated`;
     }
   }
 
