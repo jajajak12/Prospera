@@ -311,17 +311,17 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     return { candidates: [], total_screened: geckoTokens.length, fib_analyzed: 0 };
   }
 
-  // ── Step 4: OKX bundle / honeypot / dev filter ───────────────────────────
+  // ── Step 4: RugCheck bundle / honeypot / dev filter ──────────────────────
   {
-    const okxResults = await Promise.all(
+    const rugResults = await Promise.all(
       eligible.map(t => getTokenAdvancedInfo(t.mint))
     );
     const before = eligible.length;
     eligible = eligible.filter((t, i) => {
-      const okx = okxResults[i];
-      if (!okx) { log("screening", `  ${t.symbol}: OK (no OKX data)`); return true; } // API miss → keep
+      const okx = rugResults[i];
+      if (!okx) { log("screening", `  ${t.symbol}: OK (no RugCheck data)`); return true; } // API miss → keep
       if (okx.honeypot) {
-        log("screening", `  ${t.symbol}: SKIP — honeypot`);
+        log("screening", `  ${t.symbol}: SKIP — honeypot/rugged`);
         return false;
       }
       if (s.maxBundlePct != null && okx.bundlePct > s.maxBundlePct) {
@@ -329,14 +329,14 @@ export async function getTopCandidates({ limit = 20 } = {}) {
         return false;
       }
       if (isDevBlocked(okx.creator)) {
-        log("screening", `  ${t.symbol}: SKIP — creator blocked (OKX)`);
+        log("screening", `  ${t.symbol}: SKIP — creator blocked`);
         return false;
       }
       t._okx = okx;
-      log("screening", `  ${t.symbol}: OK — bundle=${okx.bundlePct ?? "?"}%`);
+      log("screening", `  ${t.symbol}: OK — bundle=${okx.bundlePct ?? "?"}%, insiders=${okx.graphInsiders ?? "?"}`);
       return true;
     });
-    log("screening", `OKX filter: ${eligible.length}/${before} passed`);
+    log("screening", `RugCheck filter: ${eligible.length}/${before} passed`);
   }
 
   if (eligible.length === 0) {
