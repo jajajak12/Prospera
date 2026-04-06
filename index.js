@@ -55,7 +55,7 @@ import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
+import { config, reloadScreeningThresholds, computeDeployAmount, getPositionSizing, calculateCurrentExposure, canOpenNewPosition } from "./config.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
@@ -147,7 +147,7 @@ function startHealthServer() {
   return server;
 }
 
-// Deploy amount is computed dynamically per wallet balance — see computeDeployAmount()
+// Deploy amount is computed dynamically per wallet balance — see getPositionSizing()
 
 // ═══════════════════════════════════════════
 //  CYCLE TIMERS
@@ -449,17 +449,35 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
       getWalletBalances(),
     ]);
     if (preBalance?.sol != null) _lastWalletBalance = preBalance.sol;
+
+    // ── Max positions check ───────────────────────────────────────────────
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
       _screeningBusy = false;
       return null;
     }
-    deployAmount = computeDeployAmount(preBalance.sol);
+
+    // ── Deploy sizing (tiered) ────────────────────────────────────────────
+    deployAmount = getPositionSizing(preBalance.sol);
     if (deployAmount === 0) {
-      log("cron", `Screening skipped — insufficient SOL for minimum deploy (${preBalance.sol.toFixed(3)} SOL, need at least ${1 + config.management.gasReserve} SOL)`);
+      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} SOL, need at least ${(config.risk.exposureGasReserve ?? 1) + 1} SOL)`);
       _screeningBusy = false;
       return null;
     }
+
+    // ── Exposure cap check (50%) ──────────────────────────────────────────
+    const currentExposure = calculateCurrentExposure(prePositions.positions);
+    const exposureCheck   = canOpenNewPosition(deployAmount, currentExposure, preBalance.sol);
+    if (!exposureCheck.allowed) {
+      log("cron", `Screening skipped — ${exposureCheck.reason}`, {
+        currentExposure: currentExposure.toFixed(2),
+        maxExposure: exposureCheck.maxExposureSol.toFixed(2),
+        proposed: deployAmount,
+      });
+      _screeningBusy = false;
+      return null;
+    }
+    log("cron", `Exposure check OK: ${currentExposure.toFixed(2)}→${exposureCheck.projectedExposureSol.toFixed(2)} SOL (${exposureCheck.exposurePct}% of ${(preBalance.sol - (config.risk.exposureGasReserve ?? 1)).toFixed(2)} SOL deployable)`);
   } catch (e) {
     log("cron_error", `Screening pre-check failed: ${e.message}`);
     _screeningBusy = false;
@@ -841,7 +859,12 @@ export function startCronJobs() {
       ]);
       const { getPerformanceSummary, getLessonsForPrompt } = await import("./lessons.js");
       const perf   = getPerformanceSummary();
-      const deploy = computeDeployAmount(balance?.sol ?? 0);
+      const walletSol  = balance?.sol ?? 0;
+      const deploy     = getPositionSizing(walletSol);
+      const exposure   = calculateCurrentExposure(positions.positions ?? []);
+      const gasReserve = config.risk.exposureGasReserve ?? 1.0;
+      const capPct     = config.risk.totalExposureCapPct ?? 0.50;
+      const maxExposure = Math.max(0, walletSol - gasReserve) * capPct;
 
       const posLines = positions.positions?.length
         ? positions.positions.map(p => {
@@ -858,7 +881,8 @@ export function startCronJobs() {
 
       const msg =
         `☀️ Morning Briefing — ${new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long" })}\n\n` +
-        `💰 Wallet: ${balance?.sol?.toFixed(3) ?? "?"} SOL | Deploy: ${deploy} SOL/position\n` +
+        `💰 Wallet: ${walletSol.toFixed(3)} SOL | Deploy: ${deploy} SOL/position\n` +
+        `📉 Exposure: ${exposure.toFixed(2)}/${maxExposure.toFixed(2)} SOL (${((exposure / Math.max(maxExposure, 0.001)) * 100).toFixed(0)}% cap)\n` +
         `📊 Open Positions (${positions.total_positions ?? 0}/${config.risk.maxPositions}):\n${posLines}\n\n` +
         `📈 Performance: ${perfLines}\n\n` +
         `⚙️ Strategy: ${config.screening.minBinStep}–${config.screening.maxBinStep} bin step | ` +
@@ -1199,7 +1223,7 @@ Commands:
         const pool = startupCandidates[pick - 1];
         const bins = pool.fib_signal?.binsBelow ?? 69;
         const bal  = await getWalletBalances();
-        const amt  = computeDeployAmount(bal.sol);
+        const amt  = getPositionSizing(bal.sol);
         console.log(`\nDeploying ${amt} SOL into ${pool.name} (bins_below=${bins})...\n`);
         const { content: reply } = await agentLoop(
           `Deploy ${amt} SOL into pool ${pool.pool} (${pool.name}). ` +
@@ -1219,7 +1243,7 @@ Commands:
     if (input.toLowerCase() === "auto") {
       await runBusy(async () => {
         const bal = await getWalletBalances();
-        const amt = computeDeployAmount(bal.sol);
+        const amt = getPositionSizing(bal.sol);
         console.log("\nAgent running Fibonacci screening and deploying...\n");
         const { content: reply } = await agentLoop(
           `Call get_chart_candidates, pick the best Fibonacci signal, deploy_position with ${amt} SOL. Execute now.`,

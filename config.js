@@ -18,8 +18,10 @@ if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 export const config = {
   // ─── Risk Limits ─────────────────────────
   risk: {
-    maxPositions:    u.maxPositions    ?? 3,
-    maxDeployAmount: u.maxDeployAmount ?? 50,
+    maxPositions:       u.maxPositions       ?? 3,
+    maxDeployAmount:    u.maxDeployAmount    ?? 50,
+    totalExposureCapPct: u.totalExposureCapPct ?? 0.50,  // max % of balance deployed at any time
+    exposureGasReserve:  u.exposureGasReserve  ?? 1.0,   // SOL reserved for gas (excluded from cap calc)
   },
 
   // ─── Pool Screening Thresholds ───────────
@@ -117,28 +119,91 @@ export const config = {
 };
 
 /**
- * Compute the deploy amount for a given wallet balance using tiered compounding.
+ * Tiered position sizing based on total wallet balance.
  *
- * Tier table (based on available SOL after gas reserve):
- *   < 5 SOL  → 1 SOL
- *   5–10     → 2 SOL
- *   10–15    → 3 SOL
- *   15–20    → 4 SOL
- *   … and so on — every additional 5 SOL bracket adds 1 SOL.
+ * Tiers:
+ *   < 8 SOL   → 1.5 SOL per posisi
+ *   8–15 SOL  → 2.8 SOL per posisi
+ *   15–25 SOL → 4.2 SOL per posisi
+ *   25–40 SOL → 6.0 SOL per posisi
+ *   > 40 SOL  → min(18% wallet, 9 SOL)
  *
- * Formula: floor(deployable / 5) + 1, capped by maxDeployAmount.
- * Returns 0 if deployable < 1 SOL (not enough to open a position).
+ * Selalu di-cap oleh single-position max = exposurableBalance × totalExposureCapPct.
+ * Returns 0 jika saldo tidak cukup untuk deploy minimum.
+ */
+export function getPositionSizing(totalSol) {
+  const gasReserve = config.risk.exposureGasReserve ?? 1.0;
+  const capPct     = config.risk.totalExposureCapPct ?? 0.50;
+
+  const exposurableBalance = Math.max(0, totalSol - gasReserve);
+  if (exposurableBalance < 1.0) return 0;
+
+  let perPosition;
+  if (totalSol < 8)         perPosition = 1.5;
+  else if (totalSol < 15)   perPosition = 2.8;
+  else if (totalSol < 25)   perPosition = 4.2;
+  else if (totalSol <= 40)  perPosition = 6.0;
+  else                      perPosition = Math.min(totalSol * 0.18, 9.0);
+
+  // Hard cap: single position tidak boleh melebihi 50% exposurable balance
+  const maxSinglePosition = exposurableBalance * capPct;
+  perPosition = Math.min(perPosition, maxSinglePosition, config.risk.maxDeployAmount ?? 50);
+
+  return parseFloat(perPosition.toFixed(2));
+}
+
+/**
+ * Hitung total SOL yang sedang di-deploy di semua posisi aktif.
+ * Gunakan total_value_usd (= valueNative SOL dari LPAgent) sebagai current exposure.
+ * Fallback ke 0 jika data tidak tersedia.
+ *
+ * @param {Array} positions - array dari getMyPositions().positions
+ */
+export function calculateCurrentExposure(positions) {
+  if (!Array.isArray(positions) || positions.length === 0) return 0;
+  const total = positions.reduce((sum, p) => sum + (p.total_value_usd ?? 0), 0);
+  return parseFloat(total.toFixed(4));
+}
+
+/**
+ * Cek apakah membuka posisi baru dengan proposedAmountSol masih dalam exposure cap.
+ *
+ * @param {number} proposedAmountSol    - SOL yang akan di-deploy
+ * @param {number} currentExposureSol   - Total SOL yang sudah di-deploy (dari calculateCurrentExposure)
+ * @param {number} walletSol            - Total saldo wallet saat ini
+ * @returns {{ allowed: boolean, currentExposureSol: number, projectedExposureSol: number,
+ *             maxExposureSol: number, exposurePct: number, reason?: string }}
+ */
+export function canOpenNewPosition(proposedAmountSol, currentExposureSol, walletSol) {
+  const gasReserve = config.risk.exposureGasReserve ?? 1.0;
+  const capPct     = config.risk.totalExposureCapPct ?? 0.50;
+
+  const exposurableBalance  = Math.max(0, walletSol - gasReserve);
+  const maxExposureSol      = parseFloat((exposurableBalance * capPct).toFixed(4));
+  const projectedExposureSol = parseFloat((currentExposureSol + proposedAmountSol).toFixed(4));
+  const exposurePct = exposurableBalance > 0
+    ? parseFloat(((projectedExposureSol / exposurableBalance) * 100).toFixed(1))
+    : 100;
+
+  const allowed = projectedExposureSol <= maxExposureSol + 0.001; // +0.001 untuk floating point tolerance
+
+  return {
+    allowed,
+    currentExposureSol: parseFloat(currentExposureSol.toFixed(3)),
+    projectedExposureSol,
+    maxExposureSol,
+    exposurePct,
+    ...(!allowed && {
+      reason: `Exposure cap terlampaui: ${projectedExposureSol.toFixed(2)} SOL projected > ${maxExposureSol.toFixed(2)} SOL max (${capPct * 100}% of ${exposurableBalance.toFixed(2)} SOL)`,
+    }),
+  };
+}
+
+/**
+ * @deprecated Gunakan getPositionSizing(). Wrapper untuk backward compatibility.
  */
 export function computeDeployAmount(walletSol) {
-  const reserve    = config.management.gasReserve ?? 0.1;
-  const ceil       = config.risk.maxDeployAmount;
-  const deployable = Math.max(0, walletSol - reserve);
-
-  if (deployable < 1) return 0;
-
-  const tier   = Math.floor(deployable / 5) + 1;
-  const result = Math.min(ceil, tier);
-  return parseFloat(result.toFixed(2));
+  return getPositionSizing(walletSol);
 }
 
 /**
