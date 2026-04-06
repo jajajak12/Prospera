@@ -72,9 +72,10 @@ Diterapkan secara berurutan dari yang paling murah ke paling mahal — kegagalan
 5. **Filter RugCheck** — deteksi honeypot/rugged, cek bundle %, verifikasi alamat creator
 6. **Keamanan token Jupiter** — konsentrasi 10 holder teratas, % bot holder, kumulatif fee SOL (`minTokenFeesSol`)
 7. **Pool Discovery Meteora** — bulk fetch semua pool DLMM qualifying dalam satu request (`page_size=100`, `timeframe=24h`), match by `token_x.address` client-side; filter usia diterapkan client-side
-8. **Filter ATH proximity** (opsional) — skip token yang terlalu dekat ATH (`athFilterPct`)
-9. **Filter sinyal Fibonacci** — Fib zone, EMA, RSI, ATR, gate confluenceScore (paling mahal — dijalankan terakhir)
-10. **Filter auto-backtest** (opsional) — cek win rate historis setiap kandidat sebelum deploy
+8. **RocketScan fallback** — token yang tidak ditemukan di Meteora API dicari via RocketScan (deteksi on-chain, lebih cepat); detail pool di-fetch dari `dlmm.datapi.meteora.ag`
+9. **Filter ATH proximity** (opsional) — skip token yang terlalu dekat ATH (`athFilterPct`)
+10. **Filter sinyal Fibonacci** — Fib zone, EMA, RSI, ATR, gate confluenceScore (paling mahal — dijalankan terakhir)
+11. **Filter auto-backtest** (opsional) — cek win rate historis setiap kandidat sebelum deploy
 
 ---
 
@@ -371,11 +372,11 @@ DRY_RUN=true node index.js
 |-----|---------|-----------|
 | `maxPositions` | 2 | Maksimal posisi terbuka bersamaan |
 | `minBinStep` / `maxBinStep` | 80 / 200 | Range bin step pool |
-| `minVolume` | 100000 | Min volume **1h** aktual dari semua DEX ($) — `volume.h1` Dexscreener |
+| `minVolume` | 20000 | Min volume **1h** aktual dari semua DEX ($) — `volume.h1` Dexscreener |
 | `minFeeActiveTvlRatio` | 0.05 | Min rasio fee/active TVL pool Meteora (timeframe 24h) |
 | `minMcap` / `maxMcap` | 150k / 5M | Range market cap token |
 | `minTvl` / `maxTvl` | 5000 / 250000 | Range TVL pool ($) |
-| `minTokenAgeHours` / `maxTokenAgeHours` | 1 / 1440 | Range usia token |
+| `minTokenAgeHours` / `maxTokenAgeHours` | 0.5 / 720 | Range usia token (min 30 menit) |
 | `minTokenFeesSol` | 30 | Min kumulatif fee dalam SOL (Jupiter — tips + priority + trading) |
 | `rsiMin` | 48 | RSI minimum untuk sinyal entry (auto-tuned oleh backtest sweep) |
 | `minConfluenceScore` | 0 | Gate minimum confluence score (auto-tuned oleh backtest sweep) |

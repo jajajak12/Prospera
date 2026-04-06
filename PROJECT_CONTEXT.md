@@ -10,14 +10,15 @@ Ringkasan perubahan arsitektur, fitur, dan keputusan penting per sesi.
 Flow menggantikan Meteora trending sebagai sumber discovery:
 
 1. **GeckoTerminal** — ambil trending token Solana dari semua DEX (2 halaman, ~40 token)
-2. **Dexscreener** — filter **1h** cross-DEX volume ≥ `minVolume` ($100k default) via `batchGetTokenVolumeH1`
+2. **Dexscreener** — filter **1h** cross-DEX volume ≥ `minVolume` ($20k default) via `batchGetTokenVolumeH1`
 3. **mcap pre-filter** — dari data GT jika tersedia
 4. **RugCheck** — bundle %/honeypot/creator check (menggantikan OKX yang mati)
 5. **Jupiter DataAPI** — top10 holders, bot holders, fees SOL
 6. **Meteora bulk fetch** — `fetchMeteoraDlmmPoolMap()`: satu request page_size=100, filter API-level (tvl/bin_step/fee/organic/holders/mcap), match client-side by `token_x.address`
-7. **Client-side age filter** — `base_token_age_hours` diterapkan client-side (bukan API filter)
-8. **Fibonacci analysis** — pakai GT candles + Meteora `bin_step`
-9. **Smart wallet boost** — +0.10 ke confluenceScore jika smart money terdeteksi
+7. **RocketScan fallback** — token tanpa pool di step 6 dicoba via `rocketscan.fun/api/pools?tokenBMint=`, detail dari `dlmm.datapi.meteora.ag`; pool baru yang belum diindex Meteora API tetap bisa masuk
+8. **Client-side age filter** — `base_token_age_hours` diterapkan client-side (bukan API filter)
+9. **Fibonacci analysis** — pakai GT candles + Meteora `bin_step`
+10. **Smart wallet boost** — +0.10 ke confluenceScore jika smart money terdeteksi
 
 ### Management Loop
 - **Deterministic rules** dijalankan di `index.js` SEBELUM LLM:
@@ -38,6 +39,20 @@ Flow menggantikan Meteora trending sebagai sumber discovery:
 - Setelah 6+ posisi ditutup: lift analysis — win vs loss signal correlation
 - lift > 0.1 → weight +0.05 (max 2.5); lift < -0.1 → weight -0.05 (min 0.3)
 - Weight ditampilkan di SCREENER prompt via `formatWeightsForPrompt()`
+
+### RocketScan Fallback (`tools/screening.js` — Step 7b)
+- Pool baru di Meteora sering belum muncul di `pool-discovery-api` karena butuh waktu indexing
+- RocketScan mendeteksi pool secara on-chain (event-based), jauh lebih cepat tersedia
+- Alur: token no-pool → `GET rocketscan.fun/api/pools?tokenBMint={mint}&poolType=DLMM` → dapat `poolId` → `GET dlmm.datapi.meteora.ag/pools?query={poolId}` → reconstruct pool object
+- Filter manual diterapkan: bin_step range, TVL, holders, mcap, organic (dari RocketScan `tokenB.organicScore`), age, pair=SOL wajib
+- `fee_active_tvl_ratio` dilewati — pool terlalu baru untuk punya data 24h yang valid
+- Pool fallback masuk ke `meteoraPoolMap` dan lanjut ke Fibonacci analysis
+
+### Broken Support Cache — Price-Aware Invalidation
+- Cache `_fibBrokenSupportCache` sebelumnya hanya simpan timestamp — token yang pump setelah rejection tetap diblokir 3 jam penuh
+- Sekarang cache simpan `{ cachedAt, priceAtRejection }`
+- Jika harga naik **>50%** sejak rejection, cache dihapus dan Fib analysis dijalankan ulang fresh
+- Log: `cache invalidated — price pumped +X% since rejection, re-analyzing`
 
 ### Partial Harvest
 - Auto-close ketika PnL mencapai `partialHarvestPct` (default 10%)
@@ -80,8 +95,8 @@ Flow menggantikan Meteora trending sebagai sumber discovery:
 | `minDeployAmountSol` | — | 0.5 | Hanya floor validasi, bukan ukuran deploy |
 | `partialHarvestPct` | — | 10 | Auto-close di 10% PnL |
 | `rpcFallbacks` | — | [Alchemy, Ankr, PublicNode, Official] | Failover chain |
-| `minVolume` | 20000 | 100000 | Volume 1h minimum naik ke $100k |
 | `maxTvl` | 300000 | 250000 | Max TVL pool turun ke $250k |
+| `minTokenAgeHours` | 1 | 0.5 | Minimum age token turun ke 30 menit |
 
 **Deploy sizing aktual:** `floor(deployable_SOL / 5) + 1`, capped by `maxDeployAmount`
 
@@ -132,6 +147,10 @@ Flow menggantikan Meteora trending sebagai sumber discovery:
 - [x] minVolume naik $20k → $100k (1h volume)
 - [x] maxTvl turun $300k → $250k
 - [x] README diterjemahkan ke Bahasa Indonesia
+- [x] RocketScan fallback — pool baru yang belum diindex Meteora API tetap terdeteksi
+- [x] Broken support cache price-aware — invalidate jika harga naik >50% sejak rejection
+- [x] minTokenAgeHours turun 1 jam → 30 menit (0.5)
+- [x] Math.floor dihapus dari `token_age_hours` — sub-hour precision bekerja benar
 
 ### Pending / Perlu Dipantau
 - [ ] Darwinian weights belum memiliki data (perlu 6+ posisi ditutup untuk mulai evolve)
