@@ -15,7 +15,7 @@
   "minHolders": 500,
   "maxBundlePct": 30,
   "maxBotHoldersPct": 30,
-  "maxTop10Pct": 20,
+  "maxTop10Pct": 22,
   "minTokenFeesSol": 30,
   "athFilterPct": null,
   "minMcap": 150000,
