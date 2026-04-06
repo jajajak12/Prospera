@@ -81,7 +81,7 @@ function condensePool(p) {
     mcap:              round(p.token_x?.market_cap),
     organic_score:     Math.round(p.token_x?.organic_score || 0),
     token_age_hours:   p.token_x?.created_at
-      ? Math.floor((Date.now() - p.token_x.created_at) / 3_600_000)
+      ? (Date.now() - p.token_x.created_at) / 3_600_000
       : null,
 
     // Price action

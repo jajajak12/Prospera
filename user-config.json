@@ -24,7 +24,7 @@
   "minBinStep": 80,
   "maxBinStep": 125,
   "minFeeActiveTvlRatio": 0.05,
-  "minTokenAgeHours": 1,
+  "minTokenAgeHours": 0.5,
   "maxTokenAgeHours": 720,
   "blockedLaunchpads": [],
   "stopLossPct": -20,
