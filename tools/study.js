@@ -8,6 +8,8 @@
  *   LPAGENT_API_KEY_BACKUP=backup_key
  */
 
+import { log } from "../logger.js";
+
 const LPAGENT_API = "https://api.lpagent.io/open-api/v1";
 const LPAGENT_PRIMARY = (process.env.LPAGENT_API_KEY || "").trim();
 const LPAGENT_BACKUP  = (process.env.LPAGENT_API_KEY_BACKUP || "").trim();
@@ -24,20 +26,20 @@ async function fetchWithKey(walletAddress, apiKey) {
     );
 
     if (!res.ok) {
-      console.error(`[LPAGENT] HTTP ${res.status} (key: ...${apiKey.slice(-6)})`);
+      log.error("lpagent", `HTTP ${res.status} (key: ...${apiKey.slice(-6)})`);
       return null;
     }
 
     const data = await res.json();
 
     if (!data.data?.length) {
-      console.log(`[LPAGENT] No open positions (count=${data.count ?? 0})`);
+      log("lpagent", `No open positions (count=${data.count ?? 0})`);
       return [];
     }
 
     return data.data;
   } catch (err) {
-    console.error(`[LPAGENT] fetch failed: ${err.message} (key: ...${apiKey.slice(-6)})`);
+    log.error("lpagent", `fetch failed: ${err.message} (key: ...${apiKey.slice(-6)})`);
     return null;
   }
 }
@@ -53,7 +55,7 @@ async function fetchWithKey(walletAddress, apiKey) {
  */
 export async function fetchLPAgentOpenPositions(walletAddress) {
   if (!LPAGENT_PRIMARY) {
-    console.error("[LPAGENT] LPAGENT_API_KEY not set in .env");
+    log.error("lpagent", "LPAGENT_API_KEY not set in .env");
     return null;
   }
 
@@ -63,15 +65,15 @@ export async function fetchLPAgentOpenPositions(walletAddress) {
 
   // ── Backup key (immediate failover) ───────────────────────────
   if (LPAGENT_BACKUP) {
-    console.log("[LPAGENT] Primary key failed — trying backup key...");
+    log("lpagent", "Primary key failed — trying backup key...");
     const backup = await fetchWithKey(walletAddress, LPAGENT_BACKUP);
     if (backup !== null) {
-      console.log("[LPAGENT] Backup key succeeded");
+      log("lpagent", "Backup key succeeded");
       return backup;
     }
-    console.error("[LPAGENT] Both keys failed — skipping cycle");
+    log.error("lpagent", "Both keys failed — skipping cycle");
   } else {
-    console.error("[LPAGENT] Primary key failed, no backup key set — skipping cycle");
+    log.error("lpagent", "Primary key failed, no backup key set — skipping cycle");
   }
 
   return null;
