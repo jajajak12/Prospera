@@ -118,6 +118,7 @@ Flow menggantikan Meteora trending sebagai sumber discovery:
 | `minTokenAgeHours` | 1 | 0.5 | Minimum age token turun ke 30 menit |
 | `totalExposureCapPct` | — | 0.60 | Max 60% wallet boleh di-deploy sekaligus |
 | `exposureGasReserve` | 1.0 | 0.5 | SOL reserved untuk gas, excluded dari exposure cap |
+| `maxTop10Pct` | 20 | 22 | Max top 10 holder concentration naik ke 22% |
 
 **Deploy sizing aktual:** tiered berdasarkan balance wallet via `getPositionSizing(totalSol)`, lihat tabel di section Tiered Position Sizing
 
@@ -159,7 +160,7 @@ Flow menggantikan Meteora trending sebagai sumber discovery:
 - [x] Structured logging dengan winston (combined + error log harian)
 - [x] Config cleanup (positionSizePct, deployAmountSol)
 - [x] GeckoTerminal-first screening pipeline
-- [x] ATR threshold naik ×4 → ×8 (token volatile di Fib zone bisa lolos)
+- [x] ATR filter dihapus sepenuhnya — OOR management rule #3 sebagai backstop
 - [x] Double screening bug fix (cron + management cooldown guard)
 - [x] Fib rejection cache 3 jam (dead tokens tidak waste OHLCV API tiap cycle)
 - [x] GT 0 tokens reset cooldown (HTTP 429 tidak bakar 15 menit sia-sia)
