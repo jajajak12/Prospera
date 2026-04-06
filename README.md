@@ -388,7 +388,7 @@ DRY_RUN=true node index.js
 | `rsiMin` | 48 | RSI minimum untuk sinyal entry (auto-tuned oleh backtest sweep) |
 | `minConfluenceScore` | 0 | Gate minimum confluence score (auto-tuned oleh backtest sweep) |
 | `totalExposureCapPct` | 0.60 | Max % saldo deployable yang boleh di-deploy sekaligus (60%) |
-| `exposureGasReserve` | 1.0 | SOL yang direservasi untuk gas, dikecualikan dari exposure cap |
+| `exposureGasReserve` | 0.5 | SOL yang direservasi untuk gas, dikecualikan dari exposure cap |
 | `stopLossPct` | −20 | Threshold stop loss |
 | `takeProfitMaxPct` | 25 | Threshold auto take-profit |
 | `takeProfitFeePct` | 5 | LLM decision zone dimulai di sini |

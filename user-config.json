@@ -21,6 +21,7 @@
   "minMcap": 150000,
   "maxMcap": 10000000,
   "totalExposureCapPct": 0.60,
+  "exposureGasReserve": 0.5,
   "minVolume": 100000,
   "minBinStep": 80,
   "maxBinStep": 125,
