@@ -32,6 +32,7 @@ Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
 4. `bypassPermissions` aktif — tidak perlu minta konfirmasi untuk tool calls
 5. Jangan tambah fitur di luar yang diminta
 6. Setelah implementasi besar: update `PROJECT_CONTEXT.md`
+7. **Setelah setiap task selesai: update README.md + push ke GitHub**
 
 ## Aturan Coding
 
@@ -47,7 +48,7 @@ Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
 
 ```
 index.js              — main loop: deterministic rules + LLM agent calls
-config.js             — config loader + computeDeployAmount()
+config.js             — config loader + getPositionSizing() + exposure cap functions
 user-config.json      — runtime config (edit ini untuk ubah parameter)
 prompt.js             — system prompt builder (SCREENER/MANAGER/GENERAL)
 signal-weights.js     — Darwinian adaptive signal weights
@@ -57,7 +58,7 @@ lessons.js            — performance tracking + weight update trigger
 state.js              — posisi tracking + memori agent
 
 tools/
-  screening.js        — pipeline screening v2 (GeckoTerminal-first)
+  screening.js        — pipeline screening v2 (GeckoTerminal-first + RocketScan fallback)
   chart.js            — Fibonacci + Volume Profile + indicators
   dlmm.js             — deploy/close posisi, RPC failover
   wallet.js           — wallet balance, swap via Jupiter
@@ -70,7 +71,7 @@ tools/
 
 ---
 
-## Screening Pipeline (v2)
+## Screening Pipeline (v2 — GeckoTerminal-first + RocketScan fallback)
 
 ```
 GeckoTerminal trending Solana (2 pages, ~40 token, semua DEX)
@@ -83,12 +84,15 @@ GeckoTerminal trending Solana (2 pages, ~40 token, semua DEX)
       filter API: tvl, bin_step, fee/tvl ratio, organic, holders, mcap
       match client-side by token_x.address
       filter age client-side dari token_x.created_at
+  → RocketScan fallback (Step 7b):
+      token tanpa pool di Meteora API → cek rocketscan.fun/api/pools?tokenBMint=
+      detail pool dari dlmm.datapi.meteora.ag
+      apply manual filters: bin_step, TVL, holders, mcap, organic, age, pair=SOL
   → Fibonacci analysis (GT candles + Meteora bin_step)
+  → Broken support cache (3 jam, invalidate jika harga naik >50%)
   → Smart wallet boost (+0.10 confluenceScore)
   → Sort by confluenceScore DESC
 ```
-
-**Kenapa GeckoTerminal-first:** Meteora `category=trending` sering melewatkan token baru/aktif.
 
 ---
 
@@ -106,30 +110,34 @@ LLM decision zone: PnL antara `takeProfitFeePct` (5%) dan `takeProfitMaxPct` (25
 
 ---
 
-## Deploy Sizing
+## Deploy Sizing & Exposure Cap
 
-**Formula tiered:** `floor(deployable_SOL / 5) + 1`, capped by `maxDeployAmount`
+**Tiered position sizing** via `getPositionSizing(walletSol)`:
 
-| Balance (deployable) | Deploy |
-|----------------------|--------|
-| < 5 SOL | 1 SOL |
-| 5–10 SOL | 2 SOL |
-| 10–15 SOL | 3 SOL |
+| Saldo Wallet | Deploy per Posisi |
+|--------------|-------------------|
+| < 8 SOL | 1.5 SOL |
+| 8–15 SOL | 2.8 SOL |
+| 15–25 SOL | 4.2 SOL |
+| 25–40 SOL | 6.0 SOL |
+| > 40 SOL | min(18% wallet, 9 SOL) |
 
-`minDeployAmountSol` (0.5) = hanya floor validasi, BUKAN ukuran deploy aktual.
+**Total Exposure Cap:** Max 60% dari saldo deployable (setelah 0.5 SOL gas reserve).
+Cek via `canOpenNewPosition()` sebelum setiap screening — jika cap terlampaui, screening dilewati.
 
 ---
 
 ## Parameter Utama (user-config.json)
 
 ```
-maxPositions: 2          minVolume: 100000       minOrganic: 60
-minHolders: 500          maxTop10Pct: 20         maxBotHoldersPct: 30
-maxBundlePct: 30         minTokenFeesSol: 30     minMcap: 150000
-maxMcap: 5000000         minBinStep: 80          maxBinStep: 200
-minTvl: 5000             maxTvl: 250000          minFeeActiveTvlRatio: 0.05
-stopLossPct: -20         takeProfitMaxPct: 25    takeProfitFeePct: 5
-partialHarvestPct: 10    outOfRangeBinsToClose: 20
+maxPositions: 2             minVolume: 100000        minOrganic: 60
+minHolders: 500             maxTop10Pct: 20          maxBotHoldersPct: 30
+maxBundlePct: 30            minTokenFeesSol: 30      minMcap: 150000
+maxMcap: 5000000            minBinStep: 80           maxBinStep: 125
+minTvl: 5000                maxTvl: 250000           minFeeActiveTvlRatio: 0.05
+minTokenAgeHours: 0.5       maxTokenAgeHours: 720    stopLossPct: -20
+takeProfitMaxPct: 25        takeProfitFeePct: 5      partialHarvestPct: 10
+outOfRangeBinsToClose: 20   totalExposureCapPct: 0.60  exposureGasReserve: 0.5
 managementModel: deepseek/deepseek-v3.2
 screeningModel: qwen/qwen3.5-flash-02-23
 ```
@@ -154,19 +162,26 @@ log.warn(category, message, ctx?)
 log.error(category, message, ctx?)
 
 // Domain shortcuts:
-log.screening(msg, ctx)
-log.trade(msg, ctx)
-log.position(msg, ctx)
-log.confluence(msg, ctx)
-log.pnl(msg, ctx)
-log.rpc(msg, ctx)
-log.management(msg, ctx)
-log.cron(msg, ctx)
+log.screening(msg, ctx)   log.trade(msg, ctx)     log.position(msg, ctx)
+log.confluence(msg, ctx)  log.pnl(msg, ctx)       log.rpc(msg, ctx)
+log.management(msg, ctx)  log.cron(msg, ctx)
 
 // ctx fields: pool, position, pair, token, confluenceScore, pnl, action, reason, step
 ```
 
 Override level: `LOG_LEVEL=debug pm2 restart 0`
+
+---
+
+## Fungsi Config Penting
+
+```js
+getPositionSizing(walletSol)                        // tiered deploy amount
+calculateCurrentExposure(positions)                  // total SOL in active positions
+canOpenNewPosition(proposed, current, walletSol)     // exposure cap check
+computeDeployAmount(walletSol)                       // deprecated, wrapper ke getPositionSizing
+reloadScreeningThresholds()                          // hot-reload config tanpa restart
+```
 
 ---
 
@@ -191,6 +206,7 @@ Auto-reset ke primary setelah 5 menit stabil.
 - RPC failover harus aktif
 - Volume Profile (POC/VAL) bersifat **informational only** — bukan hard gate
 - `autoBacktest` default **false** — jangan asumsi aktif kecuali user minta
+- Exposure cap 60% harus selalu dicek sebelum open posisi baru
 
 ---
 

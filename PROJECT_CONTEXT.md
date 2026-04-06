@@ -54,6 +54,25 @@ Flow menggantikan Meteora trending sebagai sumber discovery:
 - Jika harga naik **>50%** sejak rejection, cache dihapus dan Fib analysis dijalankan ulang fresh
 - Log: `cache invalidated — price pumped +X% since rejection, re-analyzing`
 
+### Tiered Position Sizing & Total Exposure Cap (`config.js`)
+- `getPositionSizing(totalSol)` menggantikan `computeDeployAmount()` (deprecated wrapper tetap ada)
+- Tier sizing berdasarkan total wallet balance:
+  ```
+  < 8 SOL   → 1.5 SOL per posisi
+  8–15 SOL  → 2.8 SOL per posisi
+  15–25 SOL → 4.2 SOL per posisi
+  25–40 SOL → 6.0 SOL per posisi
+  > 40 SOL  → min(18% wallet, 9 SOL)
+  ```
+  Selalu di-cap oleh `exposurableBalance × totalExposureCapPct`
+- `calculateCurrentExposure(positions)` — hitung total SOL deployed dari `total_value_usd`
+- `canOpenNewPosition(proposedAmountSol, currentExposureSol, walletSol)`:
+  - Exposure cap: projected total tidak boleh melebihi `totalExposureCapPct` (60%) dari exposurable balance
+  - `exposureGasReserve: 0.5 SOL` reserved sebelum hitung exposurable balance
+  - Return `{ allowed, currentExposureSol, projectedExposureSol, maxExposureSol, exposurePct, reason? }`
+- Check dilakukan di `index.js` sebelum deploy — bukan bagian dari Fibonacci screening
+- Morning briefing menampilkan exposure usage line
+
 ### Partial Harvest
 - Auto-close ketika PnL mencapai `partialHarvestPct` (default 10%)
 - Berjalan sebagai deterministic rule (tidak menunggu LLM)
@@ -97,8 +116,10 @@ Flow menggantikan Meteora trending sebagai sumber discovery:
 | `rpcFallbacks` | — | [Alchemy, Ankr, PublicNode, Official] | Failover chain |
 | `maxTvl` | 300000 | 250000 | Max TVL pool turun ke $250k |
 | `minTokenAgeHours` | 1 | 0.5 | Minimum age token turun ke 30 menit |
+| `totalExposureCapPct` | — | 0.60 | Max 60% wallet boleh di-deploy sekaligus |
+| `exposureGasReserve` | 1.0 | 0.5 | SOL reserved untuk gas, excluded dari exposure cap |
 
-**Deploy sizing aktual:** `floor(deployable_SOL / 5) + 1`, capped by `maxDeployAmount`
+**Deploy sizing aktual:** tiered berdasarkan balance wallet via `getPositionSizing(totalSol)`, lihat tabel di section Tiered Position Sizing
 
 ---
 
@@ -151,6 +172,9 @@ Flow menggantikan Meteora trending sebagai sumber discovery:
 - [x] Broken support cache price-aware — invalidate jika harga naik >50% sejak rejection
 - [x] minTokenAgeHours turun 1 jam → 30 menit (0.5)
 - [x] Math.floor dihapus dari `token_age_hours` — sub-hour precision bekerja benar
+- [x] Tiered position sizing — `getPositionSizing()` menggantikan `computeDeployAmount()`
+- [x] Total Exposure Cap 60% — `canOpenNewPosition()` check sebelum deploy
+- [x] exposureGasReserve turun 1.0 → 0.5 SOL
 
 ### Pending / Perlu Dipantau
 - [ ] Darwinian weights belum memiliki data (perlu 6+ posisi ditutup untuk mulai evolve)
