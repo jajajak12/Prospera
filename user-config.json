@@ -55,5 +55,5 @@
   "backtestAggregate": 15,
   "_lastStrategyApplied": "2026-04-01T07:52:23.022Z",
   "_lastAgentTune": "2026-04-02T11:21:11.968Z",
-  "maxTvl": 300000
+  "maxTvl": 250000
 }
