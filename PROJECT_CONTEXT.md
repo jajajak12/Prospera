@@ -107,10 +107,19 @@ Flow baru menggantikan Meteora trending sebagai sumber discovery:
 - [x] Structured logging dengan context
 - [x] Config cleanup (positionSizePct, deployAmountSol)
 - [x] GeckoTerminal-first screening pipeline
+- [x] ATR threshold naik ×4 → ×8 (token volatile di Fib zone bisa lolos)
+- [x] Double screening bug fix (cron + management cooldown guard)
+- [x] Fib rejection cache 3 jam (dead tokens tidak waste OHLCV API tiap cycle)
+- [x] GT 0 tokens reset cooldown (HTTP 429 tidak bakar 15 menit sia-sia)
+- [x] OKX/Jupiter per-token logging (API miss case ter-log)
+- [x] Dead token pre-filter: price_change_pct <= -80% langsung skip Fib
+- [x] Signal attribution: RSI/ATR/primary_zone/hidden_div/smart_wallet disimpan saat deploy, dianalisa setiap 5 close
 
 ### Pending / Perlu Dipantau
 - [ ] Darwinian weights belum memiliki data (perlu 6+ posisi ditutup untuk mulai evolve)
-- [ ] Log files dari sesi root perlu di-chown: `sudo chown -R prospera:prospera /home/prospera/prospera/logs/`
+- [ ] Signal attribution baru bisa dievaluasi setelah ada closed positions
+- [ ] OKX API sering miss data — semua token lolos via fallback `return true`. Perlu investigasi apakah endpoint masih valid
+- [ ] GeckoTerminal rate limit (HTTP 429) terjadi berulang — pertimbangkan delay antar page request
 - [ ] Monitor entry rate setelah fix screening pipeline (diharapkan ada candidate saat market kondusif)
 
 ---
