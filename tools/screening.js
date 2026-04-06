@@ -159,6 +159,143 @@ async function discoverTokensFromGecko({ pages = 2 } = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  RocketScan fallback — untuk pool yang belum diindex Meteora pool-discovery-api
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ROCKETSCAN_API   = "https://rocketscan.fun/api/pools";
+const DLMM_DATAPI_BASE = "https://dlmm.datapi.meteora.ag";
+
+/**
+ * Untuk token yang tidak ditemukan di Meteora pool-discovery-api,
+ * coba cari pool-nya via RocketScan (deteksi on-chain, lebih cepat diindex).
+ * Jika ditemukan, fetch detail dari dlmm.datapi.meteora.ag dan apply basic filters.
+ *
+ * Returns array of { token, pool } yang lolos filter.
+ */
+async function fetchRocketScanFallback(tokens, s) {
+  if (tokens.length === 0) return [];
+
+  const results = await Promise.all(tokens.map(async (token) => {
+    try {
+      // 1. Cari DLMM pool di RocketScan
+      const rsRes = await fetch(
+        `${ROCKETSCAN_API}?tokenBMint=${token.mint}&poolType=DLMM`,
+        { signal: AbortSignal.timeout(8_000) }
+      );
+      if (!rsRes.ok) return null;
+      const rsData = await rsRes.json();
+      const rsPools = (rsData.data ?? []).filter(p => p.poolType === "DLMM");
+      if (rsPools.length === 0) return null;
+
+      // Ambil pool pertama (paling baru per default sort RocketScan)
+      const rsPool = rsPools[0];
+      const poolId = rsPool.poolId;
+      if (!poolId) return null;
+
+      // 2. Fetch detail pool dari dlmm.datapi.meteora.ag
+      const dmRes = await fetch(
+        `${DLMM_DATAPI_BASE}/pools?query=${poolId}`,
+        { signal: AbortSignal.timeout(8_000) }
+      );
+      if (!dmRes.ok) return null;
+      const dmData = await dmRes.json();
+      const dm = dmData.data?.[0];
+      if (!dm || dm.address !== poolId) return null;
+
+      // 3. Pastikan pair-nya SOL
+      const quoteSymbol = dm.token_y?.symbol ?? "";
+      if (quoteSymbol !== "SOL" && dm.token_y?.address !== "So11111111111111111111111111111111111111112") {
+        log("screening", `  ${token.symbol}: RS fallback — pool pair bukan SOL (${quoteSymbol}), skip`);
+        return null;
+      }
+
+      // 4. Apply basic filters
+      const binStep      = dm.pool_config?.bin_step ?? null;
+      const tvl          = dm.tvl ?? 0;
+      const holders      = dm.token_x?.holders ?? 0;
+      const mcap         = dm.token_x?.market_cap ?? 0;
+      const organicScore = rsPool.tokenB?.organicScore ?? null;
+      const tokenAge     = rsPool.tokenB?.tokenCreatedAt
+        ? (Date.now() - new Date(rsPool.tokenB.tokenCreatedAt).getTime()) / 3_600_000
+        : null;
+
+      if (binStep == null || binStep < (s.minBinStep ?? 0) || binStep > (s.maxBinStep ?? 9999)) {
+        log("screening", `  ${token.symbol}: RS fallback — bin_step ${binStep} diluar range [${s.minBinStep}-${s.maxBinStep}]`);
+        return null;
+      }
+      if (tvl < (s.minTvl ?? 0)) {
+        log("screening", `  ${token.symbol}: RS fallback — TVL $${Math.round(tvl)} < min $${s.minTvl}`);
+        return null;
+      }
+      if (s.maxTvl != null && tvl > s.maxTvl) {
+        log("screening", `  ${token.symbol}: RS fallback — TVL $${Math.round(tvl)} > max $${s.maxTvl}`);
+        return null;
+      }
+      if (organicScore != null && organicScore < (s.minOrganic ?? 0)) {
+        log("screening", `  ${token.symbol}: RS fallback — organic ${organicScore.toFixed(0)} < min ${s.minOrganic}`);
+        return null;
+      }
+      if (holders < (s.minHolders ?? 0)) {
+        log("screening", `  ${token.symbol}: RS fallback — holders ${holders} < min ${s.minHolders}`);
+        return null;
+      }
+      if (mcap < (s.minMcap ?? 0)) {
+        log("screening", `  ${token.symbol}: RS fallback — mcap $${Math.round(mcap)} < min $${s.minMcap}`);
+        return null;
+      }
+      if (tokenAge != null && s.minTokenAgeHours != null && tokenAge < s.minTokenAgeHours) {
+        log("screening", `  ${token.symbol}: RS fallback — token age ${(tokenAge * 60).toFixed(0)}m < min ${s.minTokenAgeHours * 60}m`);
+        return null;
+      }
+      if (tokenAge != null && s.maxTokenAgeHours != null && tokenAge > s.maxTokenAgeHours) {
+        log("screening", `  ${token.symbol}: RS fallback — token age ${tokenAge.toFixed(1)}h > max ${s.maxTokenAgeHours}h`);
+        return null;
+      }
+
+      // 5. Build condensed pool object kompatibel dengan pipeline
+      // fee_active_tvl_ratio dilewati — pool terlalu baru untuk punya data 24h yang valid
+      const pool = {
+        pool:                poolId,
+        name:                dm.name,
+        base: {
+          symbol:   dm.token_x?.symbol,
+          mint:     dm.token_x?.address,
+          organic:  Math.round(organicScore ?? 0),
+          warnings: 0,
+        },
+        quote: {
+          symbol: dm.token_y?.symbol,
+          mint:   dm.token_y?.address,
+        },
+        bin_step:            binStep,
+        fee_pct:             dm.pool_config?.base_fee_pct ?? null,
+        active_tvl:          null,
+        fee_window:          null,
+        volume_window:       Math.round(dm.volume?.["24h"] ?? dm.volume?.["1h"] ?? 0),
+        fee_active_tvl_ratio: null, // new pool — insufficient 24h data
+        volatility:          null,
+        holders,
+        mcap:                Math.round(mcap),
+        organic_score:       Math.round(organicScore ?? 0),
+        token_age_hours:     tokenAge,
+        price:               dm.current_price,
+        price_change_pct:    null,
+        price_trend:         null,
+        _source:             "rocketscan",
+      };
+
+      log("screening", `  ${token.symbol}: RS fallback — pool ${poolId.slice(0, 8)}... ditemukan (bin_step=${binStep}, TVL=$${Math.round(tvl)})`);
+      return { token, pool };
+    } catch (e) {
+      // Fallback failure tidak boleh crash screening
+      return null;
+    }
+  }));
+
+  return results.filter(Boolean);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Meteora pool lookup: find DLMM pool for a specific base token
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -405,6 +542,20 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   log("screening", `Finding Meteora DLMM pools for ${eligible.length} tokens...`);
   const meteoraPoolMap = await fetchMeteoraDlmmPoolMap();
   log("screening", `Meteora pool universe: ${meteoraPoolMap.size} qualifying pools fetched`);
+
+  // ── Step 7b: RocketScan fallback untuk token yang tidak ditemukan ─────────
+  // pool-discovery-api butuh waktu untuk mengindex pool baru.
+  // RocketScan mendeteksi pool secara on-chain sehingga lebih cepat.
+  const missingTokens = eligible.filter(t => !meteoraPoolMap.has(t.mint));
+  if (missingTokens.length > 0) {
+    const fallbacks = await fetchRocketScanFallback(missingTokens, s);
+    for (const { token, pool } of fallbacks) {
+      meteoraPoolMap.set(token.mint, pool);
+    }
+    if (fallbacks.length > 0) {
+      log("screening", `RocketScan fallback: ${fallbacks.length}/${missingTokens.length} token mendapat pool`);
+    }
+  }
 
   const withPool = eligible
     .map(t => ({ token: t, pool: meteoraPoolMap.get(t.mint) ?? null }))
