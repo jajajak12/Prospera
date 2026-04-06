@@ -61,9 +61,14 @@ function save(data) {
  * @param {number} perf.minutes_in_range
  * @param {number} perf.minutes_held
  * @param {string} perf.close_reason
- * @param {number} [perf.fib_entry_pct]     - Where in Fib zone was entry (0=fib236, 100=fib618)
- * @param {number} [perf.confluence_score] - Fibonacci confluence score at entry (0-1)
- * @param {string} [perf.fib_zone]         - ATH_ZONE / PRIMARY / SECONDARY
+ * @param {number}  [perf.fib_entry_pct]         - Where in Fib zone was entry (0=fib236, 100=fib618)
+ * @param {number}  [perf.confluence_score]      - Fibonacci confluence score at entry (0-1)
+ * @param {string}  [perf.fib_zone]              - ATH_ZONE / PRIMARY / SECONDARY
+ * @param {number}  [perf.rsi]                   - RSI at entry
+ * @param {number}  [perf.atr_pct]               - ATR% at entry
+ * @param {boolean} [perf.in_primary_zone]       - Price was in primary Fib zone at entry
+ * @param {boolean} [perf.has_hidden_divergence] - Hidden bullish divergence at entry
+ * @param {boolean} [perf.smart_wallet_present]  - Smart wallet boost was applied
  */
 export async function recordPerformance(perf) {
   const data = load();
@@ -117,7 +122,7 @@ export async function recordPerformance(perf) {
     });
   }
 
-  // Evolve thresholds every 5 closed positions
+  // Evolve thresholds + run signal attribution every 5 closed positions
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
     const { config, reloadScreeningThresholds } = await import("./config.js");
     const result = evolveThresholds(data.performance, config);
@@ -129,6 +134,13 @@ export async function recordPerformance(perf) {
         return `• ${k} = ${v}`;
       }).join("\n");
       sendMessage(`🧠 Threshold auto-evolved (${data.performance.length} posisi):\n${lines}`).catch(() => {});
+    }
+
+    // Signal attribution: which entry signals predicted wins?
+    const attribution = computeSignalAttribution(data.performance);
+    if (attribution) {
+      log("attribution", attribution.summary);
+      sendMessage(`📊 Signal Attribution (${data.performance.length} posisi):\n${attribution.summary}`).catch(() => {});
     }
   }
 }
@@ -292,6 +304,54 @@ export function evolveThresholds(perfData, config) {
   save(data);
 
   return { changes, rationale };
+}
+
+// ─── Signal Attribution ────────────────────────────────────────
+
+/**
+ * Analyze which entry signals correlate with wins (pnl_pct > 0).
+ * Only runs if at least 5 positions have signal data.
+ * Returns a summary string for Telegram/logs, or null if insufficient data.
+ */
+export function computeSignalAttribution(perfData) {
+  if (!perfData || perfData.length < 5) return null;
+
+  const signals = [
+    { key: "rsi_above_55",         label: "RSI > 55",             test: p => p.rsi != null ? p.rsi > 55      : null },
+    { key: "in_primary_zone",      label: "Primary Fib zone",      test: p => p.in_primary_zone != null ? !!p.in_primary_zone : null },
+    { key: "has_hidden_divergence",label: "Hidden divergence",     test: p => p.has_hidden_divergence != null ? !!p.has_hidden_divergence : null },
+    { key: "smart_wallet_present", label: "Smart wallet",          test: p => p.smart_wallet_present != null ? !!p.smart_wallet_present : null },
+    { key: "confluence_above_0_5", label: "Confluence ≥ 0.5",      test: p => p.confluence_score != null ? p.confluence_score >= 0.5 : null },
+    { key: "fib_zone_primary",     label: "fib_zone=PRIMARY",      test: p => p.fib_zone != null ? p.fib_zone === "PRIMARY" : null },
+  ];
+
+  const lines = [];
+  let hasData = false;
+
+  for (const sig of signals) {
+    const withSignal    = perfData.filter(p => sig.test(p) === true);
+    const withoutSignal = perfData.filter(p => sig.test(p) === false);
+
+    if (withSignal.length < 2 && withoutSignal.length < 2) continue;
+    hasData = true;
+
+    const wrWith    = withSignal.length    > 0 ? withSignal.filter(p => p.pnl_pct > 0).length / withSignal.length : null;
+    const wrWithout = withoutSignal.length > 0 ? withoutSignal.filter(p => p.pnl_pct > 0).length / withoutSignal.length : null;
+
+    const withStr    = wrWith    != null ? `${(wrWith    * 100).toFixed(0)}% (${withSignal.filter(p => p.pnl_pct > 0).length}/${withSignal.length})`    : "n/a";
+    const withoutStr = wrWithout != null ? `${(wrWithout * 100).toFixed(0)}% (${withoutSignal.filter(p => p.pnl_pct > 0).length}/${withoutSignal.length})` : "n/a";
+
+    const diff = (wrWith ?? 0) - (wrWithout ?? 0);
+    const marker = Math.abs(diff) >= 0.20 ? (diff > 0 ? " ✅" : " ❌") : "";
+
+    lines.push(`• ${sig.label}: YES=${withStr} / NO=${withoutStr}${marker}`);
+  }
+
+  if (!hasData) return null;
+
+  return {
+    summary: lines.join("\n"),
+  };
 }
 
 // ─── Helpers ───────────────────────────────────────────────────

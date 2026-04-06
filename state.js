@@ -56,9 +56,14 @@ export function trackPosition({
   initial_value_usd,
   mcap,
   volume_5m,
-  fib_entry_pct = null,     // Where in fib zone was entry? (0% = fib236, 100% = fib618)
-  confluence_score = null,  // Fibonacci confluence score at entry (0-1)
-  fib_zone = null,          // ATH_ZONE / PRIMARY / SECONDARY
+  fib_entry_pct = null,          // Where in fib zone was entry? (0% = fib236, 100% = fib618)
+  confluence_score = null,       // Fibonacci confluence score at entry (0-1)
+  fib_zone = null,               // ATH_ZONE / PRIMARY / SECONDARY
+  rsi = null,                    // RSI at entry
+  atr_pct = null,                // ATR% at entry
+  in_primary_zone = null,        // true = primary zone (fib 0.236–0.382)
+  has_hidden_divergence = null,  // hidden bullish divergence detected
+  smart_wallet_present = null,   // smart wallet boost was applied
 }) {
   const state = load();
   state.positions[position] = {
@@ -81,6 +86,11 @@ export function trackPosition({
     fib_entry_pct,
     confluence_score,
     fib_zone,
+    rsi,
+    atr_pct,
+    in_primary_zone,
+    has_hidden_divergence,
+    smart_wallet_present,
     deployed_at: new Date().toISOString(),
     out_of_range_since: null,
     last_claim_at: null,

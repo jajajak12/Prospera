@@ -102,6 +102,12 @@ export async function deployPosition({
   volume_5m,
   confluence_score,
   fib_zone,
+  fib_entry_pct,
+  rsi,
+  atr_pct,
+  in_primary_zone,
+  has_hidden_divergence,
+  smart_wallet_present,
 }) {
   pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
@@ -249,8 +255,14 @@ export async function deployPosition({
       initial_value_usd,
       mcap,
       volume_5m,
-      confluence_score: confluence_score ?? null,
-      fib_zone: fib_zone ?? null,
+      confluence_score:      confluence_score      ?? null,
+      fib_zone:              fib_zone              ?? null,
+      fib_entry_pct:         fib_entry_pct         ?? null,
+      rsi:                   rsi                   ?? null,
+      atr_pct:               atr_pct               ?? null,
+      in_primary_zone:       in_primary_zone       ?? null,
+      has_hidden_divergence: has_hidden_divergence ?? null,
+      smart_wallet_present:  smart_wallet_present  ?? null,
     });
 
     const actualBinStep = pool.lbPair.binStep;
@@ -669,8 +681,14 @@ export async function closePosition({ position_address, reason }) {
         organic_score: tracked.organic_score || null,
         mcap: tracked.mcap || null,
         volume_5m: tracked.volume_5m || null,
-        confluence_score: tracked.confluence_score ?? null,
-        fib_zone: tracked.fib_zone ?? null,
+        confluence_score:      tracked.confluence_score      ?? null,
+        fib_zone:              tracked.fib_zone              ?? null,
+        fib_entry_pct:         tracked.fib_entry_pct         ?? null,
+        rsi:                   tracked.rsi                   ?? null,
+        atr_pct:               tracked.atr_pct               ?? null,
+        in_primary_zone:       tracked.in_primary_zone       ?? null,
+        has_hidden_divergence: tracked.has_hidden_divergence ?? null,
+        smart_wallet_present:  tracked.smart_wallet_present  ?? null,
         amount_sol: tracked.amount_sol,
         fees_earned_usd: feesUsd,
         final_value_usd: finalValueUsd,
