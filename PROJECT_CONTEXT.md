@@ -10,7 +10,7 @@ Ringkasan perubahan arsitektur, fitur, dan keputusan penting per sesi.
 Flow menggantikan Meteora trending sebagai sumber discovery:
 
 1. **GeckoTerminal** — ambil trending token Solana dari semua DEX (2 halaman, ~40 token)
-2. **Dexscreener** — filter **1h** cross-DEX volume ≥ `minVolume` ($20k default) via `batchGetTokenVolumeH1`
+2. **Dexscreener** — filter **1h** cross-DEX volume ≥ `minVolume` ($100k default) via `batchGetTokenVolumeH1`
 3. **mcap pre-filter** — dari data GT jika tersedia
 4. **RugCheck** — bundle %/honeypot/creator check (menggantikan OKX yang mati)
 5. **Jupiter DataAPI** — top10 holders, bot holders, fees SOL

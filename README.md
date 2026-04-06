@@ -372,7 +372,7 @@ DRY_RUN=true node index.js
 |-----|---------|-----------|
 | `maxPositions` | 2 | Maksimal posisi terbuka bersamaan |
 | `minBinStep` / `maxBinStep` | 80 / 200 | Range bin step pool |
-| `minVolume` | 20000 | Min volume **1h** aktual dari semua DEX ($) — `volume.h1` Dexscreener |
+| `minVolume` | 100000 | Min volume **1h** aktual dari semua DEX ($) — `volume.h1` Dexscreener |
 | `minFeeActiveTvlRatio` | 0.05 | Min rasio fee/active TVL pool Meteora (timeframe 24h) |
 | `minMcap` / `maxMcap` | 150k / 5M | Range market cap token |
 | `minTvl` / `maxTvl` | 5000 / 250000 | Range TVL pool ($) |

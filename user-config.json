@@ -20,7 +20,7 @@
   "athFilterPct": null,
   "minMcap": 150000,
   "maxMcap": 10000000,
-  "minVolume": 20000,
+  "minVolume": 100000,
   "minBinStep": 80,
   "maxBinStep": 125,
   "minFeeActiveTvlRatio": 0.05,
