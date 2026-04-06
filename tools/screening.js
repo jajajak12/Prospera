@@ -27,7 +27,7 @@ const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
 // Cache pools rejected with "broken support" — price well below Fib 0.618, skip re-analysis for 45 min
 const _fibBrokenSupportCache = new Map(); // poolAddress → timestamp
-const FIB_BROKEN_CACHE_MS = 45 * 60 * 1000;
+const FIB_BROKEN_CACHE_MS = 3 * 60 * 60 * 1000; // 3 jam — dead tokens tidak recover dalam 45 menit
 
 function loadJsonSet(filename) {
   try {
@@ -122,7 +122,10 @@ async function discoverTokensFromGecko({ pages = 2 } = {}) {
         headers: { Accept: "application/json;version=20230302" },
         signal: AbortSignal.timeout(10_000),
       });
-      if (!res.ok) break;
+      if (!res.ok) {
+        log("screening", `GeckoTerminal page ${page} error: HTTP ${res.status}`);
+        break;
+      }
 
       const data = await res.json();
       for (const p of (data?.data ?? [])) {
@@ -316,7 +319,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     const before = eligible.length;
     eligible = eligible.filter((t, i) => {
       const okx = okxResults[i];
-      if (!okx) return true; // API miss → keep
+      if (!okx) { log("screening", `  ${t.symbol}: OK (no OKX data)`); return true; } // API miss → keep
       if (okx.honeypot) {
         log("screening", `  ${t.symbol}: SKIP — honeypot`);
         return false;
@@ -330,6 +333,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
         return false;
       }
       t._okx = okx;
+      log("screening", `  ${t.symbol}: OK — bundle=${okx.bundlePct ?? "?"}%`);
       return true;
     });
     log("screening", `OKX filter: ${eligible.length}/${before} passed`);
@@ -347,7 +351,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     const before = eligible.length;
     eligible = eligible.filter((t, i) => {
       const jup = jupResults[i];
-      if (!jup) return true; // API miss → keep
+      if (!jup) { log("screening", `  ${t.symbol}: OK (no Jupiter data)`); return true; } // API miss → keep
       if (jup.top10Pct != null && jup.top10Pct > (s.maxTop10Pct ?? 20)) {
         log("screening", `  ${t.symbol}: SKIP — top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 20}%`);
         return false;
@@ -361,6 +365,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
         return false;
       }
       t._jup = jup;
+      log("screening", `  ${t.symbol}: OK — top10=${jup.top10Pct ?? "?"}%, bots=${jup.botHoldersPct ?? "?"}%, fees=${jup.feesSOL ?? "?"} SOL`);
       return true;
     });
     log("screening", `Jupiter filter: ${eligible.length}/${before} passed`);
@@ -423,10 +428,17 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   // Filter out pools cached as "broken support" — price far below Fib 0.618, no recovery expected soon
   const now = Date.now();
   const toAnalyze = withPool.filter(({ pool }) => {
+    // Skip pools that are actively crashing (>80% price drop in 24h) — not an entry signal
+    if (pool.price_change_pct != null && pool.price_change_pct <= -80) {
+      log("screening", `  ${pool.name}: SKIP — price crashed ${pool.price_change_pct.toFixed(1)}% in 24h`);
+      _fibBrokenSupportCache.set(pool.pool, now); // cache as broken, recheck in 3h
+      return false;
+    }
+    // Skip pools cached as "broken support"
     const cachedAt = _fibBrokenSupportCache.get(pool.pool);
     if (cachedAt && now - cachedAt < FIB_BROKEN_CACHE_MS) {
-      const minsLeft = Math.ceil((FIB_BROKEN_CACHE_MS - (now - cachedAt)) / 60000);
-      log("screening", `  ${pool.name}: SKIP — broken support cached, recheck in ${minsLeft}m`);
+      const hrsLeft = (FIB_BROKEN_CACHE_MS - (now - cachedAt)) / 3_600_000;
+      log("screening", `  ${pool.name}: SKIP — broken support cached, recheck in ${hrsLeft < 1 ? `${Math.ceil(hrsLeft * 60)}m` : `${hrsLeft.toFixed(1)}h`}`);
       return false;
     }
     return true;

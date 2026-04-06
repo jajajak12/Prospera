@@ -477,6 +477,15 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     const topResult = await getTopCandidates({ limit: 20 }).catch(() => null);
     const candidates = topResult?.candidates || [];
 
+    // If GeckoTerminal returned nothing (rate limit / network), reset the cooldown
+    // so the next management cycle can retry immediately instead of waiting 15 min.
+    if ((topResult?.total_screened ?? 0) === 0) {
+      _screeningLastTriggered = 0;
+      log("cron", "Screening aborted — GeckoTerminal returned 0 tokens, cooldown reset for immediate retry");
+      _screeningBusy = false;
+      return null;
+    }
+
     if (candidates.length === 0) {
       screenReport = `No Fibonacci entry signals found. Tokens discovered: ${topResult?.total_screened ?? 0}, with Meteora pool: ${topResult?.fib_analyzed ?? 0}. All tokens either had no qualifying Meteora DLMM pool or did not pass EMA/RSI/ATR filters.`;
       return screenReport;
