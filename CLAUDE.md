@@ -10,7 +10,7 @@ Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
 **Prospera** — autonomous DLMM LP agent di Meteora, Solana.
 - Strategi: Fibonacci retracement entry signals, single-sided bid_ask
 - Bahasa: **JavaScript** (ES modules) — bukan TypeScript
-- PM2 process ID: `1` (name: `prospera`)
+- PM2 process ID: **0** (name: `prospera`) — bukan 1
 - GitHub: `https://github.com/jajajak12/Prospera` branch `main`
 
 ---
@@ -27,7 +27,7 @@ Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
 ## Aturan Kerja
 
 1. **Selalu gunakan Bahasa Indonesia**
-2. Setelah setiap perubahan kode: restart PM2 (`pm2 restart 1`) + push ke GitHub
+2. Setelah setiap perubahan kode: restart PM2 (`pm2 restart 0`) + push ke GitHub
 3. Baca file yang relevan sebelum memodifikasi — jangan asumsi struktur kode
 4. `bypassPermissions` aktif — tidak perlu minta konfirmasi untuk tool calls
 5. Jangan tambah fitur di luar yang diminta
@@ -52,7 +52,7 @@ user-config.json      — runtime config (edit ini untuk ubah parameter)
 prompt.js             — system prompt builder (SCREENER/MANAGER/GENERAL)
 signal-weights.js     — Darwinian adaptive signal weights
 rpc.js                — RPC connection + 5-endpoint failover
-logger.js             — structured logging dengan context object
+logger.js             — winston structured logging (combined + error log harian)
 lessons.js            — performance tracking + weight update trigger
 state.js              — posisi tracking + memori agent
 
@@ -62,7 +62,7 @@ tools/
   dlmm.js             — deploy/close posisi, RPC failover
   wallet.js           — wallet balance, swap via Jupiter
   study.js            — LPAgent API client (primary + backup key)
-  okx.js              — OKX DEX API (bundle, honeypot, ATH)
+  okx.js              — RugCheck.xyz API (bundle %, honeypot, creator address)
   token.js            — Jupiter DataAPI + Dexscreener volume
   executor.js         — tool handler untuk LLM function calls
   definitions.js      — OpenAI function-call schemas
@@ -74,19 +74,21 @@ tools/
 
 ```
 GeckoTerminal trending Solana (2 pages, ~40 token, semua DEX)
-  → Dexscreener 5m volume ≥ minVolume ($20k)
+  → Dexscreener 1h volume ≥ minVolume ($100k default)
   → mcap pre-filter dari GT data
-  → OKX: bundle/honeypot check
+  → RugCheck: bundle % check, honeypot/rugged flag, creator blacklist
   → Jupiter: top10/botHolders/feesSOL
-  → Meteora pool lookup: findMeteoraDlmmPool(mint)
-      filter: TVL, fee/TVL, bin_step, organic, holders, mcap, age
+  → Meteora bulk fetch (fetchMeteoraDlmmPoolMap):
+      satu request page_size=100, timeframe=24h
+      filter API: tvl, bin_step, fee/tvl ratio, organic, holders, mcap
+      match client-side by token_x.address
+      filter age client-side dari token_x.created_at
   → Fibonacci analysis (GT candles + Meteora bin_step)
   → Smart wallet boost (+0.10 confluenceScore)
   → Sort by confluenceScore DESC
 ```
 
 **Kenapa GeckoTerminal-first:** Meteora `category=trending` sering melewatkan token baru/aktif.
-Token ditemukan dulu dari seluruh DEX Solana, baru cari Meteora pool-nya.
 
 ---
 
@@ -120,17 +122,51 @@ LLM decision zone: PnL antara `takeProfitFeePct` (5%) dan `takeProfitMaxPct` (25
 
 ## Parameter Utama (user-config.json)
 
-```json
-maxPositions: 2          minVolume: 20000        minOrganic: 60
+```
+maxPositions: 2          minVolume: 100000       minOrganic: 60
 minHolders: 500          maxTop10Pct: 20         maxBotHoldersPct: 30
-maxBundlePct: 30         minTokenFeesSol: 25     minMcap: 150000
-maxMcap: 10000000        minBinStep: 80          maxBinStep: 200
-minTvl: 5000             minFeeActiveTvlRatio: 0.05
+maxBundlePct: 30         minTokenFeesSol: 30     minMcap: 150000
+maxMcap: 5000000         minBinStep: 80          maxBinStep: 200
+minTvl: 5000             maxTvl: 250000          minFeeActiveTvlRatio: 0.05
 stopLossPct: -20         takeProfitMaxPct: 25    takeProfitFeePct: 5
 partialHarvestPct: 10    outOfRangeBinsToClose: 20
 managementModel: deepseek/deepseek-v3.2
 screeningModel: qwen/qwen3.5-flash-02-23
 ```
+
+---
+
+## Logging (winston)
+
+`logger.js` menggunakan winston + winston-daily-rotate-file.
+
+**File log di `./logs/`:**
+- `combined-YYYY-MM-DD.log` — semua level, human-readable
+- `error-YYYY-MM-DD.log` — error saja, format JSON
+- `actions-YYYY-MM-DD.jsonl` — audit trail tool execution
+- `snapshots-YYYY-MM-DD.jsonl` — portfolio snapshots
+
+**API:**
+```js
+log(category, message, ctx?)        // general (info level)
+log.debug(category, message, ctx?)
+log.warn(category, message, ctx?)
+log.error(category, message, ctx?)
+
+// Domain shortcuts:
+log.screening(msg, ctx)
+log.trade(msg, ctx)
+log.position(msg, ctx)
+log.confluence(msg, ctx)
+log.pnl(msg, ctx)
+log.rpc(msg, ctx)
+log.management(msg, ctx)
+log.cron(msg, ctx)
+
+// ctx fields: pool, position, pair, token, confluenceScore, pnl, action, reason, step
+```
+
+Override level: `LOG_LEVEL=debug pm2 restart 0`
 
 ---
 
@@ -151,7 +187,7 @@ Auto-reset ke primary setelah 5 menit stabil.
 ## Safety Rules (Non-Negotiable)
 
 - Selalu respect blacklist (token & dev wallet)
-- Cek holder distribution dan bundle % sebelum deploy (via OKX + Jupiter)
+- Cek holder distribution dan bundle % sebelum deploy (via RugCheck + Jupiter)
 - RPC failover harus aktif
 - Volume Profile (POC/VAL) bersifat **informational only** — bukan hard gate
 - `autoBacktest` default **false** — jangan asumsi aktif kecuali user minta
@@ -160,17 +196,19 @@ Auto-reset ke primary setelah 5 menit stabil.
 
 ## Hal yang Perlu Dipantau
 
-- `base_token_address=${mint}` filter di Meteora API — belum diverifikasi di production
 - Darwinian weights belum evolve (perlu 6+ closed positions)
-- Monitor `fib_analyzed` di screening log — harusnya > 0 sekarang
+- Signal attribution baru bisa dievaluasi setelah ada closed positions
+- GeckoTerminal rate limit (HTTP 429) terjadi berulang — pertimbangkan delay antar page
+- Monitor entry rate setelah fix screening pipeline
 
 ---
 
 ## Commands Berguna
 
 ```bash
-pm2 logs 1 --lines 50      # lihat log terbaru
-pm2 restart 1              # restart prospera
-git log --oneline -5       # commit terakhir
-git push origin main       # push ke GitHub
+pm2 logs 0 --lines 100 --nostream   # log terbaru
+pm2 restart 0                        # restart prospera
+git log --oneline -5                 # commit terakhir
+git push origin main                 # push ke GitHub
+curl -s http://localhost:3000/health  # health check
 ```
