@@ -160,17 +160,24 @@ Balas `/apply_sweep` untuk menerapkan (config lama di-backup sebagai `user-confi
 
 Setelah penutupan apapun, base token otomatis di-swap kembali ke SOL via Jupiter (melewati token bernilai < $0.10).
 
-### Ukuran Deploy Compounding
+### Ukuran Deploy & Exposure Cap
 
-Ukuran deploy otomatis menyesuaikan saldo wallet:
+**Tiered position sizing** otomatis menyesuaikan saldo wallet:
 
-| SOL tersedia (setelah gas reserve) | Deploy |
-|------------------------------------|--------|
-| < 5 SOL | 1 SOL |
-| 5–10 SOL | 2 SOL |
-| 10–15 SOL | 3 SOL |
-| 15–20 SOL | 4 SOL |
-| +5 SOL per bracket | +1 SOL |
+| Saldo Wallet | Deploy per Posisi |
+|--------------|-------------------|
+| < 8 SOL | 1.5 SOL |
+| 8–15 SOL | 2.8 SOL |
+| 15–25 SOL | 4.2 SOL |
+| 25–40 SOL | 6.0 SOL |
+| > 40 SOL | min(18% wallet, 9 SOL) |
+
+**Total Exposure Cap (60%)** — Sebelum membuka posisi baru, agent mengecek apakah total SOL yang sedang di-deploy tidak melebihi 60% dari saldo yang bisa di-deploy (setelah 1 SOL gas reserve). Jika cap terlampaui, screening dilewati hingga ada posisi yang ditutup.
+
+Contoh pada 10 SOL wallet:
+- Deployable: 10 − 1 = 9 SOL
+- Max exposure: 9 × 60% = **5.4 SOL**
+- Per posisi: 2.8 SOL → 2 posisi = 5.6 SOL > 5.4 → posisi kedua ditolak
 
 Dibatasi oleh `maxDeployAmount` (default 50 SOL).
 
@@ -380,6 +387,8 @@ DRY_RUN=true node index.js
 | `minTokenFeesSol` | 30 | Min kumulatif fee dalam SOL (Jupiter — tips + priority + trading) |
 | `rsiMin` | 48 | RSI minimum untuk sinyal entry (auto-tuned oleh backtest sweep) |
 | `minConfluenceScore` | 0 | Gate minimum confluence score (auto-tuned oleh backtest sweep) |
+| `totalExposureCapPct` | 0.60 | Max % saldo deployable yang boleh di-deploy sekaligus (60%) |
+| `exposureGasReserve` | 1.0 | SOL yang direservasi untuk gas, dikecualikan dari exposure cap |
 | `stopLossPct` | −20 | Threshold stop loss |
 | `takeProfitMaxPct` | 25 | Threshold auto take-profit |
 | `takeProfitFeePct` | 5 | LLM decision zone dimulai di sini |
