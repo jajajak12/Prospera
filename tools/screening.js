@@ -25,9 +25,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 
-// Cache pools rejected with "broken support" — price well below Fib 0.618, skip re-analysis for 45 min
-const _fibBrokenSupportCache = new Map(); // poolAddress → timestamp
-const FIB_BROKEN_CACHE_MS = 3 * 60 * 60 * 1000; // 3 jam — dead tokens tidak recover dalam 45 menit
+// Cache pools rejected with "broken support" — price well below Fib 0.618, skip re-analysis for 3h
+// Stores { cachedAt, priceAtRejection } — invalidated early if price pumps >50% (momentum recovery)
+const _fibBrokenSupportCache = new Map(); // poolAddress → { cachedAt, priceAtRejection }
+const FIB_BROKEN_CACHE_MS = 3 * 60 * 60 * 1000; // 3 jam
 
 function loadJsonSet(filename) {
   try {
@@ -431,13 +432,24 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     // Skip pools that are actively crashing (>80% price drop in 24h) — not an entry signal
     if (pool.price_change_pct != null && pool.price_change_pct <= -80) {
       log("screening", `  ${pool.name}: SKIP — price crashed ${pool.price_change_pct.toFixed(1)}% in 24h`);
-      _fibBrokenSupportCache.set(pool.pool, now); // cache as broken, recheck in 3h
+      const currentPrice = pool.price ?? 0;
+      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: currentPrice });
       return false;
     }
-    // Skip pools cached as "broken support"
-    const cachedAt = _fibBrokenSupportCache.get(pool.pool);
-    if (cachedAt && now - cachedAt < FIB_BROKEN_CACHE_MS) {
-      const hrsLeft = (FIB_BROKEN_CACHE_MS - (now - cachedAt)) / 3_600_000;
+    // Skip pools cached as "broken support" — unless price has recovered >50% since rejection
+    const cached = _fibBrokenSupportCache.get(pool.pool);
+    if (cached && now - cached.cachedAt < FIB_BROKEN_CACHE_MS) {
+      const currentPrice = pool.price ?? 0;
+      const pricePump = cached.priceAtRejection > 0
+        ? (currentPrice - cached.priceAtRejection) / cached.priceAtRejection
+        : 0;
+      // Price pumped >50% since rejection — possible momentum recovery, re-analyze fresh
+      if (pricePump > 0.5) {
+        _fibBrokenSupportCache.delete(pool.pool);
+        log("screening", `  ${pool.name}: cache invalidated — price pumped +${(pricePump * 100).toFixed(0)}% since rejection, re-analyzing`);
+        return true;
+      }
+      const hrsLeft = (FIB_BROKEN_CACHE_MS - (now - cached.cachedAt)) / 3_600_000;
       log("screening", `  ${pool.name}: SKIP — broken support cached, recheck in ${hrsLeft < 1 ? `${Math.ceil(hrsLeft * 60)}m` : `${hrsLeft.toFixed(1)}h`}`);
       return false;
     }
@@ -470,7 +482,8 @@ export async function getTopCandidates({ limit = 20 } = {}) {
 
     // Cache pools rejected for broken support — price already below Fib 0.618
     if (analysis.signal !== "ENTRY" && analysis.reason?.includes("broken support")) {
-      _fibBrokenSupportCache.set(pool.pool, now);
+      const rejectedPrice = pool.price ?? 0;
+      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: rejectedPrice });
     }
 
     log("screening", `  ${pool.name}: ${analysis.signal} — ${analysis.reason}`);
