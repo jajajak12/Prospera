@@ -12,40 +12,18 @@ import { formatWeightsForPrompt } from "./signal-weights.js";
 export function buildSystemPrompt(agentType, portfolio, positions, stateSummary = null, lessons = null, perfSummary = null) {
   // MANAGER: lean prompt — position data is pre-loaded in goal
   if (agentType === "MANAGER") {
-    const portfolioCompact = JSON.stringify(portfolio);
-    const mgmtConfig = JSON.stringify(config.management);
-    return `You are an autonomous DLMM LP agent on Meteora, Solana. Role: MANAGER
-Strategy: Fibonacci + Volume Profile — positions deployed at Fib retracement support zones.
+    const sol = typeof portfolio?.sol === "number" ? portfolio.sol.toFixed(3) : "?";
+    const totalUsd = typeof portfolio?.total_usd === "number" ? portfolio.total_usd.toFixed(2) : "?";
+    return `ROLE: MANAGER — Meteora DLMM LP agent (Fibonacci strategy)
+wallet: ${sol} SOL | $${totalUsd}
+thresholds: SL=${config.management.stopLossPct}% | TP=${config.management.takeProfitMaxPct}% | partialHarvest=${config.management.partialHarvestPct}% | OOR_bins=${config.management.outOfRangeBinsToClose} | OOR_wait=${config.management.outOfRangeWaitMinutes}m | minFeePerTvl=${config.management.minFeePerTvl24h}%
 
-This is a mechanical rule-application task. All position data is pre-loaded. Apply the close/claim rules directly and output the report.
+RULES:
+- MANDATORY (pre-flagged): execute CLOSE/CLAIM immediately, no judgment needed
+- EVALUATE: close if Fib level broken / volume collapsed / OOR building; hold if Fib support intact
+- After close: swap_token MANDATORY for token >= $0.10
 
-Portfolio: ${portfolioCompact}
-Management Config: ${mgmtConfig}
-
-MANDATORY CLOSE RULES (no LLM judgment needed):
-1. PnL <= -20% → CLOSE (stop loss)
-2. PnL >= ${config.management.takeProfitMaxPct}% → CLOSE (take profit)
-3. OOR > ${config.management.outOfRangeWaitMinutes}m AND active_bin > ${config.management.outOfRangeBinsToClose} bins from range → CLOSE (price left Fib zone)
-4. Low yield: fee/TVL < ${config.management.minFeePerTvl24h}% after 60m → CLOSE
-
-LLM DECISION ZONE (PnL between ${config.management.takeProfitFeePct}% and ${config.management.takeProfitMaxPct}%):
-- At >= ${config.management.takeProfitFeePct}% profit: evaluate whether to hold or close
-- Close if: momentum fading, volume declining, Fib level broken, token showing weakness
-- Hold if: volume still strong, position still active, Fib level holding as support
-- State your reasoning explicitly before deciding
-
-DISCRETIONARY CLOSE (any PnL above stop loss):
-- You MAY close at any time if you see clear signals the position has deteriorated:
-  volume collapse, sharp negative price trend, OOR building, organic score dropping
-- Threshold: you need a concrete reason — not just "looks risky"
-
-BEHAVIORAL CORE:
-1. PATIENCE IS PROFIT: Fib support levels often hold. Don't close on first small dip.
-2. GAS EFFICIENCY: After close, swap_token is MANDATORY for any token worth >= $0.10.
-3. AUTO TAKE PROFIT: At ${config.management.takeProfitMaxPct}% close immediately, no second-guessing.
-
-${lessons ? `LESSONS LEARNED:\n${lessons}\n` : ""}Timestamp: ${new Date().toISOString()}
-`;
+${lessons ? `LESSONS:\n${lessons}\n` : ""}Output: one line per position.`;
   }
 
   const baseState = `

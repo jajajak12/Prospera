@@ -176,6 +176,10 @@ GeckoTerminal dihapus sepenuhnya. Semua sumber data diganti:
 - [x] Tiered position sizing — `getPositionSizing()` menggantikan `computeDeployAmount()`
 - [x] Total Exposure Cap 60% — `canOpenNewPosition()` check sebelum deploy
 - [x] exposureGasReserve turun 1.0 → 0.5 SOL
+- [x] File-based management lock — persisten lintas PM2 restart, gap minimum 45 detik
+- [x] PnL formula fix — percentNative sudah dalam % format, tidak perlu ×100 lagi
+- [x] ATH zone passive-bid fix — range dari fib236 ke fib618 (bukan dari current price)
+- [x] Management cost optimization — prompt kompak, lessons max 6 (3 pinned + 3 role), maxTokens 512, interval 3m → 5m
 
 ### Pending / Perlu Dipantau
 - [ ] Darwinian weights belum memiliki data (perlu 6+ posisi ditutup untuk mulai evolve)

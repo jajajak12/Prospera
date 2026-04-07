@@ -464,9 +464,10 @@ export function getLessonsForPrompt(opts = {}) {
   if (data.lessons.length === 0) return null;
 
   const isAutoCycle = agentType === "SCREENER" || agentType === "MANAGER";
-  const PINNED_CAP  = isAutoCycle ? 5  : 10;
-  const ROLE_CAP    = isAutoCycle ? 6  : 15;
-  const RECENT_CAP  = maxLessons ?? (isAutoCycle ? 10 : 35);
+  const isManager   = agentType === "MANAGER";
+  const PINNED_CAP  = isManager ? 3 : (isAutoCycle ? 5  : 10);
+  const ROLE_CAP    = isManager ? 3 : (isAutoCycle ? 6  : 15);
+  const RECENT_CAP  = maxLessons ?? (isManager ? 0 : (isAutoCycle ? 10 : 35));
 
   const outcomePriority = { bad: 0, poor: 1, failed: 1, good: 2, worked: 2, manual: 1, neutral: 3, evolution: 2 };
   const byPriority = (a, b) => (outcomePriority[a.outcome] ?? 3) - (outcomePriority[b.outcome] ?? 3);

@@ -489,7 +489,7 @@ RULES:
 - When closing: call close_position only — it handles claiming and auto-swap internally
 
 After acting, write a brief one-line result per position.
-      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 2048);
+      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 512);
 
       mgmtReport += `\n\n${content}`;
     }

@@ -35,7 +35,7 @@
   "minFeePerTvl24h": 1,
   "outOfRangeBinsToClose": 20,
   "outOfRangeWaitMinutes": 10,
-  "managementIntervalMin": 3,
+  "managementIntervalMin": 5,
   "screeningIntervalMin": 15,
   "managementModel": "deepseek/deepseek-v3.2",
   "screeningModel": "qwen/qwen3.5-flash-02-23",
