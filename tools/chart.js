@@ -486,17 +486,24 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   // binStep is in basis points (e.g. 100 = 1% per bin)
   const binStepPct = binStep / 100;
 
-  // ── Check 1: Price not below Fib 0.618 (key support) ─────────────────────
-  // Entry is allowed in three zones:
-  //   ATH zone    : price > fib236  (pre-position before pullback, range covers 0.236→0.618)
-  //   Primary zone: fib382 → fib236 (shallow pullback, ideal)
-  //   Secondary   : fib618 → fib382 (deeper pullback, still valid)
-  // Reject only if price has already broken below fib 0.618.
-  const inFibZone    = currentPrice >= fib.fib618 && currentPrice <= fib.fib236;
-  const inAthZone    = currentPrice > fib.fib236;   // still near ATH, hasn't pulled back yet
-  const inEntryRange = inFibZone || inAthZone;       // either is valid
+  // ── Check 1: Price must be in ATH zone or Primary zone ───────────────────
+  // Valid entry zones:
+  //   ATH zone    : price > fib236  — range covers fib236 → support below fib618
+  //   Primary zone: fib382 → fib236 — range covers currentPrice → support below fib618
+  // Reject:
+  //   Deep pullback (fib382–fib618) — too deep, invalidates pullback thesis
+  //   Broken support (< fib618)     — structure broken, no entry
+  const inPrimaryZone = currentPrice >= fib.fib382 && currentPrice <= fib.fib236;
+  const inAthZone     = currentPrice > fib.fib236;
+  const inEntryRange  = inPrimaryZone || inAthZone;
 
   if (!inEntryRange) {
+    if (currentPrice >= fib.fib618) {
+      return skip(
+        `Price ${fmt(currentPrice)} in deep pullback zone (0.382–0.618) — too deep for entry, wait for primary zone (0.236–0.382)`,
+        currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
+      );
+    }
     return skip(
       `Price ${fmt(currentPrice)} below Fib 0.618 support (${fmt(fib.fib618)}) — broken support, no entry`,
       currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
@@ -536,13 +543,11 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   const hasHiddenDivergence = detectHiddenBullishDivergence(candles, rsiValues);
 
   // ── Entry Zone Tier ────────────────────────────────────────────────────────
-  const inPrimaryZone = currentPrice >= fib.fib382 && currentPrice <= fib.fib236;
-
-  // pricePosition: 0 = at fib236 (top of zone), 1 = at fib618 (bottom)
-  // For ATH zone (above fib236), clamp to 0 (treated as top of zone)
-  const zoneWidth     = fib.fib236 - fib.fib618;
-  const rawPosition   = zoneWidth > 0 ? (fib.fib236 - currentPrice) / zoneWidth : 0.5;
-  const pricePosition = Math.max(0, rawPosition); // clamp: ATH zone → 0
+  // pricePosition: 0 = at fib236 (top of primary zone), 1 = at fib382 (bottom)
+  // For ATH zone (above fib236), clamp to 0
+  const primaryWidth  = fib.fib236 - fib.fib382;
+  const rawPosition   = primaryWidth > 0 ? (fib.fib236 - currentPrice) / primaryWidth : 0.5;
+  const pricePosition = inAthZone ? 0 : Math.max(0, Math.min(1, rawPosition));
 
   // ── Price Action S/R: find real support below Fib 0.618 ──────────────────
   const dailySR    = dailyCandles ? [...findSwingLows(dailyCandles), ...findSwingHighs(dailyCandles)] : [];
@@ -553,15 +558,13 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   const nearestSupport = supportsBelow[0] ?? null;
 
   // ── bins_below ────────────────────────────────────────────────────────────
-  // ATH zone: range starts at fib 0.236 (not current price) → fib 0.618
-  //   All liquidity sits in the anticipated pullback zone, not above it.
-  // Fib zone: current price → nearest support below fib618 (or fib786)
-  const atrBuffer = atr ?? (fib.fib618 * binStepPct / 100);
-  const supportTarget = inAthZone
-    ? fib.fib618
-    : (nearestSupport ?? fib.fib786);
-  const rangeTop  = inAthZone ? fib.fib236 : currentPrice;
-  const binsBelow = calcBinsToTarget(rangeTop, supportTarget - atrBuffer, binStep);
+  // ATH zone   : range starts at fib236 (price hasn't pulled back yet) → support below fib618
+  // Primary zone: range starts at currentPrice → support below fib618
+  // Both zones: bottom target = nearest S/R support below fib618, fallback fib786
+  const atrBuffer     = atr ?? (fib.fib618 * binStepPct / 100);
+  const supportTarget = nearestSupport ?? fib.fib786;
+  const rangeTop      = inAthZone ? fib.fib236 : currentPrice;
+  const binsBelow     = calcBinsToTarget(rangeTop, supportTarget - atrBuffer, binStep);
 
   const binsAbove = 0;
 
@@ -570,20 +573,18 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   const pocVol      = vp.buckets[vp.pocIdx]?.volume ?? 0;
   const pocStrength = totalVol > 0 ? pocVol / totalVol : 0;
 
-  const idealPosition = (fib.fib236 - fib.fib382) / zoneWidth;
-  const positionScore = Math.max(0, 1 - Math.abs(pricePosition - idealPosition) * 2);
+  // Ideal position: middle of primary zone (pricePosition = 0.5, between fib236 and fib382)
+  const positionScore = Math.max(0, 1 - Math.abs(pricePosition - 0.5) * 2);
 
   let score = positionScore * 0.6 + pocStrength * 0.4;
-  if (inPrimaryZone)       score += 0.10;
+  if (inPrimaryZone)       score += 0.10; // primary zone bonus
   if (hasHiddenDivergence) score += 0.15;
   if (rsiSlope > 3)        score += 0.05;
 
   const confluenceScore = Math.round(Math.min(1, Math.max(0, score)) * 100) / 100;
 
   // ── Build Reason ──────────────────────────────────────────────────────────
-  const zoneTier = inAthZone
-    ? "ATH_ZONE(above 0.236, pre-position)"
-    : inPrimaryZone ? "PRIMARY(0.236-0.382)" : "SECONDARY(0.382-0.618)";
+  const zoneTier = inAthZone ? "ATH_ZONE(above 0.236)" : "PRIMARY(0.236-0.382)";
   const parts = [
     `Zone: ${zoneTier}`,
     `RSI=${rsi?.toFixed(1)} slope=+${rsiSlope.toFixed(1)}`,
