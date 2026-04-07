@@ -97,7 +97,7 @@ LEARNED BIN RANGES (bins_below adjusted by performance):
 REPORT FORMAT (after deploying, no more tool calls):
 Deployed: PAIR
 bin_step=X | fee=X% | bins_below=X | confluenceScore=X
-fib618=X | fib236=X | poc=X | val=X
+fib618=X | fib236=X | rsi=X | confluence=X
 reason: <one sentence>
 
 Timestamp: ${new Date().toISOString()}

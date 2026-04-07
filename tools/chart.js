@@ -1,15 +1,16 @@
 /**
- * chart.js — Birdeye OHLCV + Fibonacci + Volume Profile + Indicators
+ * chart.js — Birdeye OHLCV + Fibonacci + Indicators
  *
  * Signal engine for the Fibonacci LP agent.
- * Fetches 50x 1m candles via Birdeye (requires BIRDEYE_API_KEY in env), calculates:
- *   - Fibonacci retracement levels (swing high/low)
- *   - Volume Profile (POC, VAH, VAL)
+ * Fetches candles via Birdeye (requires BIRDEYE_API_KEY in env), calculates:
+ *   - Fibonacci retracement levels (ATH/ATL from daily candles)
  *   - EMA trend filter (EMA20 > EMA50)
- *   - RSI momentum: RSI > 48 + rising slope (not oversold filter)
+ *   - RSI momentum: RSI > 48 + rising slope
  *   - Hidden Bullish Divergence detection → score boost
- *   - ATR vs bin_step compatibility check
- *   - Dynamic bins_above based on zone position + RSI
+ *   - Dynamic bins_above based on zone (ATH passive-bid or PRIMARY)
+ *
+ * Volume Profile is available via buildVolumeProfile() but is NOT used in
+ * confluence scoring or entry decisions — purely informational if needed externally.
  */
 
 const BIRDEYE_BASE = "https://public-api.birdeye.so";
@@ -390,19 +391,15 @@ function calcBinsAbove(currentPrice, targetPrice, binStep) {
  * Full signal analysis for a pool.
  *
  * Entry conditions (all must pass):
- *   1. Price in Fib zone [fib_236, fib_618]
- *   2. Volume confirmation: POC or VAL within Fib zone
- *   3. EMA trend: EMA20 > EMA50 (uptrend)
- *   4. RSI momentum: RSI > 48 AND RSI slope positive (rising momentum, not oversold filter)
+ *   1. Price in ATH zone (> fib236) or PRIMARY zone [fib_236, fib_382]
+ *   2. EMA trend: EMA20 > EMA50 (uptrend confirmed)
+ *   3. RSI momentum: RSI > 48 AND RSI slope positive
  *
- * Score boosts:
- *   - Hidden Bullish Divergence detected → +0.15 to confluenceScore
- *   - Price in primary zone [fib_236, fib_382] → higher base score
- *   - Price in secondary zone [fib_382, fib_618] → lower base score
- *
- * Dynamic bins_above:
- *   - Primary zone (0.236–0.382) + RSI < 55 → bins_above = 8 (catch bounce)
- *   - Otherwise → bins_above = 0
+ * Confluence score components (no Volume Profile):
+ *   - Position within primary zone (centered = higher score)
+ *   - Primary zone bonus vs ATH zone
+ *   - Hidden Bullish Divergence → +0.15
+ *   - RSI slope strength → +0.05–0.10
  *
  * @param {string} tokenMint  — Solana token mint address (used for Birdeye OHLCV)
  * @param {number} binStep
@@ -469,9 +466,6 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
 
   const fib = calcFibLevels(swingHigh, swingLow);
 
-  // ── Volume Profile ─────────────────────────────────────────────────────────
-  const vp = buildVolumeProfile(candles, 50);
-
   // ── Indicators ────────────────────────────────────────────────────────────
   const ema20Values = calcEMA(candles, 20);
   const ema50Values = calcEMA(candles, 50);
@@ -501,40 +495,36 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     if (currentPrice >= fib.fib618) {
       return skip(
         `Price ${fmt(currentPrice)} in deep pullback zone (0.382–0.618) — too deep for entry, wait for primary zone (0.236–0.382)`,
-        currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
+        currentPrice, fib
       );
     }
     return skip(
       `Price ${fmt(currentPrice)} below Fib 0.618 support (${fmt(fib.fib618)}) — broken support, no entry`,
-      currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
+      currentPrice, fib
     );
   }
-
-  // ── Volume Profile (informational) ────────────────────────────────────────
-  const pocInZone = vp.poc >= fib.fib618 && vp.poc <= fib.fib236;
-  const valInZone = vp.val >= fib.fib618 && vp.val <= fib.fib236;
 
   // ── Check 2: EMA Trend Filter ──────────────────────────────────────────────
   if (ema20 != null && ema50 != null && ema20 <= ema50) {
     return skip(
       `EMA trend bearish — EMA20 (${fmt(ema20)}) <= EMA50 (${fmt(ema50)}). Fib pullback invalid in downtrend.`,
-      currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
+      currentPrice, fib
     );
   }
 
-  // ── Check 4: RSI Momentum ──────────────────────────────────────────────────
+  // ── Check 3: RSI Momentum ─────────────────────────────────────────────────
   const rsiMin = opts.rsiMin ?? 48;
   if (rsi != null) {
     if (rsi < rsiMin) {
       return skip(
         `RSI momentum weak — RSI=${rsi.toFixed(1)} < ${rsiMin}. Pullback lacks bullish momentum.`,
-        currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
+        currentPrice, fib
       );
     }
     if (rsiSlope <= 0) {
       return skip(
         `RSI slope declining (${rsiSlope.toFixed(1)} over 5 candles). Need rising momentum for valid entry.`,
-        currentPrice, fib, { poc: vp.poc, vah: vp.vah, val: vp.val }
+        currentPrice, fib
       );
     }
   }
@@ -593,18 +583,16 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     binsAbove = 0;
   }
 
-  // ── Confluence Score ───────────────────────────────────────────────────────
-  const totalVol    = vp.buckets.reduce((s, b) => s + b.volume, 0);
-  const pocVol      = vp.buckets[vp.pocIdx]?.volume ?? 0;
-  const pocStrength = totalVol > 0 ? pocVol / totalVol : 0;
-
-  // Ideal position: middle of primary zone (pricePosition = 0.5, between fib236 and fib382)
+  // ── Confluence Score (Fib + Momentum only — no Volume Profile) ───────────
+  // ATH zone: fixed base 0.35 (passive-bid, less certain than direct primary entry)
+  // PRIMARY zone: 0–0.60 based on how centered in the zone (0.5 = ideal)
   const positionScore = Math.max(0, 1 - Math.abs(pricePosition - 0.5) * 2);
+  let score = inAthZone ? 0.35 : positionScore * 0.60;
 
-  let score = positionScore * 0.6 + pocStrength * 0.4;
-  if (inPrimaryZone)       score += 0.10; // primary zone bonus
-  if (hasHiddenDivergence) score += 0.15;
-  if (rsiSlope > 3)        score += 0.05;
+  if (inPrimaryZone)       score += 0.10; // primary zone is more reliable than ATH
+  if (hasHiddenDivergence) score += 0.15; // strong momentum signal
+  if (rsiSlope > 3)        score += 0.10; // strong RSI momentum
+  if (rsiSlope > 0)        score += 0.05; // any positive slope gets small boost
 
   const confluenceScore = Math.round(Math.min(1, Math.max(0, score)) * 100) / 100;
 
@@ -616,7 +604,6 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     `Zone: ${zoneTier}`,
     `RSI=${rsi?.toFixed(1)} slope=+${rsiSlope.toFixed(1)}`,
     `EMA20>EMA50 ✓`,
-    `Vol: POC=${pocInZone ? "in" : "out"} VAL=${valInZone ? "in" : "out"}`,
     `range: ${rangeTopLabel} → ${rangeBotLabel} (${binsBelow + binsAbove} bins)`,
     inAthZone ? `passiveBid shift=${-binsAbove}bins` : null,
   ].filter(Boolean);
@@ -626,7 +613,6 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     signal:          "ENTRY",
     reason:          parts.join(" | "),
     fibLevels:       fib,
-    volumeProfile:   { poc: vp.poc, vah: vp.vah, val: vp.val },
     binsBelow,
     binsAbove,
     // Actual range boundaries (not relative to activeBin):
@@ -656,14 +642,13 @@ function fmt(n) {
   return n != null ? n.toPrecision(6) : "null";
 }
 
-function skip(reason, currentPrice, fibLevels = null, volumeProfile = null) {
+function skip(reason, currentPrice, fibLevels = null) {
   return {
-    signal:       "SKIP",
+    signal:    "SKIP",
     reason,
     fibLevels,
-    volumeProfile,
-    binsBelow:    35,
-    binsAbove:    0,
+    binsBelow: 35,
+    binsAbove: 0,
     currentPrice,
   };
 }

@@ -701,9 +701,6 @@ export async function getTopCandidates({ limit = 20 } = {}) {
           swingHigh: analysis.fibLevels.swingHigh,
           swingLow:  analysis.fibLevels.swingLow,
         } : null,
-        poc: analysis.volumeProfile?.poc ?? null,
-        vah: analysis.volumeProfile?.vah ?? null,
-        val: analysis.volumeProfile?.val ?? null,
       },
     });
   }
