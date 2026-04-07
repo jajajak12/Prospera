@@ -492,22 +492,16 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   const inEntryRange  = inPrimaryZone || inAthZone;
 
   // Broken support: price below Fib 0.786 — structure fully broken, no recovery expected without new ATH
-  if (currentPrice < fib.fib786) {
+  if (currentPrice < fib.fib500) {
     return skip(
-      `Price ${fmt(currentPrice)} below Fib 0.786 (${fmt(fib.fib786)}) — broken support, no entry`,
+      `Price ${fmt(currentPrice)} below Fib 0.500 (${fmt(fib.fib500)}) — broken support, no entry`,
       currentPrice, fib
     );
   }
 
   if (!inEntryRange) {
-    if (currentPrice < fib.fib618) {
-      return skip(
-        `Price ${fmt(currentPrice)} below Fib 0.618 (${fmt(fib.fib618)}) — too deep, wait for recovery`,
-        currentPrice, fib
-      );
-    }
     return skip(
-      `Price ${fmt(currentPrice)} in deep pullback zone (0.382–0.618) — wait for primary zone (0.236–0.382)`,
+      `Price ${fmt(currentPrice)} in deep pullback zone (0.382–0.500) — wait for primary zone (0.236–0.382)`,
       currentPrice, fib
     );
   }
