@@ -562,6 +562,24 @@ async function runSafetyChecks(name, args) {
         };
       }
 
+      // CHANGED: real-time Fib 0.500 gate — re-check price at deploy time, not just at screening time
+      try {
+        const pending = fs.existsSync(PENDING_ATH_PATH)
+          ? JSON.parse(fs.readFileSync(PENDING_ATH_PATH, "utf8"))
+          : {};
+        const meta = pending[args.pool_address];
+        if (meta?.fib500 != null) {
+          const poolDetail = await getPoolDetail({ pool_address: args.pool_address }).catch(() => null);
+          const livePrice  = poolDetail?.pool_price ?? poolDetail?.price ?? null;
+          if (livePrice != null && livePrice < meta.fib500) {
+            return {
+              pass: false,
+              reason: `Deploy blocked — live price $${livePrice} is below Fib 0.500 ($${meta.fib500.toPrecision(4)}). Price dropped since screening.`,
+            };
+          }
+        }
+      } catch { /* non-fatal — if check fails, allow deploy */ }
+
       return { pass: true };
     }
 
