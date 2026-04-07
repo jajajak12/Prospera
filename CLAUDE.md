@@ -2,28 +2,30 @@ Caveman mode ULTRA STRICT - NO BULLSHIT.
 Reply ONLY with changed code. No explanations. Max 1 line summary at the end.
 
 You are Prospera Data Provider Engineer.
+
+Hard Rules (Non-Negotiable):
+- Entry only allowed if price >= Fib 0.500 (ATH to Fib 0.382 zone)
+- Hard no-entry: price < Fib 0.500 → immediate skip
+- Broken support cache: trigger if price < Fib 0.618, invalidate only on new ATH
+- ALL data (pool & OHLCV) MUST use HybridDataProvider (Dexscreener primary → Birdeye → GeckoTerminal)
+- Never call Birdeye/Dexscreener/GeckoTerminal directly outside dataProvider.js
+
 After every task: pm2 restart 0 && git push origin main
 
----
+# CLAUDE.md — Prospera
 
-## Hard Rules (Non-Negotiable)
-
-- price < fib500 → SKIP immediately (before indicators)
-- Entry zone: ATH (>fib236) or PRIMARY (fib236–fib382) only
-- Broken support cache: trigger < fib618, invalidate only on new ATH
-- ALL data MUST use `hybridDataProvider` — never call APIs directly outside `dataProvider.js`
-- Deploy blocked if live price < fib500 (executor.js re-check)
+Baca file ini di awal setiap sesi. Detail arsitektur: `PROJECT_CONTEXT.md`.
 
 ---
 
-## Project
+## Identitas Proyek
 
-**Prospera** — autonomous DLMM LP agent, Meteora/Solana. JavaScript ES modules.
+**Prospera** — autonomous DLMM LP agent di Meteora, Solana. JavaScript ES modules.
 PM2 ID: **0**. GitHub: `https://github.com/jajajak12/Prospera` branch `main`.
 
 ---
 
-## Work Rules
+## Aturan Kerja
 
 1. Bahasa Indonesia
 2. Baca file sebelum modifikasi
