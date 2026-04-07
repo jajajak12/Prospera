@@ -1,8 +1,8 @@
 /**
- * chart.js — Birdeye OHLCV + Fibonacci + Indicators
+ * chart.js — Hybrid OHLCV + Fibonacci + Indicators
  *
  * Signal engine for the Fibonacci LP agent.
- * Fetches candles via Birdeye (requires BIRDEYE_API_KEY in env), calculates:
+ * Fetches candles via HybridDataProvider (Dexscreener → Birdeye → GeckoTerminal), calculates:
  *   - Fibonacci retracement levels (ATH/ATL from daily candles)
  *   - EMA trend filter (EMA20 > EMA50)
  *   - RSI momentum: RSI > 48 + rising slope
@@ -13,69 +13,25 @@
  * confluence scoring or entry decisions — purely informational if needed externally.
  */
 
-const BIRDEYE_BASE = "https://public-api.birdeye.so";
+import { hybridDataProvider } from "./dataProvider.js";
 
 // ─── OHLCV Fetch ─────────────────────────────────────────────────────────────
 
 /**
- * Internal: fetch OHLCV from Birdeye by token mint address.
- * type: "1m" for intraday, "1D" for daily candles.
- * Birdeye returns items in ascending unixTime order (oldest first).
+ * Fetch 1m OHLCV candles for a Solana token.
+ * Primary: Birdeye token endpoint. Fallback to Dexscreener/GeckoTerminal if poolAddress provided.
  */
-async function fetchBirdeyeOHLCV(tokenMint, type, limit) {
-  const apiKey = process.env.BIRDEYE_API_KEY;
-  if (!apiKey) throw new Error("BIRDEYE_API_KEY not configured — set it in .env");
-
-  const now      = Math.floor(Date.now() / 1000);
-  const interval = type === "1D" ? 86400 : 60;
-  const timeFrom = now - interval * limit;
-  const url = `${BIRDEYE_BASE}/defi/ohlcv?address=${tokenMint}&address_type=token&type=${type}&time_from=${timeFrom}&time_to=${now}`;
-
-  // Retry once on 429 (rate limit) with 3s delay
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const res = await fetch(url, {
-      headers: { "X-API-KEY": apiKey, "x-chain": "solana" },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (res.status === 429 && attempt === 1) {
-      await new Promise(r => setTimeout(r, 3000));
-      continue;
-    }
-    if (!res.ok) throw new Error(`Birdeye OHLCV error: ${res.status} ${res.statusText}`);
-
-    const data  = await res.json();
-    const items = data?.data?.items;
-    if (!items || items.length === 0) throw new Error("Birdeye returned empty OHLCV list");
-
-    return items.map(item => ({
-      timestamp: item.unixTime,
-      open:      Number(item.o),
-      high:      Number(item.h),
-      low:       Number(item.l),
-      close:     Number(item.c),
-      volume:    Number(item.v),
-    }));
-  }
-
-  throw new Error("Birdeye OHLCV: rate limited after retry");
+export async function fetchOHLCV(tokenMint, limit = 50, poolAddress = null) {
+  return hybridDataProvider.getOHLCVByMint(tokenMint, "1m", limit, "solana", poolAddress);
 }
 
 /**
- * Fetch 1m OHLCV candles from Birdeye for a Solana token.
- * Returns array of { timestamp, open, high, low, close, volume } in chronological order.
- */
-export async function fetchOHLCV(tokenMint, limit = 50) {
-  return fetchBirdeyeOHLCV(tokenMint, "1m", limit);
-}
-
-/**
- * Fetch daily OHLCV candles from Birdeye for a token.
+ * Fetch daily OHLCV candles for a token.
  * Used to find ATH and all-time-low across the token's full price history.
  */
-export async function fetchDailyOHLCV(tokenMint, limit = 1000) {
+export async function fetchDailyOHLCV(tokenMint, limit = 1000, poolAddress = null) {
   try {
-    return await fetchBirdeyeOHLCV(tokenMint, "1D", limit);
+    return await hybridDataProvider.getOHLCVByMint(tokenMint, "1D", limit, "solana", poolAddress);
   } catch {
     return null; // non-fatal — fall back to intraday swing
   }
@@ -407,13 +363,13 @@ function calcBinsAbove(currentPrice, targetPrice, binStep) {
  * @param {number} candleLimit
  * @returns {Promise<SignalResult>}
  */
-export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimit = 50, opts = {}) {
+export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimit = 50, opts = {}, poolAddress = null) {
   // ── Fetch OHLCV (1m for indicators) + Daily (for ATH-based Fibonacci) ──────
   let candles, dailyCandles;
   try {
-    // Sequential (not parallel) to respect Birdeye rate limits
-    candles      = await fetchOHLCV(tokenMint, candleLimit);
-    dailyCandles = await fetchDailyOHLCV(tokenMint, 1000);
+    // Sequential (not parallel) to respect rate limits
+    candles      = await fetchOHLCV(tokenMint, candleLimit, poolAddress);
+    dailyCandles = await fetchDailyOHLCV(tokenMint, 1000, poolAddress);
   } catch (e) {
     return skip(`Chart data unavailable: ${e.message}`, currentPrice);
   }

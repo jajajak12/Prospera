@@ -14,6 +14,7 @@
 import { config } from "../config.js";
 import { log } from "../logger.js";
 import { analyzeSignal } from "./chart.js";
+import { hybridDataProvider } from "./dataProvider.js";
 import { getTokenAdvancedInfo, getTokenPriceInfo } from "./okx.js";
 import { batchGetTokenVolumeH1, getJupiterTokenInfo } from "./token.js";
 import { checkSmartWalletActivity } from "../smart-wallets.js";
@@ -664,16 +665,25 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   log("screening", `Running Fibonacci analysis on ${toAnalyze.length} pools...`);
 
   const signalResults = await Promise.allSettled(
-    toAnalyze.map(({ token, pool }) => {
-      // MUST use USD price (token.price from Dexscreener) — Birdeye OHLCV candles are in USD.
-      // pool.price is Meteora SOL-denominated; using it against USD Fib levels causes unit mismatch → false ENTRY.
-      const currentPrice = token.price; // no fallback to pool.price
-      const binStep      = pool.bin_step;
-      if (!currentPrice || !binStep) {
-        return Promise.resolve({ signal: "SKIP", reason: "Missing USD price or bin_step — skip to avoid unit mismatch" });
+    toAnalyze.map(async ({ token, pool }) => {
+      // MUST use USD price — OHLCV candles are in USD.
+      // pool.price is Meteora SOL-denominated; using it against USD Fib levels causes unit mismatch.
+      let currentPrice = token.price; // no fallback to pool.price (SOL-denominated)
+      const binStep    = pool.bin_step;
+      if (!binStep) {
+        return { signal: "SKIP", reason: "Missing bin_step" };
       }
-      // Birdeye OHLCV uses token mint address (not pool address).
-      return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? 48 });
+      // If Dexscreener discovery didn't provide USD price, try hybridDataProvider
+      if (!currentPrice) {
+        try {
+          const poolData = await hybridDataProvider.getPoolData(pool.pool);
+          currentPrice = poolData.price ?? null;
+        } catch { /* non-fatal */ }
+      }
+      if (!currentPrice) {
+        return { signal: "SKIP", reason: "Missing USD price — skip to avoid unit mismatch" };
+      }
+      return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? 48 }, pool.pool);
     })
   );
 
