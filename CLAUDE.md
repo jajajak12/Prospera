@@ -27,6 +27,33 @@ Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
 
 ---
 
+## Hard Rules (Non-Negotiable)
+
+### Entry Rules
+- **Primary entry zone**: ATH down to Fib 0.382 (ATH zone > fib236, PRIMARY zone fib236–fib382)
+- **Hard no-entry**: `price < fib.fib500` → immediate SKIP "broken support, no entry" — dicek PERTAMA setelah `calcFibLevels`, sebelum indicators
+- Deep pullback zone (fib382–fib500) → SKIP "wait for primary zone"
+- EMA20 > EMA50 wajib; RSI > 48 AND slope positif wajib
+
+### Broken Support Cache
+- **Trigger**: price < fib618 (signal "broken support") ATAU price crash ≥80% dalam 24h
+- **Disimpan**: `{ cachedAt, priceAtRejection, athAtRejection }` — `athAtRejection` = `fibLevels.swingHigh`
+- **Invalidasi**: HANYA jika `currentPrice > cached.athAtRejection` (new ATH) — bukan pump % threshold
+- **File**: `broken-support-cache.json` — persist lintas PM2 restart; durasi 24 jam
+
+### Data Provider
+- **Semua** pool data dan OHLCV wajib melalui `hybridDataProvider` dari `tools/dataProvider.js`
+- Fallback chain: **Dexscreener (primary) → Birdeye → GeckoTerminal**
+- `getPoolData(poolAddress, chain)` — price USD, mcap, volume, liquidity
+- `getOHLCV(poolAddress, timeframe, limit, chain, tokenMint?)` — jika tokenMint ada: Birdeye token first; jika tidak: Dexscreener → Birdeye pair → GT
+- **Dilarang** memanggil Birdeye/Dexscreener/GeckoTerminal API langsung di luar `dataProvider.js`
+
+### Deploy-Time Gate
+- `executor.js` re-check live price vs `fib500` dari `screening-pending.json` sebelum deploy
+- Jika `livePrice < fib500` → block deploy
+
+---
+
 ## Filosofi
 
 - **Teknikal-first**, bukan volatility-based
@@ -59,7 +86,7 @@ Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
 ## Struktur File Penting
 
 ```
-index.js              — main loop: deterministic rules + LLM agent calls
+index.js              — main loop: deterministic rules + LLM agent calls; screening-lock.json
 config.js             — config loader + getPositionSizing() + exposure cap functions
 user-config.json      — runtime config (edit ini untuk ubah parameter)
 prompt.js             — system prompt builder (SCREENER/MANAGER/GENERAL)
@@ -71,25 +98,25 @@ state.js              — posisi tracking + memori agent
 
 tools/
   screening.js        — pipeline screening v3 (Dexscreener-first + RocketScan fallback)
-  chart.js            — Fibonacci + indicators; broken support = price < fib500
-  dataProvider.js     — HybridDataProvider: Dexscreener → Birdeye → GeckoTerminal
+  chart.js            — Fibonacci + indicators; hard gate price < fib500 setelah calcFibLevels
+  dataProvider.js     — HybridDataProvider: Dexscreener → Birdeye → GeckoTerminal (WAJIB dipakai)
   dlmm.js             — deploy/close posisi, RPC failover
   wallet.js           — wallet balance, swap via Jupiter
   study.js            — LPAgent API client (primary + backup key)
   okx.js              — RugCheck.xyz API (bundle %, honeypot, creator address)
   token.js            — Jupiter DataAPI + Dexscreener volume
-  executor.js         — tool handler untuk LLM function calls; deploy-time fib500 gate
+  executor.js         — tool handler LLM function calls; deploy-time fib500 gate
   definitions.js      — OpenAI function-call schemas
 ```
 
 ---
 
-## Screening Pipeline (v2 — GeckoTerminal-first + RocketScan fallback)
+## Screening Pipeline (v3 — Dexscreener-first + HybridDataProvider)
 
 ```
-GeckoTerminal trending Solana (2 pages, ~40 token, semua DEX)
-  → Dexscreener 1h volume ≥ minVolume ($100k default)
-  → mcap pre-filter dari GT data
+Dexscreener trending Solana (boosts + profiles, SOL pair only)
+  → 1h volume filter ≥ minVolume ($100k)
+  → mcap pre-filter dari Dexscreener data
   → RugCheck: bundle % check, honeypot/rugged flag, creator blacklist
   → Jupiter: top10/botHolders/feesSOL
   → Meteora bulk fetch (fetchMeteoraDlmmPoolMap):
@@ -101,8 +128,9 @@ GeckoTerminal trending Solana (2 pages, ~40 token, semua DEX)
       token tanpa pool di Meteora API → cek rocketscan.fun/api/pools?tokenBMint=
       detail pool dari dlmm.datapi.meteora.ag
       apply manual filters: bin_step, TVL, holders, mcap, organic, age, pair=SOL
-  → Fibonacci analysis (GT candles + Meteora bin_step)
-  → Broken support cache (3 jam, invalidate jika harga naik >50%)
+  → Fibonacci analysis via hybridDataProvider.getOHLCV() + Meteora bin_step
+      HARD GATE: price < fib500 → SKIP "broken support" → cached 24h
+      Broken support cache: trigger < fib618, invalidate on new ATH only
   → Smart wallet boost (+0.10 confluenceScore)
   → Sort by confluenceScore DESC
 ```
@@ -220,6 +248,7 @@ Auto-reset ke primary setelah 5 menit stabil.
 - Volume Profile (POC/VAL) bersifat **informational only** — bukan hard gate
 - `autoBacktest` default **false** — jangan asumsi aktif kecuali user minta
 - Exposure cap 60% harus selalu dicek sebelum open posisi baru
+- **Jangan pernah memanggil Birdeye/Dexscreener/GeckoTerminal API langsung** — selalu lewat `hybridDataProvider`
 
 ---
 
@@ -227,7 +256,6 @@ Auto-reset ke primary setelah 5 menit stabil.
 
 - Darwinian weights belum evolve (perlu 6+ closed positions)
 - Signal attribution baru bisa dievaluasi setelah ada closed positions
-- GeckoTerminal rate limit (HTTP 429) terjadi berulang — pertimbangkan delay antar page
 - Monitor entry rate setelah fix screening pipeline
 
 ---
