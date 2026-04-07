@@ -1,12 +1,12 @@
 /**
  * screening.js — Token-first discovery + Fibonacci signal filter
  *
- * Flow (v2 — GeckoTerminal-first):
- * 1. Discover trending Solana tokens from GeckoTerminal (all DEXes, not just Meteora trending)
- * 2. Filter by 5m cross-DEX volume (Dexscreener)
- * 3. Safety checks: OKX bundle/honeypot + Jupiter top10/botHolders/feesSOL
+ * Flow (v3 — Dexscreener-first + Birdeye OHLCV):
+ * 1. Discover trending Solana tokens from Dexscreener (boosts + latest profiles)
+ * 2. Filter by 1h cross-DEX volume (pre-populated from discovery or Dexscreener)
+ * 3. Safety checks: RugCheck bundle/honeypot + Jupiter top10/botHolders/feesSOL
  * 4. Find Meteora DLMM pool for each candidate (TVL, fee/TVL, bin_step, organic, holders)
- * 5. Fibonacci analysis using GeckoTerminal candles + Meteora pool bin_step
+ * 5. Fibonacci analysis using Birdeye OHLCV candles + Meteora pool bin_step
  * 6. Smart wallet boost
  * 7. Sort by confluenceScore, return
  */
@@ -22,8 +22,9 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
+const DEXSCREENER_BASE  = "https://api.dexscreener.com";
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
+const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 // Cache pools rejected with "broken support" — price well below Fib 0.618, skip re-analysis for 3h
 // Stores { cachedAt, priceAtRejection } — invalidated early if price pumps >50% (momentum recovery)
@@ -104,57 +105,85 @@ function round(n) { return n != null ? Math.round(n) : null; }
 function fix(n, d) { return n != null ? Number(n.toFixed(d)) : null; }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Discovery: GeckoTerminal trending Solana pools (all DEXes)
+//  Discovery: Dexscreener trending Solana tokens (boosts + latest profiles)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Discover trending tokens on Solana from GeckoTerminal.
- * Fetches `pages` pages of trending pools (each page ~20 pools).
- * Returns unique base tokens with their GT pool address for later OHLCV fetch.
+ * Discover trending tokens on Solana from Dexscreener.
+ * Fetches top-boosted + latest token profiles, then enriches with pair data
+ * (price, mcap, 1h volume) via the tokens endpoint.
+ *
+ * Returns unique base tokens with SOL pair: { mint, symbol, price, mcap, _vol5m }
  */
-async function discoverTokensFromGecko({ pages = 2 } = {}) {
-  const seen = new Set();
-  const tokens = [];
+async function discoverTokensFromDexscreener() {
+  const seen     = new Set();
+  const rawMints = [];
 
-  for (let page = 1; page <= pages; page++) {
+  // Fetch top boosted tokens + latest token profiles in parallel
+  const [boostsResult, profilesResult] = await Promise.allSettled([
+    fetch(`${DEXSCREENER_BASE}/token-boosts/top/v1`,       { signal: AbortSignal.timeout(10_000) }),
+    fetch(`${DEXSCREENER_BASE}/token-profiles/latest/v1`,  { signal: AbortSignal.timeout(10_000) }),
+  ]);
+
+  for (const result of [boostsResult, profilesResult]) {
+    if (result.status !== "fulfilled" || !result.value.ok) continue;
     try {
-      const url = `${GECKO_BASE}/networks/solana/trending_pools?page=${page}`;
-      const res = await fetch(url, {
-        headers: { Accept: "application/json;version=20230302" },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) {
-        log("screening", `GeckoTerminal page ${page} error: HTTP ${res.status}`);
-        break;
-      }
-
-      const data = await res.json();
-      for (const p of (data?.data ?? [])) {
-        const baseId  = p.relationships?.base_token?.data?.id ?? "";
-        const mint    = baseId.replace(/^solana_/, "");
-        // skip if the ID had no "solana_" prefix (i.e., not a Solana token)
-        if (!mint || mint === baseId) continue;
-        if (seen.has(mint)) continue;
+      const items = await result.value.json();
+      for (const item of (Array.isArray(items) ? items : [])) {
+        if (item.chainId !== "solana") continue;
+        const mint = item.tokenAddress;
+        if (!mint || seen.has(mint)) continue;
         seen.add(mint);
+        rawMints.push(mint);
+      }
+    } catch { /* skip */ }
+  }
 
-        const poolId = (p.id ?? "").replace(/^solana_/, "");
-        const attrs  = p.attributes ?? {};
+  if (rawMints.length === 0) {
+    log("screening", "Dexscreener discovery: no tokens found from boosts/profiles");
+    return [];
+  }
 
-        tokens.push({
+  // Batch fetch pair details (max 30 per request) to get price, mcap, h1 volume
+  const chunks = [];
+  for (let i = 0; i < rawMints.length; i += 30) chunks.push(rawMints.slice(i, i + 30));
+
+  const chunkResults = await Promise.allSettled(
+    chunks.map(chunk =>
+      fetch(`${DEXSCREENER_BASE}/tokens/v1/solana/${chunk.join(",")}`, { signal: AbortSignal.timeout(10_000) })
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null)
+    )
+  );
+
+  // Per mint: keep only SOL-paired tokens, pick best pair (highest h1 volume)
+  const byMint = new Map();
+  for (const result of chunkResults) {
+    if (result.status !== "fulfilled" || !result.value) continue;
+    const pairList = Array.isArray(result.value) ? result.value : (result.value?.pairs ?? []);
+    for (const pair of pairList) {
+      if (pair.chainId !== "solana") continue;
+      const quoteAddr = pair.quoteToken?.address;
+      // Only include tokens paired against native SOL (WSOL)
+      if (quoteAddr !== SOL_MINT && pair.quoteToken?.symbol !== "SOL") continue;
+      const mint = pair.baseToken?.address;
+      if (!mint) continue;
+      const volH1 = parseFloat(pair.volume?.h1 ?? 0) || 0;
+      const existing = byMint.get(mint);
+      if (!existing || volH1 > (existing._vol5m ?? 0)) {
+        byMint.set(mint, {
           mint,
-          geckoPoolAddress: poolId,
-          symbol: (attrs.name ?? "UNKNOWN").split(" / ")[0],
-          price:  parseFloat(attrs.base_token_price_usd) || null,
-          mcap:   parseFloat(attrs.market_cap_usd ?? attrs.fdv_usd) || null,
+          symbol: pair.baseToken?.symbol ?? "UNKNOWN",
+          price:  parseFloat(pair.priceUsd) || null,
+          mcap:   parseFloat(pair.fdv ?? pair.marketCap) || null,
+          _vol5m: Math.round(volH1),
         });
       }
-    } catch (e) {
-      log("screening", `GeckoTerminal page ${page} failed: ${e.message}`);
-      break;
     }
   }
 
-  log("screening", `GeckoTerminal discovery: ${tokens.length} unique tokens across ${pages} pages`);
+  const tokens = [...byMint.values()];
+  log("screening", `Dexscreener discovery: ${tokens.length} unique SOL-pair tokens from ${rawMints.length} candidates`);
   return tokens;
 }
 
@@ -385,14 +414,14 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   const s = config.screening;
 
   // ── Step 1: Discover tokens ──────────────────────────────────────────────
-  const geckoTokens = await discoverTokensFromGecko({ pages: 2 });
+  const dexTokens = await discoverTokensFromDexscreener();
 
   // Exclude pools/mints where wallet already has an open position
   const { getMyPositions } = await import("./dlmm.js");
   const { positions } = await getMyPositions();
   const occupiedMints = new Set(positions.map(p => p.base_mint).filter(Boolean));
 
-  let eligible = geckoTokens.filter(t => {
+  let eligible = dexTokens.filter(t => {
     if (occupiedMints.has(t.mint)) return false;
     if (isBlacklisted(t.mint)) {
       log("screening", `  ${t.symbol}: SKIP — token blacklisted`);
@@ -406,32 +435,36 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   });
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: geckoTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
   }
 
-  // ── Step 2: 1h volume filter (Dexscreener — cross-DEX accurate) ──────────
+  // ── Step 2: 1h volume filter ─────────────────────────────────────────────
+  // Dexscreener discovery already provides _vol5m (h1 volume) for tokens with SOL pairs.
+  // Only fetch separately for tokens where volume wasn't available in discovery.
   {
-    const mints  = eligible.map(t => t.mint).filter(Boolean);
-    const volMap = await batchGetTokenVolumeH1(mints).catch(() => new Map());
+    const missingVol = eligible.filter(t => t._vol5m == null).map(t => t.mint);
+    const volMap = missingVol.length > 0
+      ? await batchGetTokenVolumeH1(missingVol).catch(() => new Map())
+      : new Map();
     const before = eligible.length;
     eligible = eligible.filter(t => {
-      const volH1 = volMap.get(t.mint);
+      const volH1 = t._vol5m ?? volMap.get(t.mint);
       if (volH1 == null) return true; // API miss → keep
       if (volH1 < s.minVolume) {
         log("screening", `  ${t.symbol}: SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume}`);
         return false;
       }
-      t._vol5m = Math.round(volH1); // keep field name for downstream compatibility
+      t._vol5m = Math.round(volH1);
       return true;
     });
     log("screening", `Volume filter: ${eligible.length}/${before} passed (min 1h vol $${s.minVolume})`);
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: geckoTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
   }
 
-  // ── Step 3: mcap pre-filter from GeckoTerminal data (when available) ─────
+  // ── Step 3: mcap pre-filter from Dexscreener discovery data (when available) ─
   eligible = eligible.filter(t => {
     if (t.mcap == null) return true; // no GT data → defer to Meteora query
     if (t.mcap < s.minMcap) {
@@ -446,7 +479,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   }).slice(0, limit * 3); // cap before expensive API calls
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: geckoTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
   }
 
   // ── Step 4: RugCheck bundle / honeypot / dev filter ──────────────────────
@@ -478,7 +511,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: geckoTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
   }
 
   // ── Step 5: Jupiter token safety filter (top10, bot holders, fees SOL) ───
@@ -510,7 +543,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: geckoTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
   }
 
   // ── Step 6: ATH proximity filter (optional) ──────────────────────────────
@@ -534,7 +567,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: geckoTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
   }
 
   // ── Step 7: Find Meteora DLMM pool for each passing token ────────────────
@@ -570,12 +603,11 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   log("screening", `Meteora pool filter: ${withPool.length}/${eligible.length} tokens have qualifying pools`);
 
   if (withPool.length === 0) {
-    return { candidates: [], total_screened: geckoTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
   }
 
   // ── Step 8: Fibonacci analysis ───────────────────────────────────────────
-  // Use the GeckoTerminal pool for candles (guaranteed indexed since found in GT trending),
-  // but use Meteora pool's bin_step and price for accurate bin range calculation.
+  // Birdeye OHLCV uses token mint; Meteora pool bin_step for bin range calculation.
 
   // Filter out pools cached as "broken support" — price far below Fib 0.618, no recovery expected soon
   // All price values are stored in USD (token.price from GT) to match GT OHLCV candle units.
@@ -619,10 +651,8 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       if (!currentPrice || !binStep) {
         return Promise.resolve({ signal: "SKIP", reason: "Missing price or bin_step" });
       }
-      // GeckoTerminal pool from discovery (may be any DEX) used for OHLCV candles.
-      // Meteora pool address used as fallback if geckoPoolAddress is unavailable.
-      const gtPool = token.geckoPoolAddress || pool.pool;
-      return analyzeSignal(gtPool, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? 48 });
+      // Birdeye OHLCV uses token mint address (not pool address).
+      return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? 48 });
     })
   );
 
@@ -723,7 +753,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
 
   return {
     candidates: filtered,
-    total_screened: geckoTokens.length,
+    total_screened: dexTokens.length,
     fib_analyzed:   toAnalyze.length,
     fib_passed:     candidates.length,
   };
