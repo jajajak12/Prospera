@@ -422,6 +422,14 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
 
   const fib = calcFibLevels(swingHigh, swingLow);
 
+  // ── Hard gate: NO ENTRY below Fib 0.500 ──────────────────────────────────
+  if (currentPrice < fib.fib500) {
+    return skip(
+      `Price ${fmt(currentPrice)} below Fib 0.500 (${fmt(fib.fib500)}) — broken support, no entry`,
+      currentPrice, fib
+    );
+  }
+
   // ── Indicators ────────────────────────────────────────────────────────────
   const ema20Values = calcEMA(candles, 20);
   const ema50Values = calcEMA(candles, 50);
@@ -437,23 +445,9 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   const binStepPct = binStep / 100;
 
   // ── Check 1: Price must be in ATH zone or Primary zone ───────────────────
-  // Valid entry zones:
-  //   ATH zone    : price > fib236  — range covers fib236 → support below fib618
-  //   Primary zone: fib382 → fib236 — range covers currentPrice → support below fib618
-  // Reject:
-  //   Deep pullback (fib382–fib618) — too deep, invalidates pullback thesis
-  //   Broken support (< fib618)     — structure broken, no entry
   const inPrimaryZone = currentPrice >= fib.fib382 && currentPrice <= fib.fib236;
   const inAthZone     = currentPrice > fib.fib236;
   const inEntryRange  = inPrimaryZone || inAthZone;
-
-  // Broken support: price below Fib 0.786 — structure fully broken, no recovery expected without new ATH
-  if (currentPrice < fib.fib500) {
-    return skip(
-      `Price ${fmt(currentPrice)} below Fib 0.500 (${fmt(fib.fib500)}) — broken support, no entry`,
-      currentPrice, fib
-    );
-  }
 
   if (!inEntryRange) {
     return skip(
