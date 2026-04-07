@@ -578,21 +578,22 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   // but use Meteora pool's bin_step and price for accurate bin range calculation.
 
   // Filter out pools cached as "broken support" — price far below Fib 0.618, no recovery expected soon
+  // All price values are stored in USD (token.price from GT) to match GT OHLCV candle units.
   const now = Date.now();
-  const toAnalyze = withPool.filter(({ pool }) => {
+  const toAnalyze = withPool.filter(({ token, pool }) => {
     // Skip pools that are actively crashing (>80% price drop in 24h) — not an entry signal
     if (pool.price_change_pct != null && pool.price_change_pct <= -80) {
       log("screening", `  ${pool.name}: SKIP — price crashed ${pool.price_change_pct.toFixed(1)}% in 24h`);
-      const currentPrice = pool.price ?? 0;
-      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: currentPrice });
+      const usdPrice = token.price ?? pool.price ?? 0;
+      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: usdPrice });
       return false;
     }
     // Skip pools cached as "broken support" — unless price has recovered >50% since rejection
     const cached = _fibBrokenSupportCache.get(pool.pool);
     if (cached && now - cached.cachedAt < FIB_BROKEN_CACHE_MS) {
-      const currentPrice = pool.price ?? 0;
+      const usdPrice = token.price ?? pool.price ?? 0;
       const pricePump = cached.priceAtRejection > 0
-        ? (currentPrice - cached.priceAtRejection) / cached.priceAtRejection
+        ? (usdPrice - cached.priceAtRejection) / cached.priceAtRejection
         : 0;
       // Price pumped >50% since rejection — possible momentum recovery, re-analyze fresh
       if (pricePump > 0.5) {
@@ -610,7 +611,10 @@ export async function getTopCandidates({ limit = 20 } = {}) {
 
   const signalResults = await Promise.allSettled(
     toAnalyze.map(({ token, pool }) => {
-      const currentPrice = pool.price ?? token.price;
+      // GT OHLCV returns prices in USD. Use token.price (GT base_token_price_usd) as
+      // currentPrice so Fib levels are in the same unit as the candles.
+      // pool.price (Meteora native SOL) is a different unit — only fallback if GT price unavailable.
+      const currentPrice = token.price ?? pool.price;
       const binStep      = pool.bin_step;
       if (!currentPrice || !binStep) {
         return Promise.resolve({ signal: "SKIP", reason: "Missing price or bin_step" });
@@ -633,7 +637,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
 
     // Cache pools rejected for broken support — price already below Fib 0.618
     if (analysis.signal !== "ENTRY" && analysis.reason?.includes("broken support")) {
-      const rejectedPrice = pool.price ?? 0;
+      const rejectedPrice = token.price ?? pool.price ?? 0;
       _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: rejectedPrice });
     }
 

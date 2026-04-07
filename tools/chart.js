@@ -451,6 +451,21 @@ export async function analyzeSignal(poolAddress, binStep, currentPrice, candleLi
     ({ swingHigh, swingLow } = detectSwing(candles));
   }
 
+  // Guard: for very new tokens (≤1 daily candle), the daily high may include a
+  // thin-liquidity launch spike (first trades at extreme prices before liquidity settles).
+  // If swingHigh is >5x the current price in this case, re-derive from filtered
+  // intraday candles — drop the top 5% of price outliers to remove the spike.
+  if (swingHigh > currentPrice * 5 && dailyCandles != null && dailyCandles.length <= 1) {
+    const sortedHighs = candles.map(c => c.high).sort((a, b) => a - b);
+    const p95 = sortedHighs[Math.floor(sortedHighs.length * 0.95)] ?? swingHigh;
+    const cleaned = candles.filter(c => c.high <= p95);
+    if (cleaned.length >= 20) {
+      const { swingHigh: h, swingLow: l } = detectSwing(cleaned);
+      swingHigh = h;
+      swingLow  = Math.min(swingLow, l);
+    }
+  }
+
   if (swingHigh <= swingLow || swingHigh === swingLow) {
     return skip("No price movement detected (swing_high === swing_low)", currentPrice);
   }
