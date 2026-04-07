@@ -435,8 +435,10 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   });
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
+
+  log.screening(`Step 1 — Discovery: ${eligible.length} tokens (raw: ${dexTokens.length}, excl blacklist/occupied)`);
 
   // ── Step 2: 1h volume filter ─────────────────────────────────────────────
   // Dexscreener discovery already provides _vol5m (h1 volume) for tokens with SOL pairs.
@@ -457,29 +459,35 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       t._vol5m = Math.round(volH1);
       return true;
     });
-    log("screening", `Volume filter: ${eligible.length}/${before} passed (min 1h vol $${s.minVolume})`);
+    log.screening(`Step 2 — Volume filter: ${eligible.length}/${before} passed (min 1h $${s.minVolume})`);
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, after_volume_count: 0, withPool_count: 0, fib_analyzed: 0 };
   }
+
+  const afterVolumeCount = eligible.length;
 
   // ── Step 3: mcap pre-filter from Dexscreener discovery data (when available) ─
-  eligible = eligible.filter(t => {
-    if (t.mcap == null) return true; // no GT data → defer to Meteora query
-    if (t.mcap < s.minMcap) {
-      log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} < min $${s.minMcap}`);
-      return false;
-    }
-    if (t.mcap > s.maxMcap) {
-      log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} > max $${s.maxMcap}`);
-      return false;
-    }
-    return true;
-  }).slice(0, limit * 3); // cap before expensive API calls
+  {
+    const before = eligible.length;
+    eligible = eligible.filter(t => {
+      if (t.mcap == null) return true; // no GT data → defer to Meteora query
+      if (t.mcap < s.minMcap) {
+        log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} < min $${s.minMcap}`);
+        return false;
+      }
+      if (t.mcap > s.maxMcap) {
+        log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} > max $${s.maxMcap}`);
+        return false;
+      }
+      return true;
+    }).slice(0, limit * 3); // cap before expensive API calls
+    if (eligible.length < before) log.screening(`Step 3 — mcap filter: ${eligible.length}/${before} passed`);
+  }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 4: RugCheck bundle / honeypot / dev filter ──────────────────────
@@ -511,7 +519,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 5: Jupiter token safety filter (top10, bot holders, fees SOL) ───
@@ -543,7 +551,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 6: ATH proximity filter (optional) ──────────────────────────────
@@ -567,7 +575,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 7: Find Meteora DLMM pool for each passing token ────────────────
@@ -600,10 +608,10 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       return true;
     });
 
-  log("screening", `Meteora pool filter: ${withPool.length}/${eligible.length} tokens have qualifying pools`);
+  log.screening(`Step 7 — Meteora pool match: ${withPool.length}/${eligible.length} tokens have qualifying pools`);
 
   if (withPool.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 8: Fibonacci analysis ───────────────────────────────────────────
@@ -746,13 +754,16 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   // Sort by confluence score descending
   filtered.sort((a, b) => (b.fib_signal.confluenceScore ?? 0) - (a.fib_signal.confluenceScore ?? 0));
 
-  log("screening", `Fibonacci filter: ${filtered.length}/${withPool.length} pools passed${minConf > 0 && filtered.length < beforeConf ? ` (${beforeConf - filtered.length} below minConfluenceScore ${minConf})` : ""}`);
+  log.screening(`Step 8 — Fibonacci: ${filtered.length}/${withPool.length} passed (analyzed: ${toAnalyze.length}, entry: ${candidates.length}${minConf > 0 && filtered.length < beforeConf ? `, dropped ${beforeConf - filtered.length} below minConf ${minConf}` : ""})`);
+  log.screening(`Summary: discovered=${dexTokens.length} → volume=${afterVolumeCount} → pools=${withPool.length} → fib_entry=${filtered.length}`);
 
   return {
-    candidates: filtered,
-    total_screened: dexTokens.length,
-    fib_analyzed:   toAnalyze.length,
-    fib_passed:     candidates.length,
+    candidates:        filtered,
+    total_screened:    dexTokens.length,
+    after_volume_count: afterVolumeCount,
+    withPool_count:    withPool.length,
+    fib_analyzed:      toAnalyze.length,
+    fib_passed:        candidates.length,
   };
 }
 

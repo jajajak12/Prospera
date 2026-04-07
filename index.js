@@ -586,11 +586,12 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   log("cron", `Starting Fibonacci screening cycle [model: ${config.llm.screeningModel}]`);
   log("cron", `Deploy amount: ${deployAmount} SOL (wallet: ${preBalance.sol} SOL)`);
   let screenReport = null;
+  let topResult    = null;
 
   try {
 
     // Fetch Fibonacci-filtered candidates
-    const topResult = await getTopCandidates({ limit: 20 }).catch(() => null);
+    topResult = await getTopCandidates({ limit: 20 }).catch(() => null);
     const candidates = topResult?.candidates || [];
 
     // If GeckoTerminal returned nothing (rate limit / network), reset the cooldown
@@ -603,7 +604,11 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     }
 
     if (candidates.length === 0) {
-      screenReport = `No Fibonacci entry signals found. Tokens discovered: ${topResult?.total_screened ?? 0}, with Meteora pool: ${topResult?.fib_analyzed ?? 0}. All tokens either had no qualifying Meteora DLMM pool or did not pass EMA/RSI/ATR filters.`;
+      const _ts  = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+      const _tot = topResult?.total_screened    ?? 0;
+      const _vol = topResult?.after_volume_count ?? 0;
+      const _mtr = topResult?.withPool_count     ?? 0;
+      screenReport = `🔍 Fibonacci Screening [${_ts}]\nDiscovered: ${_tot} | After volume: ${_vol} | Meteora pools: ${_mtr}\nNo entry signals (failed EMA/RSI/Fib filters)`;
       return screenReport;
     }
 
@@ -748,7 +753,20 @@ reason: <one sentence why this over others>
   } finally {
     _screeningBusy = false;
     if (!silent && telegramEnabled()) {
-      if (screenReport) sendMessage(`🔍 Fibonacci Screening\n\n${stripThink(screenReport)}`).catch(() => {});
+      if (screenReport) {
+        // No-candidates report already has header baked in; LLM reports get a stats header prepended
+        const _alreadyHasHeader = screenReport.startsWith("🔍");
+        if (_alreadyHasHeader) {
+          sendMessage(screenReport).catch(() => {});
+        } else {
+          const _ts  = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+          const _tot = topResult?.total_screened    ?? 0;
+          const _vol = topResult?.after_volume_count ?? 0;
+          const _mtr = topResult?.withPool_count     ?? 0;
+          const _hdr = `🔍 Fibonacci Screening [${_ts}]\nDiscovered: ${_tot} | After volume: ${_vol} | Meteora pools: ${_mtr}\n\n`;
+          sendMessage(`${_hdr}${stripThink(screenReport)}`).catch(() => {});
+        }
+      }
     }
   }
   return screenReport;
