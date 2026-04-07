@@ -28,29 +28,36 @@ async function fetchBirdeyeOHLCV(tokenMint, type, limit) {
   const now      = Math.floor(Date.now() / 1000);
   const interval = type === "1D" ? 86400 : 60;
   const timeFrom = now - interval * limit;
+  const url = `${BIRDEYE_BASE}/defi/ohlcv?address=${tokenMint}&address_type=token&type=${type}&time_from=${timeFrom}&time_to=${now}`;
 
-  const res = await fetch(
-    `${BIRDEYE_BASE}/defi/ohlcv?address=${tokenMint}&address_type=token&type=${type}&time_from=${timeFrom}&time_to=${now}`,
-    {
+  // Retry once on 429 (rate limit) with 3s delay
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const res = await fetch(url, {
       headers: { "X-API-KEY": apiKey, "x-chain": "solana" },
       signal: AbortSignal.timeout(10000),
+    });
+
+    if (res.status === 429 && attempt === 1) {
+      await new Promise(r => setTimeout(r, 3000));
+      continue;
     }
-  );
+    if (!res.ok) throw new Error(`Birdeye OHLCV error: ${res.status} ${res.statusText}`);
 
-  if (!res.ok) throw new Error(`Birdeye OHLCV error: ${res.status} ${res.statusText}`);
+    const data  = await res.json();
+    const items = data?.data?.items;
+    if (!items || items.length === 0) throw new Error("Birdeye returned empty OHLCV list");
 
-  const data  = await res.json();
-  const items = data?.data?.items;
-  if (!items || items.length === 0) throw new Error("Birdeye returned empty OHLCV list");
+    return items.map(item => ({
+      timestamp: item.unixTime,
+      open:      Number(item.o),
+      high:      Number(item.h),
+      low:       Number(item.l),
+      close:     Number(item.c),
+      volume:    Number(item.v),
+    }));
+  }
 
-  return items.map(item => ({
-    timestamp: item.unixTime,
-    open:      Number(item.o),
-    high:      Number(item.h),
-    low:       Number(item.l),
-    close:     Number(item.c),
-    volume:    Number(item.v),
-  }));
+  throw new Error("Birdeye OHLCV: rate limited after retry");
 }
 
 /**
@@ -407,10 +414,9 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   // ── Fetch OHLCV (1m for indicators) + Daily (for ATH-based Fibonacci) ──────
   let candles, dailyCandles;
   try {
-    [candles, dailyCandles] = await Promise.all([
-      fetchOHLCV(tokenMint, candleLimit),
-      fetchDailyOHLCV(tokenMint, 1000),
-    ]);
+    // Sequential (not parallel) to respect Birdeye rate limits
+    candles      = await fetchOHLCV(tokenMint, candleLimit);
+    dailyCandles = await fetchDailyOHLCV(tokenMint, 1000);
   } catch (e) {
     return skip(`Chart data unavailable: ${e.message}`, currentPrice);
   }
