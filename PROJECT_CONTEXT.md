@@ -1,43 +1,38 @@
 # Prospera — Project Context
 
-Arsitektur final dan status fitur.
-
 ---
 
 ## Stack
 
 - Node.js ES modules, PM2 ID 0, Solana/Meteora DLMM
-- Strategy: Fibonacci retracement + single-sided bid_ask
 - LLM: deepseek-v3.2 (management), qwen3.5-flash (screening)
 
 ---
 
-## Data Layer — HybridDataProvider (`tools/dataProvider.js`)
-
-Wajib untuk semua data. Fallback: **Dexscreener → Birdeye → GeckoTerminal**.
+## HybridDataProvider (`tools/dataProvider.js`)
 
 ```js
 getPoolData(poolAddress, chain)
 getOHLCV(poolAddress, timeframe, limit, chain, tokenMint?)
-  // tokenMint → Birdeye token first → DS → GT
-  // no tokenMint → DS → Birdeye pair → GT
 ```
 
-Trigger fallback: timeout >3s, HTTP 429, error. 1 retry on 429.
+Fallback: **Dexscreener → Birdeye → GeckoTerminal**. 1 retry on 429.
+- `tokenMint` ada → Birdeye token first
+- `tokenMint` null → Dexscreener → Birdeye pair → GT
 
 ---
 
-## Screening Pipeline
+## Screening (`tools/screening.js`)
 
 ```
-Dexscreener boosts/profiles (SOL pair)
+Dexscreener (boosts + profiles, SOL pair)
 → 1h volume ≥ $180k
-→ mcap ≥ $200k pre-filter
+→ mcap ≥ $200k
 → RugCheck (bundle %, honeypot, creator)
 → Jupiter (top10, botHolders, feesSOL)
-→ Meteora bulk fetch page_size=100 (client-side match + age filter)
-→ RocketScan fallback (pool baru belum diindex)
-→ Broken support cache (skip if cached < fib618)
+→ Meteora bulk fetch (client-side match + age filter)
+→ RocketScan fallback
+→ Broken support cache (skip if < fib618)
 → Fibonacci via hybridDataProvider.getOHLCV()
 → Smart wallet boost +0.10
 → Sort confluenceScore DESC
@@ -49,17 +44,17 @@ Dexscreener boosts/profiles (SOL pair)
 
 ```
 calcFibLevels()
-  → HARD GATE: price < fib500 → skip "below Fib 0.500 — no entry allowed"
-  → Zone: ATH (>fib236) or PRIMARY (fib236–fib382) only
-  → EMA20 > EMA50 required
-  → RSI > 48 AND slope > 0 required
+→ HARD GATE: price < fib500 → skip "below Fib 0.500 — no entry allowed"
+→ Zone: ATH (>fib236) or PRIMARY (fib236–fib382)
+→ EMA20 > EMA50
+→ RSI > 48 AND slope > 0
 ```
 
 ---
 
 ## Broken Support Cache
 
-- File: `broken-support-cache.json` (persists PM2 restart)
+- File: `broken-support-cache.json`
 - Trigger: price < fib618 OR crash ≥80%/24h
 - Stored: `{ cachedAt, priceAtRejection, athAtRejection }`
 - Invalidate: ONLY if `currentPrice > athAtRejection`
@@ -67,14 +62,19 @@ calcFibLevels()
 
 ---
 
+## Deploy Gate (`tools/executor.js`)
+
+Re-check live price vs `fib500` from `screening-pending.json` before deploy.
+Block if `livePrice < fib500`.
+
+---
+
 ## Locks
 
-**Screening** — `screening-lock.json` `{ ts, pid, status }`
-- `running` → block unconditional
-- `done && age < 60s` → block
-- All early-returns: `_releaseAndSkip()` releases both file + in-process
-
-**Management** — `management.lock`, gap 45s minimum
+| File | Logic |
+|------|-------|
+| `screening-lock.json` | `running` → block; `done && <60s` → block; all early-returns call `_releaseAndSkip()` |
+| `management.lock` | gap minimum 45s |
 
 ---
 
@@ -88,45 +88,37 @@ calcFibLevels()
 | OOR >10m + bins>20 | CLOSE |
 | fee/TVL <1% after 60m | CLOSE |
 
-LLM zone: 5–25%.
+LLM zone: 5–25%. Model: deepseek-v3.2.
 
 ---
 
 ## Deploy Sizing
 
 ```
-< 8 SOL   → 1.5    8–15 → 2.8    15–25 → 4.2
-25–40 → 6.0        > 40  → min(18%, 9 SOL)
-```
-
+<8 SOL→1.5  8–15→2.8  15–25→4.2  25–40→6.0  >40→min(18%,9)
 Cap: 60% wallet. Gas reserve: 0.5 SOL.
+```
 
 ---
 
 ## Feature Status
 
-- [x] HybridDataProvider — `getOHLCV` unified, no direct API calls
+- [x] HybridDataProvider unified (`getOHLCV`)
 - [x] Hard gate fib500 before indicators
-- [x] Broken support cache (file-based, ATH-only invalidation)
-- [x] Deploy-time fib500 re-check (executor.js)
-- [x] File-based screening lock (no double screening after restart)
-- [x] Telegram unified format (header in `finally`)
-- [x] Dexscreener-first discovery
-- [x] RocketScan fallback
-- [x] Tiered sizing + 60% exposure cap
+- [x] Broken support cache file-based, ATH-only invalidation
+- [x] Deploy-time fib500 gate
+- [x] File-based screening lock
+- [x] Telegram unified format
+- [x] Tiered sizing + 60% cap
 - [x] Partial harvest 10%
 - [x] Darwinian signal weighting
 - [x] RPC failover 5 endpoints
-- [x] Management optimization (5m, 512 tokens)
-- [ ] Darwinian weights: need 6+ closed positions
+- [ ] Darwinian weights need 6+ closed positions
 - [ ] Monitor entry rate
 
 ---
 
-## API Notes
+## Meteora API Notes
 
-**RugCheck**: `https://api.rugcheck.xyz/v1/tokens/{mint}/report` — public, no key
-
-**Meteora Pool Discovery**: `https://pool-discovery-api.datapi.meteora.ag`
 - Invalid filters: `base_token_address`, `base_token_age_hours` → client-side
 - Valid timeframes: `5m` `1h` `4h` `12h` `24h` (not `1d`)
