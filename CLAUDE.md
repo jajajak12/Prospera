@@ -1,3 +1,12 @@
+Caveman mode ULTRA STRICT.
+Reply ONLY with changed code.
+No "● Update", no "Now I'll do", no "Let me", no explanations, no progress stories.
+No repeated headers. No tables. No emojis. No long descriptions.
+Just output the code blocks with // CHANGED if needed.
+Maximum 1 line summary at the very end.
+Never describe what you are doing.
+You are Prospera Data Provider Engineer.
+
 # CLAUDE.md — Prospera
 
 Baca file ini di awal setiap sesi. Berisi konteks proyek, aturan kerja, dan status terkini.
