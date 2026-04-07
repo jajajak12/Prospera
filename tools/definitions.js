@@ -25,12 +25,13 @@ ENTRY signal conditions (both must be true):
 - POC or VAL is within the same zone (volume support confirms the level)
 
 Returns only pools that pass the signal filter. Each candidate includes:
-- fib_signal.binsBelow: pre-calculated bins to cover current price → fib_618 level
+- fib_signal.binsBelow: pre-calculated bins_below for deploy_position (use EXACTLY)
+- fib_signal.binsAbove: pre-calculated bins_above for deploy_position (use EXACTLY — can be negative for ATH zone)
+- fib_signal.rangeTopPrice / rangeBottomPrice: actual price range boundaries (for reference)
 - fib_signal.confluenceScore: 0-1, how well price and volume align (higher = better)
 - fib_signal.fibLevels: all Fib price levels
-- fib_signal.poc / vah / val: Volume Profile key prices
 
-Use binsBelow from fib_signal DIRECTLY in deploy_position. bins_above = 0 always.`,
+Use binsBelow AND binsAbove from fib_signal DIRECTLY in deploy_position. Never override either value.`,
       parameters: {
         type: "object",
         properties: {
@@ -103,8 +104,11 @@ Only call if you need to verify the current active bin. deploy_position fetches 
 
 FIBONACCI STRATEGY RULES (hard):
 - Strategy: ALWAYS bid_ask. Never use spot or curve.
-- bins_above: ALWAYS 0 — single-sided below current price.
-- bins_below: Use fib_signal.binsBelow from get_chart_candidates EXACTLY.
+- bins_below: Use fib_signal.binsBelow from get_chart_candidates EXACTLY. Never change this.
+- bins_above: Use fib_signal.binsAbove from get_chart_candidates EXACTLY.
+  PRIMARY zone: binsAbove = 0 (range top at current price).
+  ATH zone: binsAbove is NEGATIVE — this shifts the range top DOWN to fib 0.236,
+  creating a passive-bid position entirely below current price. Do not override to 0.
 - amount_y: SOL only. Never set amount_x > 0.
 - Bin Step: Only deploy in pools with bin_step between 80 and 200.
 
@@ -117,7 +121,7 @@ WARNING: This executes a real on-chain transaction.`,
           amount_x:         { type: "number",  description: "Amount of base token — DO NOT USE. Always 0." },
           strategy:         { type: "string",  enum: ["bid_ask"], description: "Always bid_ask" },
           bins_below:       { type: "number",  description: "Bins below active bin — use fib_signal.binsBelow from get_chart_candidates" },
-          bins_above:       { type: "number",  description: "Always 0 for Fibonacci strategy" },
+          bins_above:       { type: "number",  description: "From fib_signal.binsAbove. 0 for PRIMARY zone; NEGATIVE for ATH zone (passive-bid, shifts range top to fib 0.236)" },
           pool_name:        { type: "string",  description: "Human-readable pool name for records" },
           base_mint:        { type: "string",  description: "Base token mint address" },
           bin_step:         { type: "number",  description: "Pool bin step" },

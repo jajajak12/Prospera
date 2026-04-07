@@ -113,6 +113,8 @@ export async function deployPosition({
   const activeStrategy = strategy || config.strategy.strategy;
 
   const activeBinsBelow = bins_below ?? config.strategy.binsBelow;
+  // bins_above can be NEGATIVE for ATH zone (passive-bid: range entirely below current price).
+  // Negative value shifts maxBinId below activeBin so range top lands at fib 0.236.
   const activeBinsAbove = bins_above ?? 0;
 
   if (isPoolOnCooldown(pool_address)) {
@@ -178,7 +180,8 @@ export async function deployPosition({
 
   const deployCtx = { pool: pool_address, pair: pool_name };
   log("deploy", `Pool: ${pool_address}`, deployCtx);
-  log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins${isWideRange ? " — WIDE RANGE" : ""})`, deployCtx);
+  const rangeMode = activeBinsAbove < 0 ? " — PASSIVE BID (range below active bin)" : "";
+  log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins, active=${activeBin.binId}${isWideRange ? " WIDE" : ""}${rangeMode})`, deployCtx);
   log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`, deployCtx);
   log("deploy", `Position: ${newPosition.publicKey.toString()}`, deployCtx);
 

@@ -557,16 +557,41 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   const supportsBelow = srLevels.filter(l => l < fib.fib618).sort((a, b) => b - a);
   const nearestSupport = supportsBelow[0] ?? null;
 
-  // ── bins_below ────────────────────────────────────────────────────────────
-  // ATH zone   : range starts at fib236 (price hasn't pulled back yet) → support below fib618
-  // Primary zone: range starts at currentPrice → support below fib618
-  // Both zones: bottom target = nearest S/R support below fib618, fallback fib786
+  // ── bins_below / bins_above ───────────────────────────────────────────────
+  // Primary zone: activeBin = currentPrice, range extends DOWN to support.
+  //   binsBelow = bins(currentPrice → support), binsAbove = 0
+  //   Range = [support, currentPrice] — active bin at top.
+  //
+  // ATH zone: currentPrice is ABOVE fib236. We want a passive-bid range
+  //   from fib236 DOWN to support (entirely below current price).
+  //   To achieve this we use NEGATIVE binsAbove to shift the range top
+  //   from activeBin (currentPrice) down to fib236:
+  //     maxBinId = activeBin + binsAbove = activeBin - shift = fib236_bin  ✓
+  //     minBinId = activeBin - binsBelow = activeBin - shift - depth = support_bin  ✓
+  //   totalBins = binsBelow + binsAbove = (shift + depth) + (−shift) = depth  ✓
+  //   Position starts all-in SOL (passive bid); earns fees as price falls to fib236.
+
   const atrBuffer     = atr ?? (fib.fib618 * binStepPct / 100);
   const supportTarget = nearestSupport ?? fib.fib786;
-  const rangeTop      = inAthZone ? fib.fib236 : currentPrice;
-  const binsBelow     = calcBinsToTarget(rangeTop, supportTarget - atrBuffer, binStep);
+  const supportPrice  = Math.max(supportTarget - atrBuffer, fib.fib786);
 
-  const binsAbove = 0;
+  let binsBelow, binsAbove;
+
+  if (inAthZone) {
+    // Unclamped shift calculation — exact bins from currentPrice to fib236
+    const shiftBins = Math.max(0, Math.round(
+      Math.abs(Math.log(fib.fib236 / currentPrice) / Math.log(1 - binStep / 10000))
+    ));
+    // Depth of the range: from fib236 down to support (use existing clamped function)
+    const depthBins = calcBinsToTarget(fib.fib236, supportPrice, binStep);
+
+    binsBelow = shiftBins + depthBins;   // total bins below activeBin to reach support
+    binsAbove = -shiftBins;              // negative → shifts range top to fib236
+  } else {
+    // Primary zone: range from currentPrice down to support
+    binsBelow = calcBinsToTarget(currentPrice, supportPrice, binStep);
+    binsAbove = 0;
+  }
 
   // ── Confluence Score ───────────────────────────────────────────────────────
   const totalVol    = vp.buckets.reduce((s, b) => s + b.volume, 0);
@@ -585,14 +610,16 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
 
   // ── Build Reason ──────────────────────────────────────────────────────────
   const zoneTier = inAthZone ? "ATH_ZONE(above 0.236)" : "PRIMARY(0.236-0.382)";
+  const rangeTopLabel  = inAthZone ? `fib236 @${fmt(fib.fib236)}` : `current @${fmt(currentPrice)}`;
+  const rangeBotLabel  = `support @${fmt(supportPrice)}`;
   const parts = [
     `Zone: ${zoneTier}`,
     `RSI=${rsi?.toFixed(1)} slope=+${rsiSlope.toFixed(1)}`,
     `EMA20>EMA50 ✓`,
     `Vol: POC=${pocInZone ? "in" : "out"} VAL=${valInZone ? "in" : "out"}`,
-    `bins=${binsBelow}↓/${binsAbove}↑`,
-    nearestSupport != null ? `support @${fmt(nearestSupport)}` : `support=fib786`,
-  ];
+    `range: ${rangeTopLabel} → ${rangeBotLabel} (${binsBelow + binsAbove} bins)`,
+    inAthZone ? `passiveBid shift=${-binsAbove}bins` : null,
+  ].filter(Boolean);
   if (hasHiddenDivergence) parts.push("HiddenDiv ✓");
 
   return {
@@ -602,6 +629,9 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     volumeProfile:   { poc: vp.poc, vah: vp.vah, val: vp.val },
     binsBelow,
     binsAbove,
+    // Actual range boundaries (not relative to activeBin):
+    rangeTopPrice:   inAthZone ? Math.round(fib.fib236 * 1e8) / 1e8 : Math.round(currentPrice * 1e8) / 1e8,
+    rangeBottomPrice: Math.round(supportPrice * 1e8) / 1e8,
     supportPrice:    Math.round(supportTarget * 1e8) / 1e8,
     nearestSupportBelow618: nearestSupport != null ? Math.round(nearestSupport * 1e8) / 1e8 : null,
     ath:             Math.round(swingHigh * 1e8) / 1e8,
