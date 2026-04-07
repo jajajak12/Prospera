@@ -491,15 +491,23 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   const inAthZone     = currentPrice > fib.fib236;
   const inEntryRange  = inPrimaryZone || inAthZone;
 
-  if (!inEntryRange) {
+  // Hard gate: price must be at or above Fib 0.5 — below 0.5 means structure too weak
+  if (currentPrice < fib.fib500) { // CHANGED
     if (currentPrice >= fib.fib618) {
       return skip(
-        `Price ${fmt(currentPrice)} in deep pullback zone (0.382–0.618) — too deep for entry, wait for primary zone (0.236–0.382)`,
+        `Price ${fmt(currentPrice)} below Fib 0.500 (${fmt(fib.fib500)}) — too deep, no entry`,
         currentPrice, fib
       );
     }
     return skip(
       `Price ${fmt(currentPrice)} below Fib 0.618 support (${fmt(fib.fib618)}) — broken support, no entry`,
+      currentPrice, fib
+    );
+  }
+
+  if (!inEntryRange) {
+    return skip(
+      `Price ${fmt(currentPrice)} in pullback zone (0.382–0.500) — wait for primary zone (0.236–0.382)`, // CHANGED
       currentPrice, fib
     );
   }
