@@ -549,8 +549,7 @@ After acting, write a brief one-line result per position.
 //  SCREENING CYCLE
 // ═══════════════════════════════════════════
 export async function runScreeningCycle({ silent = false, force = false } = {}) {
-  // ── File-based lock check (survives PM2 restart) ──────────────────────────
-  // CHANGED: strong lock replaces in-memory _screeningBusy + _screeningLastCompleted
+  // ── File-based lock check (survives PM2 restart) ─────────────────────────
   {
     const lock = _readScreeningLock();
     if (lock) {
@@ -573,12 +572,12 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
       return null;
     }
   }
-  _writeScreeningLock("running"); // CHANGED: acquire file lock
-  _screeningBusy = true;          // CHANGED: in-process guard
+  _writeScreeningLock("running"); // file lock — persists across PM2 restart
+  _screeningBusy = true;          // in-process guard — synced with file lock
   _screeningLastTriggered = Date.now();
 
-  // Helper: release both locks and exit early (for pre-check failures)
-  const _releaseAndSkip = (msg) => { // CHANGED
+  // Release both file lock + in-process flag; used by all early-return paths
+  const _releaseAndSkip = (msg) => {
     _writeScreeningLock("done");
     _screeningBusy = false;
     if (msg) log("cron", msg);
@@ -637,12 +636,12 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     if ((topResult?.total_screened ?? 0) === 0) {
       _screeningLastTriggered = Date.now() - (config.schedule.screeningIntervalMin * 60 * 1000) + 60_000;
       log("cron", "Screening aborted — discovery returned 0 tokens, retry in 60s");
-      return null; // CHANGED: finally handles lock release
+      return null; // finally releases lock
     }
 
     if (candidates.length === 0) {
-      screenReport = "No entry signals (failed EMA/RSI/Fib filters)"; // CHANGED: header built in finally
-      return screenReport;
+      screenReport = "No entry signals (failed EMA/RSI/Fib filters)";
+      return screenReport; // finally releases lock + sends Telegram
     }
 
     // ── Auto-backtest pre-deploy filter ────────────────────────────────────
@@ -787,11 +786,10 @@ reason: <one sentence why this over others>
     log("cron_error", `Screening cycle failed: ${error.message}`);
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
-    _writeScreeningLock("done"); // CHANGED: release file lock
-    _screeningBusy = false;      // CHANGED: release in-process guard
+    _writeScreeningLock("done"); // release file lock (synced)
+    _screeningBusy = false;      // release in-process guard (synced)
     if (!silent && telegramEnabled()) {
       if (screenReport) {
-        // CHANGED: always build header here — single consistent format
         const _ts  = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
         const _tot = topResult?.total_screened    ?? 0;
         const _vol = topResult?.after_volume_count ?? 0;
