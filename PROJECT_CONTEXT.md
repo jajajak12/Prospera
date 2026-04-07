@@ -170,7 +170,15 @@ GeckoTerminal dihapus sepenuhnya. Semua sumber data diganti:
 - [x] maxTvl turun $300k → $250k
 - [x] README diterjemahkan ke Bahasa Indonesia
 - [x] RocketScan fallback — pool baru yang belum diindex Meteora API tetap terdeteksi
-- [x] Broken support cache price-aware — invalidate jika harga naik >50% sejak rejection
+- [x] Broken support cache file-based — persist lintas PM2 restart via broken-support-cache.json
+- [x] Broken support invalidasi via new ATH saja (bukan pump 50%) — athAtRejection disimpan dari fibLevels.swingHigh
+- [x] Broken support threshold = fib500 — price < fib500 → "broken support, no entry" → cached 24h
+- [x] Unit mismatch fix — token.price null tidak fallback ke pool.price (SOL) untuk Fib analysis
+- [x] Deploy-time fib500 gate — executor.js re-check live price vs fib500 sebelum deploy
+- [x] HybridDataProvider — tools/dataProvider.js, fallback chain Dexscreener → Birdeye → GeckoTerminal
+- [x] Step-by-step screening logs — Step 1–8 + summary line per cycle
+- [x] Telegram screening report format — header: Discovered/After volume/Meteora pools
+- [x] Double Telegram fix — _screeningLastCompleted guard 60s + GT-fail partial reset
 - [x] minTokenAgeHours turun 1 jam → 30 menit (0.5)
 - [x] Math.floor dihapus dari `token_age_hours` — sub-hour precision bekerja benar
 - [x] Tiered position sizing — `getPositionSizing()` menggantikan `computeDeployAmount()`

@@ -1,10 +1,13 @@
-Caveman mode ULTRA STRICT.
-Reply ONLY with changed code.
-No "● Update", no "Now I'll do", no "Let me", no explanations, no progress stories.
-No repeated headers. No tables. No emojis. No long descriptions.
-Just output the code blocks with // CHANGED if needed.
-Maximum 1 line summary at the very end.
-Never describe what you are doing.
+Caveman mode ULTRA STRICT - NO EXCEPTIONS.
+
+Rules (must follow):
+- Output ONLY code changes. Nothing else.
+- NO "● Update", NO "●", NO "Now", NO "Let me", NO "Dua masalah", NO explanations.
+- NO progress text, NO "Read 1 file", NO "CHANGED" comments unless in code.
+- Just pure code blocks with // CHANGED on modified lines if necessary.
+- Maximum 1 short line summary at the very end.
+- Never describe what you did or what you will do.
+
 You are Prospera Data Provider Engineer.
 
 # CLAUDE.md — Prospera
@@ -67,14 +70,15 @@ lessons.js            — performance tracking + weight update trigger
 state.js              — posisi tracking + memori agent
 
 tools/
-  screening.js        — pipeline screening v2 (GeckoTerminal-first + RocketScan fallback)
-  chart.js            — Fibonacci + Volume Profile + indicators
+  screening.js        — pipeline screening v3 (Dexscreener-first + RocketScan fallback)
+  chart.js            — Fibonacci + indicators; broken support = price < fib500
+  dataProvider.js     — HybridDataProvider: Dexscreener → Birdeye → GeckoTerminal
   dlmm.js             — deploy/close posisi, RPC failover
   wallet.js           — wallet balance, swap via Jupiter
   study.js            — LPAgent API client (primary + backup key)
   okx.js              — RugCheck.xyz API (bundle %, honeypot, creator address)
   token.js            — Jupiter DataAPI + Dexscreener volume
-  executor.js         — tool handler untuk LLM function calls
+  executor.js         — tool handler untuk LLM function calls; deploy-time fib500 gate
   definitions.js      — OpenAI function-call schemas
 ```
 
