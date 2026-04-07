@@ -665,13 +665,12 @@ export async function getTopCandidates({ limit = 20 } = {}) {
 
   const signalResults = await Promise.allSettled(
     toAnalyze.map(({ token, pool }) => {
-      // GT OHLCV returns prices in USD. Use token.price (GT base_token_price_usd) as
-      // currentPrice so Fib levels are in the same unit as the candles.
-      // pool.price (Meteora native SOL) is a different unit — only fallback if GT price unavailable.
-      const currentPrice = token.price ?? pool.price;
+      // MUST use USD price (token.price from Dexscreener) — Birdeye OHLCV candles are in USD.
+      // pool.price is Meteora SOL-denominated; using it against USD Fib levels causes unit mismatch → false ENTRY.
+      const currentPrice = token.price; // no fallback to pool.price
       const binStep      = pool.bin_step;
       if (!currentPrice || !binStep) {
-        return Promise.resolve({ signal: "SKIP", reason: "Missing price or bin_step" });
+        return Promise.resolve({ signal: "SKIP", reason: "Missing USD price or bin_step — skip to avoid unit mismatch" });
       }
       // Birdeye OHLCV uses token mint address (not pool address).
       return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? 48 });
