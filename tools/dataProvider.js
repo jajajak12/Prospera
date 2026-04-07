@@ -244,71 +244,53 @@ export class HybridDataProvider {
   }
 
   /**
-   * OHLCV candles by pool/pair address. Oldest-first.
-   * Fallback: Dexscreener → Birdeye (pair) → GeckoTerminal.
-   * @param {string} poolAddress
+   * OHLCV candles. Oldest-first.
+   *
+   * If tokenMint provided: Birdeye token endpoint (best history) → Dexscreener → GeckoTerminal.
+   * If tokenMint omitted:  Dexscreener → Birdeye (pair) → GeckoTerminal.
+   *
+   * @param {string} poolAddress        — required for Dexscreener/GT fallback
    * @param {string} [timeframe="5m"]
    * @param {number} [limit=100]
    * @param {string} [chain="solana"]
+   * @param {string} [tokenMint=null]   — when provided, Birdeye token endpoint tried first
    */
-  async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana") {
-    try {
-      const candles = await dexscreenerOHLCV(poolAddress, chain, timeframe, limit);
-      log.debug("screening", `getOHLCV: Dexscreener OK`, { pool: poolAddress });
-      return candles;
-    } catch (err) {
-      log.warn("screening", `getOHLCV: Dexscreener failed → Birdeye (${err.message})`, { pool: poolAddress });
-    }
-
-    try {
-      const candles = await birdeyeOHLCVByPair(poolAddress, timeframe, limit, chain);
-      log.debug("screening", `getOHLCV: Birdeye OK`, { pool: poolAddress });
-      return candles;
-    } catch (err) {
-      log.warn("screening", `getOHLCV: Birdeye failed → GeckoTerminal (${err.message})`, { pool: poolAddress });
-    }
-
-    const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
-    log.warn("screening", `getOHLCV: GeckoTerminal (last resort)`, { pool: poolAddress });
-    return candles;
-  }
-
-  /**
-   * OHLCV candles by token mint address. Used by chart.js Fib analysis.
-   * Primary: Birdeye token endpoint (best history for mints).
-   * Fallback: Dexscreener pair OHLCV (requires poolAddress).
-   * Last resort: GeckoTerminal pair OHLCV (requires poolAddress).
-   *
-   * @param {string} tokenMint
-   * @param {string} [type="1m"]        — Birdeye type: "1m"|"5m"|"1D" etc.
-   * @param {number} [limit=100]
-   * @param {string} [chain="solana"]
-   * @param {string} [poolAddress=null] — unlock Dexscreener/GT fallback if Birdeye fails
-   */
-  async getOHLCVByMint(tokenMint, type = "1m", limit = 100, chain = "solana", poolAddress = null) {
-    try {
-      const candles = await birdeyeOHLCVByMint(tokenMint, type, limit, chain);
-      log.debug("screening", `getOHLCVByMint: Birdeye OK`, { token: tokenMint });
-      return candles;
-    } catch (err) {
-      log.warn("screening", `getOHLCVByMint: Birdeye failed → Dexscreener (${err.message})`, { token: tokenMint });
-    }
-
-    if (poolAddress) {
+  async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana", tokenMint = null) {
+    // Token-mint path: Birdeye token endpoint has best history for mints
+    if (tokenMint) {
       try {
-        const candles = await dexscreenerOHLCV(poolAddress, chain, type, limit);
-        log.warn("screening", `getOHLCVByMint: Dexscreener OK (via pool)`, { token: tokenMint, pool: poolAddress });
+        const candles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
+        log.debug("screening", `getOHLCV: Birdeye token OK`, { token: tokenMint });
         return candles;
       } catch (err) {
-        log.warn("screening", `getOHLCVByMint: Dexscreener failed → GeckoTerminal (${err.message})`, { token: tokenMint });
+        log.warn("screening", `getOHLCV: Birdeye token failed → Dexscreener (${err.message})`, { token: tokenMint });
+      }
+    }
+
+    // Pool-address path: Dexscreener → Birdeye pair → GeckoTerminal
+    if (poolAddress) {
+      try {
+        const candles = await dexscreenerOHLCV(poolAddress, chain, timeframe, limit);
+        log.debug("screening", `getOHLCV: Dexscreener OK`, { pool: poolAddress });
+        return candles;
+      } catch (err) {
+        log.warn("screening", `getOHLCV: Dexscreener failed → Birdeye pair (${err.message})`, { pool: poolAddress });
       }
 
-      const candles = await geckoOHLCV(poolAddress, chain, type, limit);
-      log.warn("screening", `getOHLCVByMint: GeckoTerminal (last resort)`, { token: tokenMint, pool: poolAddress });
+      try {
+        const candles = await birdeyeOHLCVByPair(poolAddress, timeframe, limit, chain);
+        log.debug("screening", `getOHLCV: Birdeye pair OK`, { pool: poolAddress });
+        return candles;
+      } catch (err) {
+        log.warn("screening", `getOHLCV: Birdeye pair failed → GeckoTerminal (${err.message})`, { pool: poolAddress });
+      }
+
+      const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
+      log.warn("screening", `getOHLCV: GeckoTerminal (last resort)`, { pool: poolAddress });
       return candles;
     }
 
-    throw new Error(`All OHLCV sources failed for mint ${tokenMint} (no poolAddress for Dexscreener/GT fallback)`);
+    throw new Error("getOHLCV: requires poolAddress or tokenMint");
   }
 }
 

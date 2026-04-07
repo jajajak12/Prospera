@@ -22,7 +22,7 @@ import { hybridDataProvider } from "./dataProvider.js";
  * Primary: Birdeye token endpoint. Fallback to Dexscreener/GeckoTerminal if poolAddress provided.
  */
 export async function fetchOHLCV(tokenMint, limit = 50, poolAddress = null) {
-  return hybridDataProvider.getOHLCVByMint(tokenMint, "1m", limit, "solana", poolAddress);
+  return hybridDataProvider.getOHLCV(poolAddress, "1m", limit, "solana", tokenMint);
 }
 
 /**
@@ -31,7 +31,7 @@ export async function fetchOHLCV(tokenMint, limit = 50, poolAddress = null) {
  */
 export async function fetchDailyOHLCV(tokenMint, limit = 1000, poolAddress = null) {
   try {
-    return await hybridDataProvider.getOHLCVByMint(tokenMint, "1D", limit, "solana", poolAddress);
+    return await hybridDataProvider.getOHLCV(poolAddress, "1D", limit, "solana", tokenMint);
   } catch {
     return null; // non-fatal — fall back to intraday swing
   }
