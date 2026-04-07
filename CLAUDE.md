@@ -3,18 +3,31 @@ Reply ONLY with changed code. No explanations. Max 1 line summary at the end.
 
 You are Prospera Data Provider Engineer.
 
-Hard Rules (Non-Negotiable):
-- Entry only allowed if price >= Fib 0.500 (ATH to Fib 0.382 zone)
-- Hard no-entry: price < Fib 0.500 → immediate skip
-- Broken support cache: trigger if price < Fib 0.618, invalidate only on new ATH
-- All data (pool & OHLCV) MUST use HybridDataProvider (Dexscreener primary → Birdeye → GeckoTerminal)
-- Never call Birdeye/Dexscreener/GeckoTerminal directly outside dataProvider.js
+---
 
-After every task: pm2 restart 0 && git push origin main
+## Hard Rules (Non-Negotiable)
 
-# CLAUDE.md — Prospera
+**Entry:**
+- Entry only allowed if price >= Fib 0.500
+- Hard no-entry: `price < fib.fib500` → immediate skip before indicators
+- Valid zones: ATH (> fib236) or PRIMARY (fib236–fib382)
 
-Baca file ini di awal setiap sesi. Detail arsitektur: `PROJECT_CONTEXT.md`.
+**Broken Support Cache:**
+- Trigger: price < fib618 OR crash ≥80%/24h
+- Invalidate: ONLY if `currentPrice > cached.athAtRejection` (new ATH)
+- File: `broken-support-cache.json`, duration 24h
+
+**Data:**
+- ALL pool data and OHLCV MUST use `hybridDataProvider` from `tools/dataProvider.js`
+- Fallback chain: Dexscreener → Birdeye → GeckoTerminal
+- NEVER call Birdeye/Dexscreener/GeckoTerminal APIs directly outside `dataProvider.js`
+- `getOHLCV(poolAddress, timeframe, limit, chain, tokenMint?)` — unified method
+
+**Deploy:**
+- `executor.js` re-checks live price vs `fib500` before deploy
+- Block if `livePrice < fib500`
+
+After every task: `pm2 restart 0 && git push origin main`
 
 ---
 
@@ -22,77 +35,69 @@ Baca file ini di awal setiap sesi. Detail arsitektur: `PROJECT_CONTEXT.md`.
 
 **Prospera** — autonomous DLMM LP agent di Meteora, Solana.
 - Strategi: Fibonacci retracement entry signals, single-sided bid_ask
-- Bahasa: **JavaScript** (ES modules) — bukan TypeScript
-- PM2 process ID: **0** (name: `prospera`) — bukan 1
+- Bahasa: **JavaScript** (ES modules)
+- PM2 process ID: **0** (name: `prospera`)
 - GitHub: `https://github.com/jajajak12/Prospera` branch `main`
 
 ---
 
 ## Aturan Kerja
 
-1. **Selalu gunakan Bahasa Indonesia**
-2. Setelah setiap perubahan kode: `pm2 restart 0` + push ke GitHub
-3. Baca file yang relevan sebelum memodifikasi — jangan asumsi struktur kode
-4. `bypassPermissions` aktif — tidak perlu minta konfirmasi untuk tool calls
-5. Jangan tambah fitur di luar yang diminta
-6. Setelah implementasi besar: update `PROJECT_CONTEXT.md`
-
-## Aturan Coding
-
-- Code modular, clean, readable
-- Gunakan early return
-- Error handling robust dengan retry dan fallback
-- Comment hanya untuk logic yang tidak obvious
+1. Selalu gunakan Bahasa Indonesia
+2. Baca file yang relevan sebelum memodifikasi
+3. Jangan tambah fitur di luar yang diminta
+4. Setelah implementasi besar: update `PROJECT_CONTEXT.md`
 
 ---
 
-## Struktur File Penting
+## Struktur File
 
 ```
-index.js              — main loop: deterministic rules + LLM agent; screening-lock.json
-config.js             — getPositionSizing() + exposure cap
+index.js              — main loop + screening-lock.json + management-lock
+config.js             — getPositionSizing() + canOpenNewPosition()
 user-config.json      — runtime config
-signal-weights.js     — Darwinian adaptive signal weights
-rpc.js                — RPC connection + 5-endpoint failover
-logger.js             — winston structured logging
-lessons.js            — performance tracking + weight update
-state.js              — posisi tracking + memori agent
 
 tools/
   dataProvider.js     — HybridDataProvider (WAJIB untuk semua data)
-  screening.js        — pipeline screening v3 (Dexscreener-first + RocketScan fallback)
+  screening.js        — pipeline v3 (Dexscreener-first + RocketScan fallback)
   chart.js            — Fibonacci + indicators; hard gate price < fib500
-  executor.js         — LLM tool handler; deploy-time fib500 re-check
+  executor.js         — LLM tool handler; deploy-time fib500 gate
   dlmm.js             — deploy/close posisi, RPC failover
+  okx.js              — RugCheck.xyz (bundle %, honeypot, creator)
+  token.js            — Jupiter DataAPI + Dexscreener volume
   wallet.js           — wallet balance, swap via Jupiter
   study.js            — LPAgent API client
-  okx.js              — RugCheck.xyz API (bundle %, honeypot, creator)
-  token.js            — Jupiter DataAPI + Dexscreener volume
   definitions.js      — OpenAI function-call schemas
+
+signal-weights.js     — Darwinian adaptive signal weights
+lessons.js            — performance tracking + weight update
+logger.js             — winston structured logging
+state.js              — posisi tracking + memori agent
+rpc.js                — RPC connection + 5-endpoint failover
 ```
 
 ---
 
-## Screening Pipeline (v3 — Dexscreener-first + HybridDataProvider)
+## Screening Pipeline
 
 ```
 Dexscreener boosts/profiles (SOL pair only)
-→ 1h volume filter ≥ $100k
+→ 1h volume ≥ $100k
 → mcap pre-filter
 → RugCheck (bundle %, honeypot, creator blacklist)
 → Jupiter (top10, bot holders, fees SOL)
 → Meteora bulk fetch (page_size=100, match client-side)
-→ RocketScan fallback (pool baru belum diindex)
-→ Broken support cache check (skip jika cached price < fib618)
-→ Fibonacci analysis via hybridDataProvider.getOHLCV()
-   HARD GATE: price < fib500 → SKIP sebelum indicators
-→ Smart wallet boost (+0.10 confluenceScore)
+→ RocketScan fallback
+→ Broken support cache check (skip if cached < fib618)
+→ Fibonacci via hybridDataProvider.getOHLCV()
+   HARD GATE: price < fib500 → skip sebelum indicators
+→ Smart wallet boost (+0.10)
 → Sort by confluenceScore DESC
 ```
 
 ---
 
-## Management Rules (Deterministic — sebelum LLM)
+## Management Rules
 
 | Rule | Kondisi | Aksi |
 |------|---------|------|
@@ -106,7 +111,7 @@ LLM zone: PnL 5%–25%.
 
 ---
 
-## Deploy Sizing & Exposure Cap
+## Deploy Sizing
 
 | Wallet | Deploy |
 |--------|--------|
@@ -120,43 +125,24 @@ Max 60% wallet deployed. Gas reserve 0.5 SOL.
 
 ---
 
-## Parameter Utama (user-config.json)
+## Parameter Utama
 
 ```
-maxPositions: 2             minVolume: 100000        minOrganic: 60
-minHolders: 500             maxTop10Pct: 20          maxBotHoldersPct: 30
-maxBundlePct: 30            minTokenFeesSol: 30      minMcap: 150000
-maxMcap: 5000000            minBinStep: 80           maxBinStep: 125
-minTvl: 5000                maxTvl: 250000           minFeeActiveTvlRatio: 0.05
-minTokenAgeHours: 0.5       maxTokenAgeHours: 720    stopLossPct: -20
-takeProfitMaxPct: 25        takeProfitFeePct: 5      partialHarvestPct: 10
-outOfRangeBinsToClose: 20   totalExposureCapPct: 0.60  exposureGasReserve: 0.5
+maxPositions: 2       minVolume: 100000     minOrganic: 60
+minHolders: 500       maxTop10Pct: 20       maxBotHoldersPct: 30
+maxBundlePct: 30      minTokenFeesSol: 30   minMcap: 150000
+maxMcap: 5000000      minBinStep: 80        maxBinStep: 125
+minTvl: 5000          maxTvl: 250000        minFeeActiveTvlRatio: 0.05
+minTokenAgeHours: 0.5 maxTokenAgeHours: 720 stopLossPct: -20
+takeProfitMaxPct: 25  takeProfitFeePct: 5   partialHarvestPct: 10
+totalExposureCapPct: 0.60  exposureGasReserve: 0.5
 managementModel: deepseek/deepseek-v3.2
 screeningModel: qwen/qwen3.5-flash-02-23
 ```
 
 ---
 
-## Logging (winston)
-
-```js
-log(category, message, ctx?)
-log.debug / log.warn / log.error
-log.screening / log.trade / log.position / log.management / log.cron
-```
-
-Override: `LOG_LEVEL=debug pm2 restart 0`
-
----
-
-## RPC Failover
-
-Helius (primary) → Alchemy → Ankr → PublicNode → Official Solana.
-Auto-reset ke primary setelah 5 menit stabil.
-
----
-
-## Commands Berguna
+## Commands
 
 ```bash
 pm2 logs 0 --lines 100 --nostream
