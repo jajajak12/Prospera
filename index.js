@@ -23,6 +23,7 @@ import readline from "readline";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH         = path.join(__dirname, "user-config.json");
 const SWEEP_PROPOSAL_PATH      = path.join(__dirname, "sweep-proposal.json");
+const POSITION_META_PATH       = path.join(__dirname, "position-meta.json");
 
 // ── Sweep proposal helpers ───────────────────────────────────────────────────
 function saveSweepProposal(p) {
@@ -249,6 +250,14 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
+    // ── Load position ATH metadata (for OOR new-ATH check) ──────
+    let positionMeta = {};
+    try {
+      if (fs.existsSync(POSITION_META_PATH)) {
+        positionMeta = JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8"));
+      }
+    } catch { /* ignore */ }
+
     // ── Deterministic rule checks ────────────────────────────────
     const actionMap = new Map();
     for (const p of positionData) {
@@ -297,17 +306,31 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "INSTRUCTION", rule: 2, reason: `PnL ${p.pnl_pct.toFixed(1)}% hit soft TP (${config.management.takeProfitFeePct}%). Close to lock gains OR provide reasoning to hold.` });
         continue;
       }
-      // Rule 3: pumped far above range (OOR > outOfRangeBinsToClose bins above)
+      // Rule 3: pumped far above range — only close if price made new ATH
       if (p.active_bin != null && p.upper_bin != null &&
           p.active_bin > p.upper_bin + config.management.outOfRangeBinsToClose) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 3, reason: "pumped far above range" });
+        const meta = positionMeta[p.position];
+        if (meta?.athBin != null && p.active_bin <= meta.athBin) {
+          // OOR above range but still below ATH at entry — price bouncing within Fib framework, hold
+          log("management", `${p.pair}: OOR ${p.active_bin - p.upper_bin} bins above range but no new ATH (active=${p.active_bin} ≤ athBin=${meta.athBin}) — holding`);
+          actionMap.set(p.position, { action: "STAY" });
+          continue;
+        }
+        actionMap.set(p.position, { action: "CLOSE", rule: 3, reason: meta?.athBin != null ? "pumped above range — new ATH confirmed" : "pumped far above range" });
         continue;
       }
-      // Rule 4: stale above range
+      // Rule 4: stale above range — only close if price made new ATH
       if (p.active_bin != null && p.upper_bin != null &&
           p.active_bin > p.upper_bin &&
           (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR" });
+        const meta = positionMeta[p.position];
+        if (meta?.athBin != null && p.active_bin <= meta.athBin) {
+          // OOR but price hasn't broken above entry ATH — hold, wait for pullback into range
+          log("management", `${p.pair}: OOR ${p.minutes_out_of_range}m above range but no new ATH (active=${p.active_bin} ≤ athBin=${meta.athBin}) — holding`);
+          actionMap.set(p.position, { action: "STAY" });
+          continue;
+        }
+        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: meta?.athBin != null ? "OOR — new ATH confirmed" : "OOR stale" });
         continue;
       }
       // Rule 5: crashed below range (Fib 618 broken — stop loss territory)
@@ -568,6 +591,23 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     const activeBinResults = await Promise.allSettled(
       candidates.map(p => getActiveBin({ pool_address: p.pool }))
     );
+
+    // Persist pool→ATH metadata so executor can save ath_bin per position after deploy
+    const PENDING_ATH_PATH = path.join(__dirname, "screening-pending.json");
+    try {
+      const pending = {};
+      for (let i = 0; i < candidates.length; i++) {
+        const c   = candidates[i];
+        const fib = c.fib_signal;
+        const ath        = fib?.ath ?? fib?.fibLevels?.swingHigh ?? null;
+        const entryPrice = fib?.currentPrice ?? c.price ?? null;
+        const activeBin  = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
+        if (c.pool && ath && entryPrice && activeBin != null) {
+          pending[c.pool] = { ath, entryPrice, binStep: c.bin_step ?? null, activeBinAtScreening: activeBin };
+        }
+      }
+      fs.writeFileSync(PENDING_ATH_PATH, JSON.stringify(pending));
+    } catch { /* non-fatal */ }
 
     // Build candidate blocks for LLM
     const candidateBlocks = candidates.map((pool, i) => {

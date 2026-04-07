@@ -30,7 +30,9 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
+const USER_CONFIG_PATH    = path.join(__dirname, "../user-config.json");
+const PENDING_ATH_PATH    = path.join(__dirname, "../screening-pending.json");
+const POSITION_META_PATH  = path.join(__dirname, "../position-meta.json");
 
 import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
@@ -383,6 +385,22 @@ export async function executeTool(name, args) {
           binStep:    result.bin_step,
           baseFee:    result.base_fee,
         }).catch(() => {});
+
+        // Save ath_bin for OOR management — close only if price makes new ATH
+        try {
+          if (result.position && fs.existsSync(PENDING_ATH_PATH)) {
+            const pending  = JSON.parse(fs.readFileSync(PENDING_ATH_PATH, "utf8"));
+            const entry    = pending[args.pool_address];
+            if (entry?.ath && entry?.entryPrice && entry?.binStep != null && entry?.activeBinAtScreening != null) {
+              const binsDelta = Math.log(entry.ath / entry.entryPrice) / Math.log(1 + entry.binStep / 10000);
+              const athBin    = Math.round(entry.activeBinAtScreening + binsDelta);
+              const meta      = fs.existsSync(POSITION_META_PATH) ? JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")) : {};
+              meta[result.position] = { athBin, ath: entry.ath, pool: args.pool_address, openedAt: new Date().toISOString() };
+              fs.writeFileSync(POSITION_META_PATH, JSON.stringify(meta, null, 2));
+              log("management", `Saved ATH meta for ${result.position?.slice(0, 8)}: ath=${entry.ath} athBin=${athBin}`);
+            }
+          }
+        } catch { /* non-fatal */ }
 
       } else if (name === "close_position") {
         notifyClose({
