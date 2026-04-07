@@ -187,10 +187,11 @@ function stripThink(text) {
 //  CRON STATE
 // ═══════════════════════════════════════════
 let _cronTasks = [];
-let _managementBusy = false;
-let _screeningBusy = false;
+let _managementBusy        = false;
+let _managementLastCompleted = 0;   // timestamp ketika management terakhir selesai
+let _screeningBusy         = false;
 let _screeningLastTriggered = 0;
-let _pollTriggeredAt = 0;
+let _pollTriggeredAt        = 0;
 
 function stopCronJobs() {
   for (const task of _cronTasks) task?.stop?.();
@@ -201,8 +202,26 @@ function stopCronJobs() {
 // ═══════════════════════════════════════════
 //  MANAGEMENT CYCLE
 // ═══════════════════════════════════════════
+const MANAGEMENT_MIN_GAP_MS = 30_000; // minimum gap antar cycle (30 detik)
+
 export async function runManagementCycle({ silent = false } = {}) {
-  if (_managementBusy) return null;
+  // Layer 1: busy flag — cycle sedang berjalan
+  if (_managementBusy) {
+    log("cron", "Management skipped — cycle sedang berjalan (busy flag aktif)");
+    return null;
+  }
+  // Layer 2: screening sedang berjalan — tunggu selesai dulu
+  if (_screeningBusy) {
+    log("cron", "Management skipped — screening cycle sedang berjalan");
+    return null;
+  }
+  // Layer 3: terlalu cepat sejak cycle terakhir selesai
+  const msSinceCompleted = Date.now() - _managementLastCompleted;
+  if (_managementLastCompleted > 0 && msSinceCompleted < MANAGEMENT_MIN_GAP_MS) {
+    log("cron", `Management skipped — cycle terakhir selesai ${Math.round(msSinceCompleted / 1000)}s lalu (min gap: ${MANAGEMENT_MIN_GAP_MS / 1000}s)`);
+    return null;
+  }
+
   _managementBusy = true;
   timers.managementLastRun = Date.now();
   log("cron", "Starting management cycle");
@@ -434,6 +453,7 @@ After acting, write a brief one-line result per position.
     mgmtReport = `Management cycle failed: ${error.message}`;
   } finally {
     _managementBusy = false;
+    _managementLastCompleted = Date.now();
     if (!silent && telegramEnabled()) {
       if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => {});
       for (const p of positions) {
@@ -851,8 +871,10 @@ export function startCronJobs() {
   const mgmtTask = cron.schedule(
     `*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`,
     async () => {
-      if (_managementBusy) return;
-      timers.managementLastRun = Date.now();
+      if (_managementBusy || _screeningBusy) {
+        log.debug("cron", `Management cron di-skip — busy (management=${_managementBusy}, screening=${_screeningBusy})`);
+        return;
+      }
       await runManagementCycle();
     }
   );
