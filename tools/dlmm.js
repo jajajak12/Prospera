@@ -409,7 +409,9 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
         total_value_usd:      Math.round((lp.valueNative ?? 0) * 10000) / 10000,
         collected_fees_usd:   Math.round((lp.collectedFeeNative ?? 0) * 10000) / 10000,
         pnl_usd:              Math.round((lp.pnl?.valueNative ?? 0) * 10000) / 10000,
-        pnl_pct:              Math.round(((lp.pnl?.percentNative ?? 0) * 100) * 100) / 100,
+        // percentNative dari LPAgent sudah dalam format % (0.38 = 0.38%), bukan decimal.
+        // JANGAN kali 100 lagi — cukup round ke 2 desimal.
+        pnl_pct:              Math.round((lp.pnl?.percentNative ?? 0) * 100) / 100,
         fee_per_tvl_24h:      Math.round((lp.dprNative ?? 0) * 100) / 100,
         age_minutes:          lp.ageHour != null ? Math.round(lp.ageHour * 60) : ageFromState,
         minutes_out_of_range: minutesOutOfRange(positionAddress),

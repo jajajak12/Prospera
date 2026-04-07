@@ -402,6 +402,12 @@ export async function runManagementCycle({ silent = false } = {}) {
       actionMap.set(p.position, { action: "STAY" });
     }
 
+    // ── Log PnL per position untuk debugging ────────────────────────
+    for (const p of positionData) {
+      const sign = (p.pnl_pct ?? 0) >= 0 ? "+" : "";
+      log("management", `PnL [${p.pair}]: ${sign}${(p.pnl_pct ?? 0).toFixed(2)}% | val=$${p.total_value_usd} | unclaimed=$${p.unclaimed_fees_usd}`);
+    }
+
     // ── Build JS report ────────────────────────────────────────────
     const totalValue = positionData.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
     const totalUnclaimed = positionData.reduce((s, p) => s + (p.unclaimed_fees_usd ?? 0), 0);
@@ -411,8 +417,11 @@ export async function runManagementCycle({ silent = false } = {}) {
       const inRange = p.in_range ? "🟢 IN" : `🔴 OOR ${p.minutes_out_of_range ?? 0}m`;
       const val = `$${p.total_value_usd ?? "?"}`;
       const unclaimed = `$${p.unclaimed_fees_usd ?? "?"}`;
+      const pnlFmt = p.pnl_pct != null
+        ? `${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%`
+        : "?%";
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
-      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | ${inRange} | ${statusLabel}`;
+      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${pnlFmt} | ${inRange} | ${statusLabel}`;
       if (p.instruction) line += `\nNote: "${p.instruction}"`;
       if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Exit: ${act.reason}`;
       if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
@@ -441,7 +450,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           forced
             ? `  action: ${act.action}${act.rule && act.rule !== "exit" ? ` — Rule ${act.rule}: ${act.reason}` : ""}${act.rule === "exit" ? ` — ⚡ ${act.reason}` : ""} [MANDATORY — execute immediately]`
             : `  action: EVALUATE — use judgment to close or hold`,
-          `  pnl_pct: ${p.pnl_pct}% | unclaimed_fees_usd: $${p.unclaimed_fees_usd} | value: $${p.total_value_usd} | fee_per_tvl_24h: ${p.fee_per_tvl_24h ?? "?"}%`,
+          `  pnl_pct: ${p.pnl_pct != null ? `${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%` : "?%"} | unclaimed_fees_usd: $${p.unclaimed_fees_usd} | value: $${p.total_value_usd} | fee_per_tvl_24h: ${p.fee_per_tvl_24h ?? "?"}%`,
           `  bins: lower=${p.lower_bin} upper=${p.upper_bin} active=${p.active_bin} | oor_minutes: ${p.minutes_out_of_range ?? 0}`,
           p.recall ? `  pool_memory: ${p.recall}` : null,
           p.instruction ? `  instruction: "${p.instruction}"` : null,
