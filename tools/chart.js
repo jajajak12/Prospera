@@ -14,6 +14,7 @@
  */
 
 import { hybridDataProvider } from "./dataProvider.js";
+import { log } from "../logger.js";
 
 // ─── OHLCV Fetch ─────────────────────────────────────────────────────────────
 
@@ -424,6 +425,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
 
   // ── Hard gate: NO ENTRY below Fib 0.500 ──────────────────────────────────
   if (currentPrice < fib.fib500) {
+    log.warn("screening", `Fib 0.500 gate blocked — price ${fmt(currentPrice)} < fib500 ${fmt(fib.fib500)}`, { token: tokenMint });
     return skip(
       `Price ${fmt(currentPrice)} below Fib 0.500 (${fmt(fib.fib500)}) — no entry allowed`,
       currentPrice, fib
