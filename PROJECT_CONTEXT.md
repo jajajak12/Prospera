@@ -6,18 +6,18 @@ Ringkasan perubahan arsitektur, fitur, dan keputusan penting per sesi.
 
 ## Arsitektur Saat Ini
 
-### Screening Pipeline (v2 — GeckoTerminal-first)
-Flow menggantikan Meteora trending sebagai sumber discovery:
+### Screening Pipeline (v3 — Dexscreener-first + Birdeye OHLCV)
+GeckoTerminal dihapus sepenuhnya. Semua sumber data diganti:
 
-1. **GeckoTerminal** — ambil trending token Solana dari semua DEX (2 halaman, ~40 token)
-2. **Dexscreener** — filter **1h** cross-DEX volume ≥ `minVolume` ($100k default) via `batchGetTokenVolumeH1`
-3. **mcap pre-filter** — dari data GT jika tersedia
-4. **RugCheck** — bundle %/honeypot/creator check (menggantikan OKX yang mati)
+1. **Dexscreener** — ambil trending token Solana via `token-boosts/top/v1` + `token-profiles/latest/v1`, enriched dengan pair data (price USD, mcap, h1 volume) via `tokens/v1/solana/{mints}`; hanya token dengan SOL pair yang diambil
+2. **Volume filter** — h1 volume sudah tersedia dari step 1 (tidak perlu request tambahan); fallback `batchGetTokenVolumeH1` hanya untuk token tanpa data volume dari discovery
+3. **mcap pre-filter** — dari data Dexscreener jika tersedia
+4. **RugCheck** — bundle %/honeypot/creator check
 5. **Jupiter DataAPI** — top10 holders, bot holders, fees SOL
 6. **Meteora bulk fetch** — `fetchMeteoraDlmmPoolMap()`: satu request page_size=100, filter API-level (tvl/bin_step/fee/organic/holders/mcap), match client-side by `token_x.address`
 7. **RocketScan fallback** — token tanpa pool di step 6 dicoba via `rocketscan.fun/api/pools?tokenBMint=`, detail dari `dlmm.datapi.meteora.ag`; pool baru yang belum diindex Meteora API tetap bisa masuk
 8. **Client-side age filter** — `base_token_age_hours` diterapkan client-side (bukan API filter)
-9. **Fibonacci analysis** — pakai GT candles + Meteora `bin_step`
+9. **Fibonacci analysis** — pakai **Birdeye OHLCV** (`/defi/ohlcv`, requires `BIRDEYE_API_KEY`) + Meteora `bin_step`; `analyzeSignal()` menerima `tokenMint` (bukan `poolAddress`)
 10. **Smart wallet boost** — +0.10 ke confluenceScore jika smart money terdeteksi
 
 ### Management Loop
