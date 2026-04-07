@@ -205,26 +205,42 @@ function stopCronJobs() {
 // ═══════════════════════════════════════════
 const MANAGEMENT_MIN_GAP_MS = 45_000; // minimum gap antar cycle (45 detik)
 
-function _acquireManagementLock() {
+// Lock file TIDAK PERNAH dihapus — hanya di-overwrite.
+// Ini memastikan proses baru (setelah PM2 restart) bisa membaca kapan management
+// terakhir selesai, dan tidak langsung jalan ulang jika belum 45 detik.
+function _readLockAge() {
   try {
-    if (fs.existsSync(MANAGEMENT_LOCK_PATH)) {
-      const raw = fs.readFileSync(MANAGEMENT_LOCK_PATH, "utf8");
-      const { ts } = JSON.parse(raw);
-      const ageMs = Date.now() - ts;
-      if (ageMs < MANAGEMENT_MIN_GAP_MS) {
-        return { acquired: false, reason: `file lock aktif (${Math.round(ageMs / 1000)}s lalu, min gap ${MANAGEMENT_MIN_GAP_MS / 1000}s)` };
-      }
-      // Lock file expired (stale) — overwrite
-    }
-    fs.writeFileSync(MANAGEMENT_LOCK_PATH, JSON.stringify({ ts: Date.now(), pid: process.pid }), { flag: "w" });
-    return { acquired: true };
-  } catch (e) {
-    return { acquired: false, reason: `gagal tulis lock file: ${e.message}` };
+    if (!fs.existsSync(MANAGEMENT_LOCK_PATH)) return Infinity;
+    const raw = fs.readFileSync(MANAGEMENT_LOCK_PATH, "utf8");
+    const { ts } = JSON.parse(raw);
+    return Date.now() - ts;
+  } catch {
+    return Infinity; // file corrupt/hilang → anggap expired, izinkan cycle
   }
 }
 
-function _releaseManagementLock() {
-  try { fs.unlinkSync(MANAGEMENT_LOCK_PATH); } catch { /* ignore */ }
+function _writeLock(status) {
+  try {
+    fs.writeFileSync(
+      MANAGEMENT_LOCK_PATH,
+      JSON.stringify({ ts: Date.now(), pid: process.pid, status }),
+      { flag: "w" }
+    );
+  } catch { /* non-fatal */ }
+}
+
+function _acquireManagementLock() {
+  const ageMs = _readLockAge();
+  if (ageMs < MANAGEMENT_MIN_GAP_MS) {
+    return { acquired: false, reason: `lock file: terakhir jalan ${Math.round(ageMs / 1000)}s lalu (min gap ${MANAGEMENT_MIN_GAP_MS / 1000}s)` };
+  }
+  _writeLock("running");
+  return { acquired: true };
+}
+
+// Dipanggil di finally — tulis timestamp selesai tanpa menghapus file.
+function _completeManagementLock() {
+  _writeLock("completed");
 }
 
 export async function runManagementCycle({ silent = false } = {}) {
@@ -492,7 +508,7 @@ After acting, write a brief one-line result per position.
   } finally {
     _managementBusy = false;
     _managementLastCompleted = Date.now();
-    _releaseManagementLock();
+    _completeManagementLock(); // tulis timestamp selesai — TIDAK menghapus file
     if (!silent && telegramEnabled()) {
       if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => {});
       for (const p of positions) {
@@ -910,8 +926,17 @@ export function startCronJobs() {
   const mgmtTask = cron.schedule(
     `*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`,
     async () => {
-      if (_managementBusy || _screeningBusy) {
-        log.debug("cron", `Management cron di-skip — busy (management=${_managementBusy}, screening=${_screeningBusy})`);
+      if (_managementBusy) {
+        log("cron", "Management cron fired — skipped (in-memory busy flag aktif)");
+        return;
+      }
+      if (_screeningBusy) {
+        log("cron", "Management cron fired — skipped (screening sedang berjalan)");
+        return;
+      }
+      const lockAge = _readLockAge();
+      if (lockAge < MANAGEMENT_MIN_GAP_MS) {
+        log("cron", `Management cron fired — skipped (lock file: ${Math.round(lockAge / 1000)}s lalu < ${MANAGEMENT_MIN_GAP_MS / 1000}s min gap)`);
         return;
       }
       await runManagementCycle();
@@ -923,7 +948,8 @@ export function startCronJobs() {
     runScreeningCycle
   );
 
-  // Lightweight 30s PnL poller — updates trailing TP state between management cycles
+  // Lightweight 30s PnL poller — cek exit alerts antara management cycles
+  // Hanya trigger management jika ada exit alert DAN management belum jalan dalam 45s terakhir
   let _pnlPollBusy = false;
   const pnlPollInterval = setInterval(async () => {
     if (_managementBusy || _screeningBusy || _pnlPollBusy) return;
@@ -934,14 +960,15 @@ export function startCronJobs() {
       for (const p of result.positions) {
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
         if (exit) {
-          const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
-          const sinceLastTrigger = Date.now() - _pollTriggeredAt;
-          if (sinceLastTrigger >= cooldownMs) {
-            _pollTriggeredAt = Date.now();
-            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — triggering management`);
+          // Gunakan lock file age (cross-restart) sebagai primary cooldown,
+          // bukan _pollTriggeredAt yang terpisah — ini memastikan cron dan poller
+          // share satu cooldown yang sama.
+          const lockAge = _readLockAge();
+          if (lockAge >= MANAGEMENT_MIN_GAP_MS) {
+            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — triggering management (lock age: ${Math.round(lockAge / 1000)}s)`);
             runManagementCycle({ silent: true }).catch(e => log("cron_error", `Poll-triggered management failed: ${e.message}`));
           } else {
-            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — cooldown`);
+            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — skipped (lock age: ${Math.round(lockAge / 1000)}s < ${MANAGEMENT_MIN_GAP_MS / 1000}s)`);
           }
           break;
         }
@@ -1453,10 +1480,17 @@ Commands:
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startHealthServer();
   startCronJobs();
-  setTimeout(
-    () => runManagementCycle().catch(e => log("cron_error", `Startup management failed: ${e.message}`)),
-    3000
-  );
+  // Startup management: cek lock file terlebih dahulu.
+  // Jika proses lama baru saja selesai cycle (<45s), skip startup management.
+  // Ini mencegah double-cycle saat PM2 restart di tengah-tengah atau setelah cycle selesai.
+  setTimeout(() => {
+    const lockAge = _readLockAge();
+    if (lockAge < MANAGEMENT_MIN_GAP_MS) {
+      log("startup", `Startup management skipped — lock file menunjukkan cycle selesai ${Math.round(lockAge / 1000)}s lalu (< ${MANAGEMENT_MIN_GAP_MS / 1000}s)`);
+    } else {
+      runManagementCycle().catch(e => log("cron_error", `Startup management failed: ${e.message}`));
+    }
+  }, 3000);
 
   // Telegram handler for non-TTY mode
   const _nonTtyQueue = [];
