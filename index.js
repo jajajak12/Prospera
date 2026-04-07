@@ -24,6 +24,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH         = path.join(__dirname, "user-config.json");
 const SWEEP_PROPOSAL_PATH      = path.join(__dirname, "sweep-proposal.json");
 const POSITION_META_PATH       = path.join(__dirname, "position-meta.json");
+const MANAGEMENT_LOCK_PATH     = path.join(__dirname, "management.lock");
 
 // ── Sweep proposal helpers ───────────────────────────────────────────────────
 function saveSweepProposal(p) {
@@ -202,12 +203,34 @@ function stopCronJobs() {
 // ═══════════════════════════════════════════
 //  MANAGEMENT CYCLE
 // ═══════════════════════════════════════════
-const MANAGEMENT_MIN_GAP_MS = 30_000; // minimum gap antar cycle (30 detik)
+const MANAGEMENT_MIN_GAP_MS = 45_000; // minimum gap antar cycle (45 detik)
+
+function _acquireManagementLock() {
+  try {
+    if (fs.existsSync(MANAGEMENT_LOCK_PATH)) {
+      const raw = fs.readFileSync(MANAGEMENT_LOCK_PATH, "utf8");
+      const { ts } = JSON.parse(raw);
+      const ageMs = Date.now() - ts;
+      if (ageMs < MANAGEMENT_MIN_GAP_MS) {
+        return { acquired: false, reason: `file lock aktif (${Math.round(ageMs / 1000)}s lalu, min gap ${MANAGEMENT_MIN_GAP_MS / 1000}s)` };
+      }
+      // Lock file expired (stale) — overwrite
+    }
+    fs.writeFileSync(MANAGEMENT_LOCK_PATH, JSON.stringify({ ts: Date.now(), pid: process.pid }), { flag: "w" });
+    return { acquired: true };
+  } catch (e) {
+    return { acquired: false, reason: `gagal tulis lock file: ${e.message}` };
+  }
+}
+
+function _releaseManagementLock() {
+  try { fs.unlinkSync(MANAGEMENT_LOCK_PATH); } catch { /* ignore */ }
+}
 
 export async function runManagementCycle({ silent = false } = {}) {
-  // Layer 1: busy flag — cycle sedang berjalan
+  // Layer 1: in-memory busy flag — cycle sedang berjalan di proses ini
   if (_managementBusy) {
-    log("cron", "Management skipped — cycle sedang berjalan (busy flag aktif)");
+    log("cron", "Management skipped — cycle sedang berjalan (in-memory busy flag)");
     return null;
   }
   // Layer 2: screening sedang berjalan — tunggu selesai dulu
@@ -215,10 +238,16 @@ export async function runManagementCycle({ silent = false } = {}) {
     log("cron", "Management skipped — screening cycle sedang berjalan");
     return null;
   }
-  // Layer 3: terlalu cepat sejak cycle terakhir selesai
+  // Layer 3: timestamp in-memory — terlalu cepat sejak cycle terakhir
   const msSinceCompleted = Date.now() - _managementLastCompleted;
   if (_managementLastCompleted > 0 && msSinceCompleted < MANAGEMENT_MIN_GAP_MS) {
     log("cron", `Management skipped — cycle terakhir selesai ${Math.round(msSinceCompleted / 1000)}s lalu (min gap: ${MANAGEMENT_MIN_GAP_MS / 1000}s)`);
+    return null;
+  }
+  // Layer 4: file-based lock — cross-call protection (survive rapid concurrent triggers)
+  const lock = _acquireManagementLock();
+  if (!lock.acquired) {
+    log("cron", `Management skipped — ${lock.reason}`);
     return null;
   }
 
@@ -454,6 +483,7 @@ After acting, write a brief one-line result per position.
   } finally {
     _managementBusy = false;
     _managementLastCompleted = Date.now();
+    _releaseManagementLock();
     if (!silent && telegramEnabled()) {
       if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => {});
       for (const p of positions) {
