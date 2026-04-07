@@ -25,6 +25,7 @@ const USER_CONFIG_PATH         = path.join(__dirname, "user-config.json");
 const SWEEP_PROPOSAL_PATH      = path.join(__dirname, "sweep-proposal.json");
 const POSITION_META_PATH       = path.join(__dirname, "position-meta.json");
 const MANAGEMENT_LOCK_PATH     = path.join(__dirname, "management.lock");
+const SCREENING_LOCK_PATH      = path.join(__dirname, "screening-lock.json"); // CHANGED: file-based screening lock
 
 // ── Sweep proposal helpers ───────────────────────────────────────────────────
 function saveSweepProposal(p) {
@@ -189,14 +190,33 @@ function stripThink(text) {
 // ═══════════════════════════════════════════
 let _cronTasks = [];
 let _managementBusy        = false;
-let _managementLastCompleted = 0;   // timestamp ketika management terakhir selesai
-let _screeningBusy          = false;
+let _managementLastCompleted = 0;
+let _screeningBusy          = false; // CHANGED: in-process guard (complements file lock)
 let _screeningLastTriggered = 0;
-let _screeningLastCompleted = 0;   // timestamp ketika screening terakhir SELESAI (bukan dimulai)
 let _pollTriggeredAt        = 0;
 
-// Minimum gap antara dua screening yang selesai — mencegah double-send dalam window menit yang sama
-const SCREENING_MIN_COMPLETED_GAP_MS = 60_000; // 60 detik
+// ── File-based screening lock (survives PM2 restart) ─────────────────────────
+// status="running" → block unconditionally
+// status="done"    → block if ts < 60s ago
+// CHANGED: replaces in-memory _screeningBusy + _screeningLastCompleted
+const SCREENING_LOCK_GAP_MS = 60_000;
+
+function _readScreeningLock() {
+  try {
+    if (!fs.existsSync(SCREENING_LOCK_PATH)) return null;
+    return JSON.parse(fs.readFileSync(SCREENING_LOCK_PATH, "utf8"));
+  } catch { return null; }
+}
+
+function _writeScreeningLock(status) {
+  try {
+    fs.writeFileSync(
+      SCREENING_LOCK_PATH,
+      JSON.stringify({ ts: Date.now(), pid: process.pid, status }),
+      { flag: "w" }
+    );
+  } catch { /* non-fatal */ }
+}
 
 function stopCronJobs() {
   for (const task of _cronTasks) task?.stop?.();
@@ -529,29 +549,41 @@ After acting, write a brief one-line result per position.
 //  SCREENING CYCLE
 // ═══════════════════════════════════════════
 export async function runScreeningCycle({ silent = false, force = false } = {}) {
-  if (_screeningBusy) {
-    log("cron", "Screening skipped — previous cycle still running");
-    return null;
-  }
-  // Guard: minimum gap after last completion — prevents double-send within the same minute
-  // even if busy flag dropped and cooldown happened to expire simultaneously
+  // ── File-based lock check (survives PM2 restart) ──────────────────────────
+  // CHANGED: strong lock replaces in-memory _screeningBusy + _screeningLastCompleted
   {
-    const msSinceCompleted = Date.now() - _screeningLastCompleted;
-    if (_screeningLastCompleted > 0 && msSinceCompleted < SCREENING_MIN_COMPLETED_GAP_MS) {
-      log("cron", `Screening skipped — completed ${Math.round(msSinceCompleted / 1000)}s ago (min gap: ${SCREENING_MIN_COMPLETED_GAP_MS / 1000}s)`);
-      return null;
+    const lock = _readScreeningLock();
+    if (lock) {
+      const age = Date.now() - lock.ts;
+      if (lock.status === "running") {
+        log("cron", `Screening skipped — lock running (pid=${lock.pid}, ${Math.round(age / 1000)}s ago)`);
+        return null;
+      }
+      if (lock.status === "done" && age < SCREENING_LOCK_GAP_MS) {
+        log("cron", `Screening skipped — completed ${Math.round(age / 1000)}s ago (min gap: ${SCREENING_LOCK_GAP_MS / 1000}s)`);
+        return null;
+      }
     }
   }
-  // Prevent cron from re-firing too soon after a management-triggered screening
+  // Cooldown check (cron interval)
   if (!force) {
     const cooldownMs = config.schedule.screeningIntervalMin * 60 * 1000;
     const elapsed = Date.now() - _screeningLastTriggered;
     if (elapsed < cooldownMs) {
-      return null; // silently skip — cooldown still active
+      return null;
     }
   }
-  _screeningBusy = true;
+  _writeScreeningLock("running"); // CHANGED: acquire file lock
+  _screeningBusy = true;          // CHANGED: in-process guard
   _screeningLastTriggered = Date.now();
+
+  // Helper: release both locks and exit early (for pre-check failures)
+  const _releaseAndSkip = (msg) => { // CHANGED
+    _writeScreeningLock("done");
+    _screeningBusy = false;
+    if (msg) log("cron", msg);
+    return null;
+  };
 
   let prePositions, preBalance, deployAmount;
   try {
@@ -563,17 +595,13 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
 
     // ── Max positions check ───────────────────────────────────────────────
     if (prePositions.total_positions >= config.risk.maxPositions) {
-      log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
-      _screeningBusy = false;
-      return null;
+      return _releaseAndSkip(`Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
     }
 
     // ── Deploy sizing (tiered) ────────────────────────────────────────────
     deployAmount = getPositionSizing(preBalance.sol);
     if (deployAmount === 0) {
-      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} SOL, need at least ${(config.risk.exposureGasReserve ?? 1) + 1} SOL)`);
-      _screeningBusy = false;
-      return null;
+      return _releaseAndSkip(`Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} SOL, need at least ${(config.risk.exposureGasReserve ?? 1) + 1} SOL)`);
     }
 
     // ── Exposure cap check (50%) ──────────────────────────────────────────
@@ -585,14 +613,11 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
         maxExposure: exposureCheck.maxExposureSol.toFixed(2),
         proposed: deployAmount,
       });
-      _screeningBusy = false;
-      return null;
+      return _releaseAndSkip(null);
     }
     log("cron", `Exposure check OK: ${currentExposure.toFixed(2)}→${exposureCheck.projectedExposureSol.toFixed(2)} SOL (${exposureCheck.exposurePct}% of ${(preBalance.sol - (config.risk.exposureGasReserve ?? 1)).toFixed(2)} SOL deployable)`);
   } catch (e) {
-    log("cron_error", `Screening pre-check failed: ${e.message}`);
-    _screeningBusy = false;
-    return null;
+    return _releaseAndSkip(`Screening pre-check failed: ${e.message}`);
   }
 
   timers.screeningLastRun = Date.now();
@@ -611,17 +636,12 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     // (partial reset — not full 0, to avoid double-fire on management's next tick)
     if ((topResult?.total_screened ?? 0) === 0) {
       _screeningLastTriggered = Date.now() - (config.schedule.screeningIntervalMin * 60 * 1000) + 60_000;
-      log("cron", "Screening aborted — GeckoTerminal returned 0 tokens, retry in 60s");
-      _screeningBusy = false;
-      return null;
+      log("cron", "Screening aborted — discovery returned 0 tokens, retry in 60s");
+      return null; // CHANGED: finally handles lock release
     }
 
     if (candidates.length === 0) {
-      const _ts  = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-      const _tot = topResult?.total_screened    ?? 0;
-      const _vol = topResult?.after_volume_count ?? 0;
-      const _mtr = topResult?.withPool_count     ?? 0;
-      screenReport = `🔍 Fibonacci Screening [${_ts}]\nDiscovered: ${_tot} | After volume: ${_vol} | Meteora pools: ${_mtr}\nNo entry signals (failed EMA/RSI/Fib filters)`;
+      screenReport = "No entry signals (failed EMA/RSI/Fib filters)"; // CHANGED: header built in finally
       return screenReport;
     }
 
@@ -675,7 +695,7 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
 
       if (candidates.length === 0) {
         screenReport = `Auto-backtest filtered all ${preCount} candidate(s) — win rate below ${(minWinRate*100).toFixed(0)}% threshold.`;
-        return screenReport;
+        return screenReport; // finally will still run: lock released + Telegram sent
       }
     }
     // ──────────────────────────────────────────────────────────────────────
@@ -767,22 +787,17 @@ reason: <one sentence why this over others>
     log("cron_error", `Screening cycle failed: ${error.message}`);
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
-    _screeningBusy = false;
-    _screeningLastCompleted = Date.now();
+    _writeScreeningLock("done"); // CHANGED: release file lock
+    _screeningBusy = false;      // CHANGED: release in-process guard
     if (!silent && telegramEnabled()) {
       if (screenReport) {
-        // No-candidates report already has header baked in; LLM reports get a stats header prepended
-        const _alreadyHasHeader = screenReport.startsWith("🔍");
-        if (_alreadyHasHeader) {
-          sendMessage(screenReport).catch(() => {});
-        } else {
-          const _ts  = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-          const _tot = topResult?.total_screened    ?? 0;
-          const _vol = topResult?.after_volume_count ?? 0;
-          const _mtr = topResult?.withPool_count     ?? 0;
-          const _hdr = `🔍 Fibonacci Screening [${_ts}]\nDiscovered: ${_tot} | After volume: ${_vol} | Meteora pools: ${_mtr}\n\n`;
-          sendMessage(`${_hdr}${stripThink(screenReport)}`).catch(() => {});
-        }
+        // CHANGED: always build header here — single consistent format
+        const _ts  = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+        const _tot = topResult?.total_screened    ?? 0;
+        const _vol = topResult?.after_volume_count ?? 0;
+        const _mtr = topResult?.withPool_count     ?? 0;
+        const _hdr = `🔍 Fibonacci Screening [${_ts}]\nDiscovered: ${_tot} | After volume: ${_vol} | Meteora pools: ${_mtr}\n\n`;
+        sendMessage(`${_hdr}${stripThink(screenReport)}`).catch(() => {});
       }
     }
   }
