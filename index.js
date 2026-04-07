@@ -25,7 +25,7 @@ const USER_CONFIG_PATH         = path.join(__dirname, "user-config.json");
 const SWEEP_PROPOSAL_PATH      = path.join(__dirname, "sweep-proposal.json");
 const POSITION_META_PATH       = path.join(__dirname, "position-meta.json");
 const MANAGEMENT_LOCK_PATH     = path.join(__dirname, "management.lock");
-const SCREENING_LOCK_PATH      = path.join(__dirname, "screening-lock.json"); // CHANGED: file-based screening lock
+const SCREENING_LOCK_PATH      = path.join(__dirname, "screening-lock.json");
 
 // ── Sweep proposal helpers ───────────────────────────────────────────────────
 function saveSweepProposal(p) {
@@ -191,14 +191,13 @@ function stripThink(text) {
 let _cronTasks = [];
 let _managementBusy        = false;
 let _managementLastCompleted = 0;
-let _screeningBusy          = false; // CHANGED: in-process guard (complements file lock)
+let _screeningBusy          = false; // in-process guard — synced with file lock
 let _screeningLastTriggered = 0;
 let _pollTriggeredAt        = 0;
 
 // ── File-based screening lock (survives PM2 restart) ─────────────────────────
 // status="running" → block unconditionally
 // status="done"    → block if ts < 60s ago
-// CHANGED: replaces in-memory _screeningBusy + _screeningLastCompleted
 const SCREENING_LOCK_GAP_MS = 60_000;
 
 function _readScreeningLock() {
@@ -717,7 +716,7 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
         if (c.pool && ath && entryPrice && activeBin != null) {
           pending[c.pool] = {
             ath, entryPrice, binStep: c.bin_step ?? null, activeBinAtScreening: activeBin,
-            fib500: fib?.fibLevels?.fib500 ?? null, // CHANGED: for deploy-time price gate
+            fib500: fib?.fibLevels?.fib500 ?? null, // deploy-time fib500 gate in executor.js
           };
         }
       }
