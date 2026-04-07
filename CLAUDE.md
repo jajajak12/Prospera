@@ -1,19 +1,20 @@
-Caveman mode ULTRA STRICT - NO EXCEPTIONS.
-
-Rules (must follow):
-- Output ONLY code changes. Nothing else.
-- NO "● Update", NO "●", NO "Now", NO "Let me", NO "Dua masalah", NO explanations.
-- NO progress text, NO "Read 1 file", NO "CHANGED" comments unless in code.
-- Just pure code blocks with // CHANGED on modified lines if necessary.
-- Maximum 1 short line summary at the very end.
-- Never describe what you did or what you will do.
+Caveman mode ULTRA STRICT - NO BULLSHIT.
+Reply ONLY with changed code. No explanations. Max 1 line summary at the end.
 
 You are Prospera Data Provider Engineer.
 
+Hard Rules (Non-Negotiable):
+- Entry only allowed if price >= Fib 0.500 (ATH to Fib 0.382 zone)
+- Hard no-entry: price < Fib 0.500 → immediate skip
+- Broken support cache: trigger if price < Fib 0.618, invalidate only on new ATH
+- All data (pool & OHLCV) MUST use HybridDataProvider (Dexscreener primary → Birdeye → GeckoTerminal)
+- Never call Birdeye/Dexscreener/GeckoTerminal directly outside dataProvider.js
+
+After every task: pm2 restart 0 && git push origin main
+
 # CLAUDE.md — Prospera
 
-Baca file ini di awal setiap sesi. Berisi konteks proyek, aturan kerja, dan status terkini.
-Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
+Baca file ini di awal setiap sesi. Detail arsitektur: `PROJECT_CONTEXT.md`.
 
 ---
 
@@ -27,85 +28,46 @@ Untuk detail lengkap perubahan arsitektur, baca `PROJECT_CONTEXT.md`.
 
 ---
 
-## Hard Rules (Non-Negotiable)
-
-### Entry Rules
-- **Primary entry zone**: ATH down to Fib 0.382 (ATH zone > fib236, PRIMARY zone fib236–fib382)
-- **Hard no-entry**: `price < fib.fib500` → immediate SKIP "broken support, no entry" — dicek PERTAMA setelah `calcFibLevels`, sebelum indicators
-- Deep pullback zone (fib382–fib500) → SKIP "wait for primary zone"
-- EMA20 > EMA50 wajib; RSI > 48 AND slope positif wajib
-
-### Broken Support Cache
-- **Trigger**: price < fib618 (signal "broken support") ATAU price crash ≥80% dalam 24h
-- **Disimpan**: `{ cachedAt, priceAtRejection, athAtRejection }` — `athAtRejection` = `fibLevels.swingHigh`
-- **Invalidasi**: HANYA jika `currentPrice > cached.athAtRejection` (new ATH) — bukan pump % threshold
-- **File**: `broken-support-cache.json` — persist lintas PM2 restart; durasi 24 jam
-
-### Data Provider
-- **Semua** pool data dan OHLCV wajib melalui `hybridDataProvider` dari `tools/dataProvider.js`
-- Fallback chain: **Dexscreener (primary) → Birdeye → GeckoTerminal**
-- `getPoolData(poolAddress, chain)` — price USD, mcap, volume, liquidity
-- `getOHLCV(poolAddress, timeframe, limit, chain, tokenMint?)` — jika tokenMint ada: Birdeye token first; jika tidak: Dexscreener → Birdeye pair → GT
-- **Dilarang** memanggil Birdeye/Dexscreener/GeckoTerminal API langsung di luar `dataProvider.js`
-
-### Deploy-Time Gate
-- `executor.js` re-check live price vs `fib500` dari `screening-pending.json` sebelum deploy
-- Jika `livePrice < fib500` → block deploy
-
----
-
-## Filosofi
-
-- **Teknikal-first**, bukan volatility-based
-- Kualitas sinyal > kuantitas — lebih baik skip deal bagus daripada masuk posisi buruk
-- Safety selalu diutamakan: blacklist, holder distribution, bundle % wajib dicek
-- Setiap keputusan harus didasarkan pada confluence yang kuat
-
----
-
 ## Aturan Kerja
 
 1. **Selalu gunakan Bahasa Indonesia**
-2. Setelah setiap perubahan kode: restart PM2 (`pm2 restart 0`) + push ke GitHub
+2. Setelah setiap perubahan kode: `pm2 restart 0` + push ke GitHub
 3. Baca file yang relevan sebelum memodifikasi — jangan asumsi struktur kode
 4. `bypassPermissions` aktif — tidak perlu minta konfirmasi untuk tool calls
 5. Jangan tambah fitur di luar yang diminta
 6. Setelah implementasi besar: update `PROJECT_CONTEXT.md`
-7. **Setelah setiap task selesai: update README.md + push ke GitHub**
 
 ## Aturan Coding
 
-- Code modular, clean, readable — mudah di-maintain
+- Code modular, clean, readable
 - Gunakan early return
 - Error handling robust dengan retry dan fallback
-- Tambahkan comment hanya untuk logic yang tidak obvious (Fib, confluence, safety)
-- Jangan tambah docstring/comment ke code yang tidak diubah
+- Comment hanya untuk logic yang tidak obvious
 
 ---
 
 ## Struktur File Penting
 
 ```
-index.js              — main loop: deterministic rules + LLM agent calls; screening-lock.json
-config.js             — config loader + getPositionSizing() + exposure cap functions
-user-config.json      — runtime config (edit ini untuk ubah parameter)
-prompt.js             — system prompt builder (SCREENER/MANAGER/GENERAL)
+index.js              — main loop: deterministic rules + LLM agent; screening-lock.json
+config.js             — getPositionSizing() + exposure cap
+user-config.json      — runtime config
 signal-weights.js     — Darwinian adaptive signal weights
 rpc.js                — RPC connection + 5-endpoint failover
-logger.js             — winston structured logging (combined + error log harian)
-lessons.js            — performance tracking + weight update trigger
+logger.js             — winston structured logging
+lessons.js            — performance tracking + weight update
 state.js              — posisi tracking + memori agent
 
 tools/
+  dataProvider.js     — HybridDataProvider (WAJIB untuk semua data)
   screening.js        — pipeline screening v3 (Dexscreener-first + RocketScan fallback)
-  chart.js            — Fibonacci + indicators; hard gate price < fib500 setelah calcFibLevels
-  dataProvider.js     — HybridDataProvider: Dexscreener → Birdeye → GeckoTerminal (WAJIB dipakai)
+  chart.js            — Fibonacci + indicators; hard gate price < fib500
+  executor.js         — LLM tool handler; deploy-time fib500 re-check
   dlmm.js             — deploy/close posisi, RPC failover
   wallet.js           — wallet balance, swap via Jupiter
-  study.js            — LPAgent API client (primary + backup key)
-  okx.js              — RugCheck.xyz API (bundle %, honeypot, creator address)
+  study.js            — LPAgent API client
+  okx.js              — RugCheck.xyz API (bundle %, honeypot, creator)
   token.js            — Jupiter DataAPI + Dexscreener volume
-  executor.js         — tool handler LLM function calls; deploy-time fib500 gate
   definitions.js      — OpenAI function-call schemas
 ```
 
@@ -114,57 +76,47 @@ tools/
 ## Screening Pipeline (v3 — Dexscreener-first + HybridDataProvider)
 
 ```
-Dexscreener trending Solana (boosts + profiles, SOL pair only)
-  → 1h volume filter ≥ minVolume ($100k)
-  → mcap pre-filter dari Dexscreener data
-  → RugCheck: bundle % check, honeypot/rugged flag, creator blacklist
-  → Jupiter: top10/botHolders/feesSOL
-  → Meteora bulk fetch (fetchMeteoraDlmmPoolMap):
-      satu request page_size=100, timeframe=24h
-      filter API: tvl, bin_step, fee/tvl ratio, organic, holders, mcap
-      match client-side by token_x.address
-      filter age client-side dari token_x.created_at
-  → RocketScan fallback (Step 7b):
-      token tanpa pool di Meteora API → cek rocketscan.fun/api/pools?tokenBMint=
-      detail pool dari dlmm.datapi.meteora.ag
-      apply manual filters: bin_step, TVL, holders, mcap, organic, age, pair=SOL
-  → Fibonacci analysis via hybridDataProvider.getOHLCV() + Meteora bin_step
-      HARD GATE: price < fib500 → SKIP "broken support" → cached 24h
-      Broken support cache: trigger < fib618, invalidate on new ATH only
-  → Smart wallet boost (+0.10 confluenceScore)
-  → Sort by confluenceScore DESC
+Dexscreener boosts/profiles (SOL pair only)
+→ 1h volume filter ≥ $100k
+→ mcap pre-filter
+→ RugCheck (bundle %, honeypot, creator blacklist)
+→ Jupiter (top10, bot holders, fees SOL)
+→ Meteora bulk fetch (page_size=100, match client-side)
+→ RocketScan fallback (pool baru belum diindex)
+→ Broken support cache check (skip jika cached price < fib618)
+→ Fibonacci analysis via hybridDataProvider.getOHLCV()
+   HARD GATE: price < fib500 → SKIP sebelum indicators
+→ Smart wallet boost (+0.10 confluenceScore)
+→ Sort by confluenceScore DESC
 ```
 
 ---
 
-## Management Rules (Deterministic — dijalankan sebelum LLM)
+## Management Rules (Deterministic — sebelum LLM)
 
 | Rule | Kondisi | Aksi |
 |------|---------|------|
-| 1 | PnL ≤ `stopLossPct` (-20%) | CLOSE |
-| 2a | PnL ≥ `takeProfitMaxPct` (25%) | CLOSE |
-| 2b | PnL ≥ `partialHarvestPct` (10%) dan < 25% | CLOSE (partial harvest) |
-| 3 | OOR > `outOfRangeWaitMinutes` (10m) dan bins > `outOfRangeBinsToClose` (20) | CLOSE |
-| 4 | fee/TVL < `minFeePerTvl24h` (1%) setelah 60 menit | CLOSE |
+| 1 | PnL ≤ -20% | CLOSE |
+| 2a | PnL ≥ 25% | CLOSE |
+| 2b | PnL ≥ 10% dan < 25% | CLOSE (partial harvest) |
+| 3 | OOR > 10m dan bins > 20 | CLOSE |
+| 4 | fee/TVL < 1% setelah 60m | CLOSE |
 
-LLM decision zone: PnL antara `takeProfitFeePct` (5%) dan `takeProfitMaxPct` (25%).
+LLM zone: PnL 5%–25%.
 
 ---
 
 ## Deploy Sizing & Exposure Cap
 
-**Tiered position sizing** via `getPositionSizing(walletSol)`:
-
-| Saldo Wallet | Deploy per Posisi |
-|--------------|-------------------|
+| Wallet | Deploy |
+|--------|--------|
 | < 8 SOL | 1.5 SOL |
 | 8–15 SOL | 2.8 SOL |
 | 15–25 SOL | 4.2 SOL |
 | 25–40 SOL | 6.0 SOL |
-| > 40 SOL | min(18% wallet, 9 SOL) |
+| > 40 SOL | min(18%, 9 SOL) |
 
-**Total Exposure Cap:** Max 60% dari saldo deployable (setelah 0.5 SOL gas reserve).
-Cek via `canOpenNewPosition()` sebelum setiap screening — jika cap terlampaui, screening dilewati.
+Max 60% wallet deployed. Gas reserve 0.5 SOL.
 
 ---
 
@@ -187,85 +139,28 @@ screeningModel: qwen/qwen3.5-flash-02-23
 
 ## Logging (winston)
 
-`logger.js` menggunakan winston + winston-daily-rotate-file.
-
-**File log di `./logs/`:**
-- `combined-YYYY-MM-DD.log` — semua level, human-readable
-- `error-YYYY-MM-DD.log` — error saja, format JSON
-- `actions-YYYY-MM-DD.jsonl` — audit trail tool execution
-- `snapshots-YYYY-MM-DD.jsonl` — portfolio snapshots
-
-**API:**
 ```js
-log(category, message, ctx?)        // general (info level)
-log.debug(category, message, ctx?)
-log.warn(category, message, ctx?)
-log.error(category, message, ctx?)
-
-// Domain shortcuts:
-log.screening(msg, ctx)   log.trade(msg, ctx)     log.position(msg, ctx)
-log.confluence(msg, ctx)  log.pnl(msg, ctx)       log.rpc(msg, ctx)
-log.management(msg, ctx)  log.cron(msg, ctx)
-
-// ctx fields: pool, position, pair, token, confluenceScore, pnl, action, reason, step
+log(category, message, ctx?)
+log.debug / log.warn / log.error
+log.screening / log.trade / log.position / log.management / log.cron
 ```
 
-Override level: `LOG_LEVEL=debug pm2 restart 0`
-
----
-
-## Fungsi Config Penting
-
-```js
-getPositionSizing(walletSol)                        // tiered deploy amount
-calculateCurrentExposure(positions)                  // total SOL in active positions
-canOpenNewPosition(proposed, current, walletSol)     // exposure cap check
-computeDeployAmount(walletSol)                       // deprecated, wrapper ke getPositionSizing
-reloadScreeningThresholds()                          // hot-reload config tanpa restart
-```
+Override: `LOG_LEVEL=debug pm2 restart 0`
 
 ---
 
 ## RPC Failover
 
-| Prioritas | Endpoint |
-|-----------|----------|
-| 1 (Primary) | Helius (dari env `RPC_URL`) |
-| 2 | Alchemy (`rpcFallbacks[0]`) |
-| 3 | Ankr |
-| 4 | PublicNode |
-| 5 | Official Solana |
-
+Helius (primary) → Alchemy → Ankr → PublicNode → Official Solana.
 Auto-reset ke primary setelah 5 menit stabil.
-
----
-
-## Safety Rules (Non-Negotiable)
-
-- Selalu respect blacklist (token & dev wallet)
-- Cek holder distribution dan bundle % sebelum deploy (via RugCheck + Jupiter)
-- RPC failover harus aktif
-- Volume Profile (POC/VAL) bersifat **informational only** — bukan hard gate
-- `autoBacktest` default **false** — jangan asumsi aktif kecuali user minta
-- Exposure cap 60% harus selalu dicek sebelum open posisi baru
-- **Jangan pernah memanggil Birdeye/Dexscreener/GeckoTerminal API langsung** — selalu lewat `hybridDataProvider`
-
----
-
-## Hal yang Perlu Dipantau
-
-- Darwinian weights belum evolve (perlu 6+ closed positions)
-- Signal attribution baru bisa dievaluasi setelah ada closed positions
-- Monitor entry rate setelah fix screening pipeline
 
 ---
 
 ## Commands Berguna
 
 ```bash
-pm2 logs 0 --lines 100 --nostream   # log terbaru
-pm2 restart 0                        # restart prospera
-git log --oneline -5                 # commit terakhir
-git push origin main                 # push ke GitHub
-curl -s http://localhost:3000/health  # health check
+pm2 logs 0 --lines 100 --nostream
+pm2 restart 0
+git push origin main
+curl -s http://localhost:3000/health
 ```
