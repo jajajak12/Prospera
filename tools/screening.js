@@ -26,10 +26,26 @@ const DEXSCREENER_BASE  = "https://api.dexscreener.com";
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
-// Cache pools rejected with "broken support" — price well below Fib 0.618, skip re-analysis for 3h
-// Stores { cachedAt, priceAtRejection } — invalidated early if price pumps >50% (momentum recovery)
-const _fibBrokenSupportCache = new Map(); // poolAddress → { cachedAt, priceAtRejection }
-const FIB_BROKEN_CACHE_MS = 3 * 60 * 60 * 1000; // 3 jam
+// Cache pools rejected with "broken support" — persists across PM2 restarts via JSON file
+// Stores { cachedAt, priceAtRejection, athAtRejection } — invalidated ONLY if price > ATH at rejection
+const BROKEN_SUPPORT_CACHE_PATH = path.join(__dirname, "..", "broken-support-cache.json");
+const FIB_BROKEN_CACHE_MS = 24 * 60 * 60 * 1000; // 24 jam (was 3h)
+
+function _loadBrokenSupportCache() {
+  try {
+    if (!fs.existsSync(BROKEN_SUPPORT_CACHE_PATH)) return new Map();
+    const raw = JSON.parse(fs.readFileSync(BROKEN_SUPPORT_CACHE_PATH, "utf8"));
+    return new Map(Object.entries(raw));
+  } catch { return new Map(); }
+}
+
+function _saveBrokenSupportCache(map) {
+  try {
+    fs.writeFileSync(BROKEN_SUPPORT_CACHE_PATH, JSON.stringify(Object.fromEntries(map)));
+  } catch { /* non-fatal */ }
+}
+
+const _fibBrokenSupportCache = _loadBrokenSupportCache();
 
 function loadJsonSet(filename) {
   try {
@@ -625,20 +641,18 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     if (pool.price_change_pct != null && pool.price_change_pct <= -80) {
       log("screening", `  ${pool.name}: SKIP — price crashed ${pool.price_change_pct.toFixed(1)}% in 24h`);
       const usdPrice = token.price ?? pool.price ?? 0;
-      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: usdPrice });
+      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: usdPrice, athAtRejection: null });
+      _saveBrokenSupportCache(_fibBrokenSupportCache);
       return false;
     }
-    // Skip pools cached as "broken support" — unless price has recovered >50% since rejection
+    // Skip pools cached as "broken support" — invalidate ONLY if price broke previous ATH
     const cached = _fibBrokenSupportCache.get(pool.pool);
     if (cached && now - cached.cachedAt < FIB_BROKEN_CACHE_MS) {
       const usdPrice = token.price ?? pool.price ?? 0;
-      const pricePump = cached.priceAtRejection > 0
-        ? (usdPrice - cached.priceAtRejection) / cached.priceAtRejection
-        : 0;
-      // Price pumped >50% since rejection — possible momentum recovery, re-analyze fresh
-      if (pricePump > 0.5) {
+      if (cached.athAtRejection != null && usdPrice > cached.athAtRejection) {
         _fibBrokenSupportCache.delete(pool.pool);
-        log("screening", `  ${pool.name}: cache invalidated — price pumped +${(pricePump * 100).toFixed(0)}% since rejection, re-analyzing`);
+        _saveBrokenSupportCache(_fibBrokenSupportCache);
+        log("screening", `  ${pool.name}: cache invalidated — new ATH $${usdPrice.toPrecision(4)} > prev ATH $${cached.athAtRejection.toPrecision(4)}, re-analyzing`);
         return true;
       }
       const hrsLeft = (FIB_BROKEN_CACHE_MS - (now - cached.cachedAt)) / 3_600_000;
@@ -673,10 +687,12 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       ? result.value
       : { signal: "SKIP", reason: `Analysis failed: ${result.reason?.message || result.reason}` };
 
-    // Cache pools rejected for broken support — price already below Fib 0.618
+    // Cache pools rejected for broken support — store ATH from Fib so invalidation is ATH-aware
     if (analysis.signal !== "ENTRY" && analysis.reason?.includes("broken support")) {
-      const rejectedPrice = token.price ?? pool.price ?? 0;
-      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: rejectedPrice });
+      const rejectedPrice  = token.price ?? pool.price ?? 0;
+      const athAtRejection = analysis.fibLevels?.swingHigh ?? null;
+      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: rejectedPrice, athAtRejection });
+      _saveBrokenSupportCache(_fibBrokenSupportCache);
     }
 
     log("screening", `  ${pool.name}: ${analysis.signal} — ${analysis.reason}`);
