@@ -224,12 +224,47 @@ GeckoTerminal dihapus sepenuhnya. Semua sumber data diganti:
 
 ---
 
+## Fitur Baru (Apr 2026 — sesi terkini)
+
+### HybridDataProvider (`tools/dataProvider.js`)
+- Kelas `HybridDataProvider` dengan singleton `hybridDataProvider`
+- Fallback chain: **Dexscreener → Birdeye → GeckoTerminal**
+- Trigger fallback: timeout >3s, HTTP 429, atau error apapun
+- `getPoolData(poolAddress, chain)` — price, mcap, volume (m5/h1/h6/h24), liquidity, dex; return field `_source` menunjukkan siapa yang berhasil
+- `getOHLCV(poolAddress, timeframe, limit, chain)` — OHLCV oldest-first; timeframe: "1m"|"5m"|"15m"|"1h"|"4h"|"1d"
+- **Catatan**: `getOHLCV` menerima pool address (bukan token mint). Untuk token-mint based OHLCV (Fib analysis di chart.js), tetap gunakan `fetchBirdeyeOHLCV` langsung.
+- Integrasi: `import { hybridDataProvider } from "./dataProvider.js"`
+
+### Step-by-Step Screening Logs
+- `log.screening("Step 1 — Discovery: X tokens ...")` setelah Dexscreener fetch
+- `log.screening("Step 2 — Volume filter: X/Y passed ...")` setelah volume filter
+- `log.screening("Step 3 — mcap filter: ...")` jika ada yang di-drop
+- `log.screening("Step 7 — Meteora pool match: X/Y tokens ...")` setelah Meteora bulk fetch
+- `log.screening("Step 8 — Fibonacci: X/Y passed ...")` setelah Fib analysis
+- `log.screening("Summary: discovered=X → volume=Y → pools=Z → fib_entry=N")` di akhir setiap cycle
+
+### Improved Telegram Screening Report
+- Semua laporan screening kini menggunakan format: `🔍 Fibonacci Screening [HH:MM]\nDiscovered: X | After volume: Y | Meteora pools: Z`
+- No-candidates case: header sudah baked-in di `screenReport`, `finally` mengirim langsung
+- Candidates case (LLM report): header ditambahkan di `finally` block sebelum `stripThink(content)`
+- `getTopCandidates()` kini return `after_volume_count` dan `withPool_count` untuk header
+
+### Double Telegram Fix
+- Root cause 1: `_screeningLastTriggered = 0` pada GT failure → management next-tick melihat cooldown expired → trigger screening baru, bersamaan cron screening juga fire
+- Root cause 2: tidak ada minimum gap setelah completion → screening A selesai, B bisa langsung start dalam menit yang sama
+- Fix 1: GT failure reset menggunakan partial reset (`now - cooldown + 60s`) bukan `0` → retry dalam 60 detik, bukan seketika
+- Fix 2: `_screeningLastCompleted` timestamp + `SCREENING_MIN_COMPLETED_GAP_MS = 60s` guard di entry `runScreeningCycle`
+- Fix 3: `_screeningLastCompleted = Date.now()` diset di `finally` block setiap kali screening selesai
+
+---
+
 ## File Utama
 
 | File | Fungsi |
 |------|--------|
-| `tools/screening.js` | Pipeline screening lengkap (v2) |
+| `tools/screening.js` | Pipeline screening lengkap (v3) |
 | `tools/chart.js` | Fibonacci + Volume Profile + Indicators |
+| `tools/dataProvider.js` | HybridDataProvider — Dexscreener→Birdeye→GT fallback |
 | `tools/dlmm.js` | Deploy/close posisi, integrasi RPC failover |
 | `tools/okx.js` | RugCheck.xyz client (menggantikan OKX) |
 | `signal-weights.js` | Darwinian adaptive signal weights |

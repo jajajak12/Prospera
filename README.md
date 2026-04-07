@@ -274,8 +274,9 @@ signal-weights.js     Bobot sinyal adaptif Darwinian
 ecosystem.config.cjs  Config PM2: autorestart, restart_delay, max_restarts
 
 tools/
-  chart.js            Engine sinyal: OHLCV GeckoTerminal + Fib (ATH-based) + EMA + RSI + ATR
+  chart.js            Engine sinyal: OHLCV Birdeye + Fib (ATH-based) + EMA + RSI + ATR
   screening.js        Discovery pool + filter berlapis + sinyal Fib + cek smart wallet
+  dataProvider.js     HybridDataProvider: Dexscreener → Birdeye → GeckoTerminal fallback
   definitions.js      Schema tool (format OpenAI function-calling)
   executor.js         Dispatch tool + safety check + post-close hooks
   dlmm.js             SDK Meteora DLMM (deploy, close, claim, posisi)
