@@ -190,9 +190,13 @@ function stripThink(text) {
 let _cronTasks = [];
 let _managementBusy        = false;
 let _managementLastCompleted = 0;   // timestamp ketika management terakhir selesai
-let _screeningBusy         = false;
+let _screeningBusy          = false;
 let _screeningLastTriggered = 0;
+let _screeningLastCompleted = 0;   // timestamp ketika screening terakhir SELESAI (bukan dimulai)
 let _pollTriggeredAt        = 0;
+
+// Minimum gap antara dua screening yang selesai — mencegah double-send dalam window menit yang sama
+const SCREENING_MIN_COMPLETED_GAP_MS = 60_000; // 60 detik
 
 function stopCronJobs() {
   for (const task of _cronTasks) task?.stop?.();
@@ -529,6 +533,15 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     log("cron", "Screening skipped — previous cycle still running");
     return null;
   }
+  // Guard: minimum gap after last completion — prevents double-send within the same minute
+  // even if busy flag dropped and cooldown happened to expire simultaneously
+  {
+    const msSinceCompleted = Date.now() - _screeningLastCompleted;
+    if (_screeningLastCompleted > 0 && msSinceCompleted < SCREENING_MIN_COMPLETED_GAP_MS) {
+      log("cron", `Screening skipped — completed ${Math.round(msSinceCompleted / 1000)}s ago (min gap: ${SCREENING_MIN_COMPLETED_GAP_MS / 1000}s)`);
+      return null;
+    }
+  }
   // Prevent cron from re-firing too soon after a management-triggered screening
   if (!force) {
     const cooldownMs = config.schedule.screeningIntervalMin * 60 * 1000;
@@ -594,11 +607,11 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     topResult = await getTopCandidates({ limit: 20 }).catch(() => null);
     const candidates = topResult?.candidates || [];
 
-    // If GeckoTerminal returned nothing (rate limit / network), reset the cooldown
-    // so the next management cycle can retry immediately instead of waiting 15 min.
+    // If GeckoTerminal returned nothing (rate limit / network), allow retry in 60s
+    // (partial reset — not full 0, to avoid double-fire on management's next tick)
     if ((topResult?.total_screened ?? 0) === 0) {
-      _screeningLastTriggered = 0;
-      log("cron", "Screening aborted — GeckoTerminal returned 0 tokens, cooldown reset for immediate retry");
+      _screeningLastTriggered = Date.now() - (config.schedule.screeningIntervalMin * 60 * 1000) + 60_000;
+      log("cron", "Screening aborted — GeckoTerminal returned 0 tokens, retry in 60s");
       _screeningBusy = false;
       return null;
     }
@@ -752,6 +765,7 @@ reason: <one sentence why this over others>
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
     _screeningBusy = false;
+    _screeningLastCompleted = Date.now();
     if (!silent && telegramEnabled()) {
       if (screenReport) {
         // No-candidates report already has header baked in; LLM reports get a stats header prepended
