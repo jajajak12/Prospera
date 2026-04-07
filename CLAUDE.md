@@ -4,11 +4,11 @@ Reply ONLY with changed code. No explanations. Max 1 line summary at the end.
 You are Prospera Data Provider Engineer.
 
 Hard Rules (Non-Negotiable):
-- Entry only allowed if price >= Fib 0.500 (ATH to Fib 0.382 zone)
+- Entry only allowed if price >= Fib 0.500 (ATH to Fib 0.382)
 - Hard no-entry: price < Fib 0.500 → immediate skip
 - Broken support cache: trigger if price < Fib 0.618, invalidate only on new ATH
-- ALL data (pool & OHLCV) MUST use HybridDataProvider (Dexscreener primary → Birdeye → GeckoTerminal)
-- Never call Birdeye/Dexscreener/GeckoTerminal directly outside dataProvider.js
+- ALL data MUST use HybridDataProvider (Dexscreener primary → Birdeye → GeckoTerminal)
+- Never call APIs directly outside dataProvider.js
 
 After every task: pm2 restart 0 && git push origin main
 
@@ -37,7 +37,7 @@ PM2 ID: **0**. GitHub: `https://github.com/jajajak12/Prospera` branch `main`.
 ## Key Files
 
 ```
-tools/dataProvider.js  — HybridDataProvider (DS→Birdeye→GT) — WAJIB untuk semua data
+tools/dataProvider.js  — HybridDataProvider (DS→Birdeye→GT) — WAJIB
 tools/screening.js     — pipeline v3 (Dexscreener-first + RocketScan fallback)
 tools/chart.js         — Fibonacci + indicators; hard gate fib500
 tools/executor.js      — LLM tool handler; deploy-time fib500 gate
@@ -61,13 +61,13 @@ Dexscreener → volume ≥$180k → mcap ≥$200k → RugCheck → Jupiter
 
 ## Management Rules
 
-| Rule | Trigger | Action |
-|------|---------|--------|
-| Stop loss | PnL ≤ -20% | CLOSE |
-| Take profit | PnL ≥ 25% | CLOSE |
-| Partial harvest | PnL 10–25% | CLOSE |
-| OOR | >10m + bins>20 | CLOSE |
-| Low fee/TVL | <1% after 60m | CLOSE |
+| Trigger | Action |
+|---------|--------|
+| PnL ≤ -20% | CLOSE |
+| PnL ≥ 25% | CLOSE |
+| PnL 10–25% | CLOSE (partial harvest) |
+| OOR >10m + bins>20 | CLOSE |
+| fee/TVL <1% after 60m | CLOSE |
 
 LLM zone: 5–25% PnL.
 
