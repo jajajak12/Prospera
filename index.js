@@ -52,6 +52,11 @@ if (!lpKey) {
 }
 log("startup", `LPAgent: primary=${lpKey ? "YES (len=" + lpKey.length + ")" : "MISSING"} backup=${lpKeyBackup ? "YES (len=" + lpKeyBackup.length + ")" : "MISSING"}`);
 
+// MiniMax key check — log provider decision transparently
+const mmKeyRaw = process.env.LPAGENT_API_KEY?.trim() || "";
+const mmKeyValid = !!(mmKeyRaw && mmKeyRaw !== "placeholder" && mmKeyRaw.length > 10);
+log("startup", `LLM Provider: ${mmKeyValid ? "MiniMax" : "OpenRouter (MiniMax key MISSING/INVALID)"} | key preview: ${mmKeyValid ? mmKeyRaw.slice(0, 10) + "..." : "N/A"}`);
+
 // Also warn if Telegram not configured (non-fatal)
 const _tel = telegramEnabled();
 log("startup", `Telegram: bot=${_tel ? "ACTIVE" : "DISABLED"} chatId=${process.env.TELEGRAM_CHAT_ID || "MISSING"}`);

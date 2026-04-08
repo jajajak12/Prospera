@@ -95,12 +95,13 @@ import {
 
 // Two immutable client instances — one per provider. No mutation.
 // Initialized at module scope. getClient() selects based on circuit state.
-// MiniMax key is invalid (401) — use OpenRouter as primary for agent calls.
-const _minimaxKeyValid = !!(config.llm?.minimaxApiKey && config.llm.minimaxApiKey !== "placeholder" && config.llm.minimaxApiKey.length > 10);
+// Key validation happens at startup; transparent fallback to OpenRouter on 401.
+const _minimaxKeyRaw = config.llm?.minimaxApiKey || "";
+const _minimaxKeyValid = !!(_minimaxKeyRaw && _minimaxKeyRaw !== "placeholder" && _minimaxKeyRaw.length > 10);
 
 const minimaxClient = new OpenAI({
   baseURL: "https://api.minimax.chat/v1",
-  apiKey: _minimaxKeyValid ? config.llm.minimaxApiKey : "INVALID_KEY",
+  apiKey: _minimaxKeyValid ? _minimaxKeyRaw : "INVALID_KEY",
   timeout: 5 * 60 * 1000,
 });
 
@@ -168,12 +169,16 @@ export async function agentLoop(
         // Get provider config (respects circuit state — may be openrouter during fallback)
         const { model: usedModel, provider } = getProviderConfig();
         const client = getClient();
+        const _keyHint = provider === "minimax" && _minimaxKeyValid ? _minimaxKeyRaw.slice(0, 10) + "..." : "N/A";
 
         if (attempt > 0) {
-          log("agent", `Retry attempt ${attempt}/${MAX_ATTEMPTS} with ${provider} (${usedModel})`);
+          log("agent", `Retry ${attempt}/${MAX_ATTEMPTS} with ${provider} (${usedModel})`);
+        } else {
+          log("agent", `LLM call → ${provider} | model=${usedModel} | key=${_keyHint}`);
         }
 
         try {
+          const _t0 = Date.now();
           response = await client.chat.completions.create({
             model: usedModel,
             messages,
@@ -182,6 +187,7 @@ export async function agentLoop(
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           });
+          log("agent", `LLM response ← ${provider} | ${Date.now() - _t0}ms | status=ok`);
 
           // Success
           recordSuccess(correlationId);
@@ -195,6 +201,11 @@ export async function agentLoop(
 
           if (!isRetryable) {
             // Non-retryable error (auth, invalid request, etc.) — record + propagate
+            if (provider === "minimax" && errCode === 401) {
+              log("error", `MiniMax 401 — key invalid → switching to OpenRouter | msg=${errMsg.slice(0, 120)}`);
+            } else {
+              log("error", `LLM error ${provider} | status=${errCode} | msg=${errMsg.slice(0, 120)}`);
+            }
             recordFailure(apiError, correlationId);
             throw apiError;
           }
