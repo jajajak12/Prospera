@@ -22,7 +22,16 @@ const MANAGEMENT_LOCK_GAP_MS = 45_000; // management cooldown antar run
 export function readScreeningLock() {
   try {
     if (!fs.existsSync(SCREENING_LOCK_PATH)) return null;
-    return JSON.parse(fs.readFileSync(SCREENING_LOCK_PATH, "utf8"));
+    const lock = JSON.parse(fs.readFileSync(SCREENING_LOCK_PATH, "utf8"));
+    // Stale lock: previous process died or restarted — treat as invalid
+    if (lock?.status === "running" && lock?.pid !== process.pid) {
+      const staleAge = Date.now() - lock.ts;
+      const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
+      if (staleAge > STALE_THRESHOLD_MS) {
+        return null; // lock is stale, treat as no lock
+      }
+    }
+    return lock;
   } catch { return null; }
 }
 
@@ -39,7 +48,16 @@ export function writeScreeningLock(status) {
 export function readManagementLock() {
   try {
     if (!fs.existsSync(MANAGEMENT_LOCK_PATH)) return null;
-    return JSON.parse(fs.readFileSync(MANAGEMENT_LOCK_PATH, "utf8"));
+    const lock = JSON.parse(fs.readFileSync(MANAGEMENT_LOCK_PATH, "utf8"));
+    // Stale lock: previous process died or restarted — treat as invalid
+    if (lock?.status === "running" && lock?.pid !== process.pid) {
+      const staleAge = Date.now() - lock.ts;
+      const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
+      if (staleAge > STALE_THRESHOLD_MS) {
+        return null;
+      }
+    }
+    return lock;
   } catch { return null; }
 }
 
