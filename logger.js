@@ -21,6 +21,7 @@
 
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import winston from "winston";
 import "winston-daily-rotate-file";
 
@@ -36,15 +37,21 @@ if (!fs.existsSync(LOG_DIR)) {
 function ctxSuffix(ctx) {
   if (!ctx || typeof ctx !== "object") return "";
   const parts = [];
-  if (ctx.pair)           parts.push(`pair=${ctx.pair}`);
-  if (ctx.pool)           parts.push(`pool=${String(ctx.pool).slice(0, 8)}`);
-  if (ctx.position)       parts.push(`pos=${String(ctx.position).slice(0, 8)}`);
-  if (ctx.token)          parts.push(`token=${String(ctx.token).slice(0, 8)}`);
-  if (ctx.confluenceScore != null) parts.push(`confluence=${ctx.confluenceScore}`);
-  if (ctx.pnl != null)    parts.push(`pnl=${ctx.pnl >= 0 ? "+" : ""}${ctx.pnl}%`);
-  if (ctx.action)         parts.push(`action=${ctx.action}`);
-  if (ctx.reason)         parts.push(`reason=${ctx.reason}`);
-  if (ctx.step)           parts.push(`step=${ctx.step}`);
+  if (ctx.pair)              parts.push(`pair=${ctx.pair}`);
+  if (ctx.pool)              parts.push(`pool=${String(ctx.pool).slice(0, 8)}`);
+  if (ctx.position)          parts.push(`pos=${String(ctx.position).slice(0, 8)}`);
+  if (ctx.token)             parts.push(`token=${String(ctx.token).slice(0, 8)}`);
+  if (ctx.symbol)            parts.push(`sym=${ctx.symbol}`);
+  if (ctx.fibLevel != null)  parts.push(`fib=${ctx.fibLevel}`);
+  if (ctx.rsi != null)       parts.push(`rsi=${ctx.rsi}`);
+  if (ctx.exposurePct != null) parts.push(`exp=${ctx.exposurePct}%`);
+  if (ctx.confluenceScore != null) parts.push(`conf=${ctx.confluenceScore}`);
+  if (ctx.pnl != null)       parts.push(`pnl=${ctx.pnl >= 0 ? "+" : ""}${ctx.pnl}%`);
+  if (ctx.action)            parts.push(`action=${ctx.action}`);
+  if (ctx.skipReason)        parts.push(`skip=${ctx.skipReason}`);
+  if (ctx.reason)            parts.push(`reason=${ctx.reason}`);
+  if (ctx.step)              parts.push(`step=${ctx.step}`);
+  if (ctx.correlationId)     parts.push(`id=${ctx.correlationId}`);
   return parts.length ? ` | ${parts.join(" ")}` : "";
 }
 
@@ -94,7 +101,25 @@ const winstonLogger = winston.createLogger({
   ],
 });
 
-// ── Core log() function ──────────────────────────────────────────────────────
+// Short 8-char hex ID for correlating related log lines
+export function shortId() {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+/**
+ * Correlation-aware log with structured ctx + auto shortId.
+ * @param {string} category  — e.g. "screening", "management"
+ * @param {string} message
+ * @param {object} [meta]    — any structured data (symbol, fibLevel, rsi, exposurePct, etc.)
+ */
+export function logWithId(category, message, meta = {}) {
+  const id = shortId();
+  const level = category.includes("error") ? "error"
+    : category.includes("warn")  ? "warn"
+    : "info";
+  winstonLogger.log(level, `[${id}] ${message}`, { category, id, ctx: { ...meta, correlationId: id } });
+  return id; // caller can use it for chained logs
+}
 
 /**
  * Primary log function.
@@ -182,6 +207,5 @@ export function logSnapshot(snapshot) {
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────
-
 export { log };
 export default log;

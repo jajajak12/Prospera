@@ -54,7 +54,7 @@ function applySweepProposal(proposal) {
   reloadScreeningThresholds();
 }
 import { agentLoop } from "./agent.js";
-import { log } from "./logger.js";
+import { log, logWithId } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
