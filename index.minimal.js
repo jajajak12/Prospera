@@ -22,23 +22,13 @@ import { fileURLToPath } from "url";
 import cron from "node-cron";
 
 // Load .env manually — no dotenv
-// Handles: KEY=value, KEY="value", KEY='value'
-// Uses __dirname so path is reliable regardless of CWD
 (() => {
   try {
-    const envPath = path.join(__dirname, ".env");
-    const env = fs.readFileSync(envPath, "utf8");
+    const env = fs.readFileSync(".env", "utf8");
     for (const line of env.split("\n")) {
       const m = line.match(/^([^#=\s]+)\s*=\s*(.*)$/);
-      if (m) {
-        let val = m[2].trim();
-        // Strip surrounding quotes
-        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-          val = val.slice(1, -1);
-        }
-        if (!Object.prototype.hasOwnProperty.call(process.env, m[1])) {
-          process.env[m[1]] = val;
-        }
+      if (m && !Object.prototype.hasOwnProperty.call(process.env, m[1])) {
+        process.env[m[1]] = m[2].trim();
       }
     }
   } catch (_) {}
@@ -61,20 +51,6 @@ import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositi
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
-
-// ── Startup validation ─────────────────────────────────────────────────────────
-const lpKey     = process.env.LPAGENT_API_KEY;
-const lpKeyBackup = process.env.LPAGENT_API_KEY_BACKUP;
-if (!lpKey) {
-  console.error("FATAL: LPAGENT_API_KEY not set in .env — cannot start");
-  process.exit(1);
-}
-log("startup", `LPAgent keys loaded: primary=${lpKey ? "YES" : "MISSING"} backup=${lpKeyBackup ? "YES" : "MISSING"}`);
-
-// Also warn if Telegram not configured (non-fatal)
-if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
-  log("startup", "WARNING: Telegram not configured — notifications disabled");
-}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const _startTime = Date.now();
@@ -118,22 +94,8 @@ export async function runManagementCycle({ silent = false } = {}) {
   if (!lockResult.acquired) { _m("management", "Lock not acquired"); return null; }
 
   const prePositions = await getMyPositions({ force: true }).catch(() => null);
-
-  // Distinguish LPAgent error from truly zero positions
-  if (!prePositions || prePositions.error) {
-    _m("warn", `LPAgent unavailable — ${prePositions?.error ?? "network error"} — skipping cycle (positions unknown)`);
-    logSkip("lpagent_unavailable", { error: prePositions?.error ?? "network_error" }, corrId);
-    completeManagementLock();
-    return null;
-  }
-
   const preCount = prePositions?.positions?.length ?? 0;
-  if (preCount === 0) {
-    _m("management", "No open positions");
-    logSkip("no_open_positions", {}, corrId);
-    completeManagementLock();
-    return null;
-  }
+  if (preCount === 0) { logSkip("no_open_positions", {}, corrId); return null; }
 
   _managementBusy = true;
   timers.managementLastRun = Date.now();
@@ -144,11 +106,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   try {
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
-    if (!livePositions || livePositions.error) {
-      _m("error", `LPAgent unavailable: ${livePositions?.error ?? "network error"}`);
-      completeManagementLock();
-      return null;
-    }
+    if (livePositions?.error) { _m("management", "LPAgent error"); return null; }
     positions = livePositions?.positions || [];
     if (positions.length === 0) {
       if (Date.now() - _screeningLastTriggered > SCREENING_INTERVAL_MS) {
@@ -246,13 +204,6 @@ export async function runScreeningCycle({ silent = false } = {}) {
   let prePositions, preBalance, deployAmount;
   try {
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
-
-    if (!prePositions || prePositions.error) {
-      _s("error", `LPAgent unavailable: ${prePositions?.error ?? "network error"}`);
-      _release();
-      return null;
-    }
-
     if (prePositions.total_positions >= config.risk.maxPositions) { logSkip("max_positions", {}, corrId); _release(); return null; }
     deployAmount = getPositionSizing(preBalance.sol);
     if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
