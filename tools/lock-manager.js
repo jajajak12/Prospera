@@ -5,7 +5,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { logWithId } from "../logger.js";
+import { logWithId } from "../log-utils.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

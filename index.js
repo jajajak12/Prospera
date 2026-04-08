@@ -54,8 +54,8 @@ function applySweepProposal(proposal) {
   reloadScreeningThresholds();
 }
 import { agentLoop } from "./agent.js";
-import { log, logWithId } from "./logger.js";
-import { logSkip } from "./log-utils.js";
+import { log } from "./logger.js";
+import { logWithId, logSkip } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
@@ -208,43 +208,37 @@ function stopCronJobs() {
 // ═══════════════════════════════════════════
 
 export async function runManagementCycle({ silent = false } = {}) {
-  // Layer 1: in-memory busy flag — cycle sedang berjalan di proses ini
   if (_managementBusy) {
-    log("cron", "Management skipped — cycle sedang berjalan (in-memory busy flag)");
+    logWithId("management", "Cycle busy — skipped", { skipReason: "busy" });
     return null;
   }
-  // Layer 2: screening sedang berjalan — tunggu selesai dulu
   if (_screeningBusy) {
-    log("cron", "Management skipped — screening cycle sedang berjalan");
+    logWithId("management", "Screening running — skipped", { skipReason: "screening_busy" });
     return null;
   }
-  // Layer 3: file-based lock via lock-manager
   const lockResult = acquireManagementLock();
   if (!lockResult.acquired) {
-    log("cron", `Management skipped — ${lockResult.reason}`);
+    logWithId("management", "Lock not acquired", { skipReason: "lock", lockReason: lockResult.reason });
     return null;
   }
 
-  // Layer 4: timestamp in-memory check
   const msSinceCompleted = Date.now() - _managementLastCompleted;
   const MANAGEMENT_MIN_GAP_MS = 45_000;
   if (_managementLastCompleted > 0 && msSinceCompleted < MANAGEMENT_MIN_GAP_MS) {
-    log("cron", `Management skipped — cycle terakhir selesai ${Math.round(msSinceCompleted / 1000)}s lalu (min gap: ${MANAGEMENT_MIN_GAP_MS / 1000}s)`);
+    logWithId("management", "Min gap not reached", { skipReason: "min_gap", msSinceCompleted, minGapMs: MANAGEMENT_MIN_GAP_MS });
     return null;
   }
 
-  // ── Pre-check: skip entire cycle if no open positions ──────────────────
-  // Do this BEFORE setting _managementBusy to avoid blocking next cycle
   const prePositions = await getMyPositions({ force: true }).catch(() => null);
   const prePositionCount = prePositions?.positions?.length ?? 0;
   if (prePositionCount === 0) {
-    log("cron", "No open positions — skipping management cycle");
+    logSkip("no_open_positions", { skipReason: "no_positions" });
     return null;
   }
 
   _managementBusy = true;
   timers.managementLastRun = Date.now();
-  log("cron", `Starting management cycle (${prePositionCount} open position(s))`);
+  logWithId("management", `Starting cycle`, { openPositions: prePositionCount });
 
   const screeningIntervalMs = (config.schedule.screeningIntervalMin || 15) * 60_000;
 
@@ -256,7 +250,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     // LPAgent unavailable — skip cycle entirely, do NOT trigger screening
     // (we don't know actual position state, so don't act on stale assumptions)
     if (livePositions?.error) {
-      log("cron", `Management cycle skipped — ${livePositions.error}`);
+      logWithId("management", "LPAgent error — skipped", { skipReason: "lpagent_error", error: livePositions.error });
       return null;
     }
 
@@ -264,11 +258,11 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     if (positions.length === 0) {
       if (Date.now() - _screeningLastTriggered > screeningIntervalMs) {
-        log("cron", "No open positions — triggering screening cycle");
-        runScreeningCycle().catch(e => log("cron_error", `Triggered screening failed: ${e.message}`));
+        logWithId("management", "No positions — triggering screening", { skipReason: "no_positions" });
+        runScreeningCycle().catch(e => logWithId("error", `Triggered screening failed`, { error: e.message }));
       } else {
         const waitMin = Math.ceil((screeningIntervalMs - (Date.now() - _screeningLastTriggered)) / 60000);
-        log("cron", `No open positions — screening cooldown active (${waitMin}m left)`);
+        logWithId("management", "No positions — screening cooldown active", { skipReason: "cooldown", waitMin });
       }
       return null;
     }
@@ -476,20 +470,20 @@ After acting, write a brief one-line result per position.
       const lock = readScreeningLock();
       const lockAge = lock ? Date.now() - lock.ts : Infinity;
       if (lock && lock.status === "running") {
-        log("cron", `Post-management: screening still locked (pid ${lock.pid}, ${Math.round(lockAge/1000)}s ago) — waiting`);
+        logWithId("management", "Post-management: screening still locked — waiting", { lockPid: lock.pid, lockAgeSec: Math.round(lockAge / 1000) });
         setTimeout(() => {
           if (!(_managementBusy || _screeningBusy)) {
-            runScreeningCycle().catch(e => log("cron_error", `Triggered screening failed: ${e.message}`));
+            runScreeningCycle().catch(e => logWithId("error", `Triggered screening failed`, { error: e.message }));
           }
         }, Math.max(SCREENING_LOCK_GAP_MS - lockAge + 5000, 5000));
       } else {
-        log("cron", `Post-management: ${afterCount}/${config.risk.maxPositions} positions — triggering screening`);
-        runScreeningCycle().catch(e => log("cron_error", `Triggered screening failed: ${e.message}`));
+        logWithId("management", `Post-management: ${afterCount}/${config.risk.maxPositions} positions — triggering screening`, { openPositions: afterCount, maxPositions: config.risk.maxPositions });
+        runScreeningCycle().catch(e => logWithId("error", `Triggered screening failed`, { error: e.message }));
       }
     }
 
   } catch (error) {
-    log("cron_error", `Management cycle failed: ${error.message}`);
+    logWithId("error", `Management cycle failed`, { error: error.message });
     mgmtReport = `Management cycle failed: ${error.message}`;
   } finally {
     _managementBusy = false;
@@ -609,8 +603,8 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   }
 
   timers.screeningLastRun = Date.now();
-  log("cron", `Starting Fibonacci screening cycle [model: ${config.llm.screeningModel}]`);
-  log("cron", `Deploy amount: ${deployAmount} SOL (wallet: ${preBalance.sol} SOL)`);
+  logWithId("screening", `Starting Fibonacci screening cycle`, { model: config.llm.screeningModel, deployAmountSol: deployAmount, walletSol: preBalance.sol });
+  logWithId("screening", `Deploy amount: ${deployAmount} SOL`, { walletSol: preBalance.sol });
   let screenReport = null;
   let topResult    = null;
 
@@ -624,8 +618,8 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     // (partial reset — not full 0, to avoid double-fire on management's next tick)
     if ((topResult?.total_screened ?? 0) === 0) {
       _screeningLastTriggered = Date.now() - (config.schedule.screeningIntervalMin * 60 * 1000) + 60_000;
-      log("cron", "Screening aborted — discovery returned 0 tokens, retry in 60s");
-      return null; // finally releases lock
+      logWithId("error", `Screening aborted — 0 tokens returned`, { skipReason: "zero_tokens" });
+      return _releaseAndSkip(null);
     }
 
     if (candidates.length === 0) {
