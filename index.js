@@ -909,7 +909,13 @@ export function startCronJobs() {
         log("cron", "Management cron fired — skipped (screening sedang berjalan)");
         return;
       }
-      const lockAge = _readLockAge();
+      const lock = readManagementLock();
+      if (!lock) {
+        await runManagementCycle();
+        return;
+      }
+      const lockAge = Date.now() - lock.ts;
+      const MANAGEMENT_MIN_GAP_MS = 45_000;
       if (lockAge < MANAGEMENT_MIN_GAP_MS) {
         log("cron", `Management cron fired — skipped (lock file: ${Math.round(lockAge / 1000)}s lalu < ${MANAGEMENT_MIN_GAP_MS / 1000}s min gap)`);
         return;
@@ -935,10 +941,9 @@ export function startCronJobs() {
       for (const p of result.positions) {
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
         if (exit) {
-          // Gunakan lock file age (cross-restart) sebagai primary cooldown,
-          // bukan _pollTriggeredAt yang terpisah — ini memastikan cron dan poller
-          // share satu cooldown yang sama.
-          const lockAge = _readLockAge();
+          const lock = readManagementLock();
+          const lockAge = lock ? Date.now() - lock.ts : Infinity;
+          const MANAGEMENT_MIN_GAP_MS = 45_000;
           if (lockAge >= MANAGEMENT_MIN_GAP_MS) {
             log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — triggering management (lock age: ${Math.round(lockAge / 1000)}s)`);
             runManagementCycle({ silent: true }).catch(e => log("cron_error", `Poll-triggered management failed: ${e.message}`));
@@ -1459,7 +1464,9 @@ Commands:
   // Jika proses lama baru saja selesai cycle (<45s), skip startup management.
   // Ini mencegah double-cycle saat PM2 restart di tengah-tengah atau setelah cycle selesai.
   setTimeout(() => {
-    const lockAge = _readLockAge();
+    const lock = readManagementLock();
+    const lockAge = lock ? Date.now() - lock.ts : Infinity;
+    const MANAGEMENT_MIN_GAP_MS = 45_000;
     if (lockAge < MANAGEMENT_MIN_GAP_MS) {
       log("startup", `Startup management skipped — lock file menunjukkan cycle selesai ${Math.round(lockAge / 1000)}s lalu (< ${MANAGEMENT_MIN_GAP_MS / 1000}s)`);
     } else {

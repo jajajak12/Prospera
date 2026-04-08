@@ -105,9 +105,10 @@ export const config = {
     temperature:     u.temperature     ?? 0.373,
     maxTokens:       u.maxTokens       ?? 4096,
     maxSteps:        u.maxSteps        ?? 12,
-    screeningModel:  u.screeningModel  ?? "qwen/qwen3-coder-480b",
-    managementModel: u.managementModel ?? "deepseek/deepseek-v3.2",
-    generalModel:    u.generalModel    ?? "deepseek/deepseek-v3.2",
+    screeningModel:  u.screeningModel  ?? "minimax-2.7",
+    managementModel: u.managementModel ?? "minimax-2.7",
+    generalModel:    u.generalModel    ?? "minimax-2.7",
+    minimaxApiKey:   u.minimaxApiKey   ?? null,
   },
 
   // ─── Common Token Mints ────────────────

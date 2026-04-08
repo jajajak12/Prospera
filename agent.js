@@ -82,11 +82,21 @@ import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 
-const client = new OpenAI({
-  baseURL: process.env.LLM_BASE_URL || "https://api.minimax.chat/v1",
-  apiKey:  process.env.LLM_API_KEY || config.llm?.minimaxApiKey,
-  timeout: 5 * 60 * 1000,
-});
+// Defer client creation — config.llm.minimaxApiKey baru available setelah user-config.json di-load
+let _client = null;
+function getClient() {
+  if (_client) return _client;
+  const apiKey = process.env.LLM_API_KEY
+    || (typeof config !== "undefined" ? config.llm?.minimaxApiKey : null)
+    || process.env.OPENROUTER_API_KEY
+    || "placeholder";
+  _client = new OpenAI({
+    baseURL: process.env.LLM_BASE_URL || "https://api.minimax.chat/v1",
+    apiKey,
+    timeout: 5 * 60 * 1000,
+  });
+  return _client;
+}
 
 const DEFAULT_MODEL = process.env.LLM_MODEL || config.llm?.generalModel || "minimax-2.7";
 
@@ -142,7 +152,7 @@ export async function agentLoop(
       const toolChoice = (step === 0 && agentType === "GENERAL" && ACTION_INTENTS.test(goal)) ? "required" : "auto";
 
       for (let attempt = 0; attempt < 3; attempt++) {
-        response = await client.chat.completions.create({
+        response = await getClient().chat.completions.create({
           model: usedModel,
           messages,
           tools: getToolsForRole(agentType, goal),
@@ -160,13 +170,13 @@ export async function agentLoop(
             fallbackIndex++;
             usedModel = FALLBACK_CHAIN[fallbackIndex - 1];
             client.baseURL = "https://openrouter.ai/api/v1";
-            client.apiKey = process.env.OPENROUTER_API_KEY;
+            client.apiKey = process.env.OPENROUTER_API_KEY || "placeholder";
             log("warn", `Minimax limit, fallback to OpenRouter`, { model: usedModel });
           } else {
             log("agent", `Provider error ${errCode}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
             usedModel = activeModel; // reset to Minimax for retry
             client.baseURL = "https://api.minimax.chat/v1";
-            client.apiKey = process.env.LLM_API_KEY || config.llm?.minimaxApiKey;
+            client.apiKey = process.env.LLM_API_KEY || "placeholder";
             await new Promise(r => setTimeout(r, wait));
           }
         } else {
