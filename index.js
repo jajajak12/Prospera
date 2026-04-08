@@ -235,9 +235,10 @@ export async function runManagementCycle({ silent = false } = {}) {
   timers.managementLastRun = Date.now();
   log("cron", "Starting management cycle");
 
+  const screeningIntervalMs = (config.schedule.screeningIntervalMin || 15) * 60_000;
+
   let mgmtReport = null;
   let positions = [];
-  const screeningCooldownMs = config.schedule.screeningIntervalMin * 60 * 1000;
 
   try {
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
@@ -252,11 +253,11 @@ export async function runManagementCycle({ silent = false } = {}) {
     positions = livePositions?.positions || [];
 
     if (positions.length === 0) {
-      if (Date.now() - _screeningLastTriggered > screeningCooldownMs) {
+      if (Date.now() - _screeningLastTriggered > screeningIntervalMs) {
         log("cron", "No open positions — triggering screening cycle");
         runScreeningCycle().catch(e => log("cron_error", `Triggered screening failed: ${e.message}`));
       } else {
-        const waitMin = Math.ceil((screeningCooldownMs - (Date.now() - _screeningLastTriggered)) / 60000);
+        const waitMin = Math.ceil((screeningIntervalMs - (Date.now() - _screeningLastTriggered)) / 60000);
         log("cron", `No open positions — screening cooldown active (${waitMin}m left)`);
       }
       return null;
@@ -461,9 +462,9 @@ After acting, write a brief one-line result per position.
     // Trigger screening after management — wait for lock to clear first
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
-    const screeningCooldownMs = (config.schedule.screeningIntervalMin || 15) * 60_000;
+    const screeningIntervalMs = (config.schedule.screeningIntervalMin || 15) * 60_000;
     const SCREENING_LOCK_GAP_MS = 60_000;
-    if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningCooldownMs) {
+    if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningIntervalMs) {
       const lock = readScreeningLock();
       const lockAge = lock ? Date.now() - lock.ts : Infinity;
       if (lock && lock.status === "running") {
