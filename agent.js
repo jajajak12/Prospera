@@ -93,20 +93,21 @@ import {
   setCorrelationId,
 } from "./tools/circuit-breaker.js";
 
-// Defer client creation — config.llm.minimaxApiKey baru available setelah user-config.json di-load
-let _client = null;
+// Two separate client instances — one per provider. No mutation.
+const minimaxClient = new OpenAI({
+  baseURL: "https://api.minimax.chat/v1",
+  apiKey: process.env.LLM_API_KEY || "placeholder",
+  timeout: 5 * 60 * 1000,
+});
+
+const openrouterClient = new OpenAI({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: process.env.OPENROUTER_API_KEY || "placeholder",
+  timeout: 5 * 60 * 1000,
+});
+
 function getClient() {
-  if (_client) return _client;
-  const apiKey = process.env.LLM_API_KEY
-    || (typeof config !== "undefined" ? config.llm?.minimaxApiKey : null)
-    || process.env.OPENROUTER_API_KEY
-    || "placeholder";
-  _client = new OpenAI({
-    baseURL: process.env.LLM_BASE_URL || "https://api.minimax.chat/v1",
-    apiKey,
-    timeout: 5 * 60 * 1000,
-  });
-  return _client;
+  return getActiveProvider() === "openrouter" ? openrouterClient : minimaxClient;
 }
 
 const DEFAULT_MODEL = process.env.LLM_MODEL || config.llm?.generalModel || "minimax-2.7";
@@ -159,12 +160,8 @@ export async function agentLoop(
 
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         // Get provider config (respects circuit state — may be openrouter during fallback)
-        const { baseURL, apiKey, model: usedModel, provider } = getProviderConfig();
+        const { model: usedModel, provider } = getProviderConfig();
         const client = getClient();
-
-        // Apply provider config to existing client instance
-        client.baseURL = baseURL;
-        client.apiKey = apiKey;
 
         if (attempt > 0) {
           log("agent", `Retry attempt ${attempt}/${MAX_ATTEMPTS} with ${provider} (${usedModel})`);
