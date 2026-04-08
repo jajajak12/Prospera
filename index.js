@@ -115,8 +115,10 @@ export async function runManagementCycle({ silent = false } = {}) {
   }
 
   // ── Has positions → acquire lock and run full management ───────────────────
+  let lockAcquired = false;
   const lockResult = acquireManagementLock();
   if (!lockResult.acquired) { _m("management", "Lock not acquired"); return null; }
+  lockAcquired = true;
 
   _managementBusy = true;
   timers.managementLastRun = Date.now();
@@ -194,7 +196,7 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
   } finally {
     _managementBusy = false;
     _managementLastCompleted = Date.now();
-    completeManagementLock();
+    if (lockAcquired) completeManagementLock();
     if (!silent && telegramEnabled() && mgmtReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
       sendMessage(`🔄 Management Cycle [${ts}] ID: ${corrId}\n${stripThink(mgmtReport)}`).catch(() => {});
@@ -243,8 +245,12 @@ export async function runScreeningCycle({ silent = false } = {}) {
     if (cap.level === "hard_pause") {
       _exposureHardPausedUntil = cap.pauseUntil;
       _s("error", "HARD CAP TRIGGERED");
-      if (telegramEnabled()) sendMessage(`Screening [${corrId}] — HARD CAP TRIGGERED, pausing entries`).catch(() => {});
+      if (telegramEnabled()) sendMessage(`🔍 Fibonacci Screening — HARD CAP ${cap.exposurePct.toFixed(1)}% TRIGGERED`).catch(() => {});
       _release(); return null;
+    }
+    if (cap.level === "warning") {
+      _s("warn", `Exposure warning: ${cap.exposurePct.toFixed(1)}%`);
+      if (telegramEnabled()) sendMessage(`⚠️ Exposure warning: ${cap.exposurePct.toFixed(1)}% (max ${cap.hardCapPct.toFixed(1)}%)`).catch(() => {});
     }
   } catch (e) {
     _s("error", `Screening error: ${e.message}`);

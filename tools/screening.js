@@ -131,7 +131,7 @@ function fix(n, d) { return n != null ? Number(n.toFixed(d)) : null; }
  * Fetches top-boosted + latest token profiles, then enriches with pair data
  * (price, mcap, 1h volume) via the tokens endpoint.
  *
- * Returns unique base tokens with SOL pair: { mint, symbol, price, mcap, _vol5m }
+ * Returns unique base tokens with SOL pair: { mint, symbol, price, mcap, _volH1 }
  */
 async function discoverTokensFromDexscreener() {
   const seen     = new Set();
@@ -188,13 +188,13 @@ async function discoverTokensFromDexscreener() {
       if (!mint) continue;
       const volH1 = parseFloat(pair.volume?.h1 ?? 0) || 0;
       const existing = byMint.get(mint);
-      if (!existing || volH1 > (existing._vol5m ?? 0)) {
+      if (!existing || volH1 > (existing._volH1 ?? 0)) {
         byMint.set(mint, {
           mint,
           symbol: pair.baseToken?.symbol ?? "UNKNOWN",
           price:  parseFloat(pair.priceUsd) || null,
           mcap:   parseFloat(pair.fdv ?? pair.marketCap) || null,
-          _vol5m: Math.round(volH1),
+          _volH1: Math.round(volH1),
         });
       }
     }
@@ -468,22 +468,22 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   log.screening(`Step 1 — Discovery: ${eligible.length} tokens (raw: ${dexTokens.length}, excl blacklist/occupied)`);
 
   // ── Step 2: 1h volume filter ─────────────────────────────────────────────
-  // Dexscreener discovery already provides _vol5m (h1 volume) for tokens with SOL pairs.
+  // Dexscreener discovery already provides _volH1 (h1 volume) for tokens with SOL pairs.
   // Only fetch separately for tokens where volume wasn't available in discovery.
   {
-    const missingVol = eligible.filter(t => t._vol5m == null).map(t => t.mint);
+    const missingVol = eligible.filter(t => t._volH1 == null).map(t => t.mint);
     const volMap = missingVol.length > 0
       ? await batchGetTokenVolumeH1(missingVol).catch(() => new Map())
       : new Map();
     const before = eligible.length;
     eligible = eligible.filter(t => {
-      const volH1 = t._vol5m ?? volMap.get(t.mint);
+      const volH1 = t._volH1 ?? volMap.get(t.mint);
       if (volH1 == null) return true; // API miss → keep
       if (volH1 < s.minVolume) {
         log("screening", `  ${t.symbol}: SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume}`);
         return false;
       }
-      t._vol5m = Math.round(volH1);
+      t._volH1 = Math.round(volH1);
       return true;
     });
     log.screening(`Step 2 — Volume filter: ${eligible.length}/${before} passed (min 1h $${s.minVolume})`);
@@ -609,10 +609,10 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   // Birdeye rate limit = 60 RPM. Each analyzeSignal = 2 Birdeye calls
   // (OHLCV 1m + daily candles). Max candidates = floor(60 ÷ 2) = 30.
   // We cap at 10 to stay well within safe margin (only ~33% of limit).
-  // Ranking by volume (_vol5m) before expensive Meteora API calls = efficiency.
+  // Ranking by volume (_volH1) before expensive Meteora API calls = efficiency.
   // Pre-pool cap means we only fetch pools for the top N candidates.
   const maxTechAnalysis = s.maxTechnicalAnalysisCandidates ?? 10;
-  const rankedEligible = [...eligible].sort((a, b) => (b._vol5m ?? 0) - (a._vol5m ?? 0));
+  const rankedEligible = [...eligible].sort((a, b) => (b._volH1 ?? 0) - (a._volH1 ?? 0));
   const topCandidates = rankedEligible.slice(0, maxTechAnalysis);
   if (eligible.length > maxTechAnalysis) {
     log.screening(`Pre-pool cap: top ${maxTechAnalysis} by volume selected from ${eligible.length} passing filters — Meteora/RocketScan calls now limited to ${maxTechAnalysis}, Birdeye = ${maxTechAnalysis * 2} RPM`);
@@ -736,7 +736,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
 
     candidates.push({
       ...pool,
-      volume_h1: token._vol5m ?? null,
+      volume_h1: token._volH1 ?? null,
       ath:       token._ath   ?? null,
       okx:       token._okx   ?? null,
       fib_signal: {
