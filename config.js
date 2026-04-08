@@ -30,7 +30,7 @@ export const config = {
   screening: {
     minTvl:        u.minTvl        ?? 5_000,
     maxTvl:        u.maxTvl        ?? 500_000,
-    minVolume:     u.minVolume     ?? 500,
+    minVolume:     u.minVolume     ?? 150_000,
     minOrganic:    u.minOrganic    ?? 60,
     minHolders:        u.minHolders        ?? 500,
     maxBundlePct:         u.maxBundlePct         ?? 30,
@@ -38,7 +38,7 @@ export const config = {
     maxTop10Pct:          u.maxTop10Pct          ?? 60,
     minTokenFeesSol:      u.minTokenFeesSol      ?? 25,
     athFilterPct:         u.athFilterPct         ?? null,
-    minMcap:       u.minMcap       ?? 150_000,
+    minMcap:       u.minMcap       ?? 200_000,
     maxMcap:       u.maxMcap       ?? 10_000_000,
     minBinStep:           u.minBinStep           ?? 80,
     maxBinStep:           u.maxBinStep           ?? 200,

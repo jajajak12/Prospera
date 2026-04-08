@@ -19,8 +19,8 @@ export const STRATEGIES = {
     screening: {
       minBinStep: 80,
       maxBinStep: 125,
-      minVolume:  20000,
-      minMcap:    150_000,
+      minVolume:  150_000,
+      minMcap:    200_000,
       maxMcap:    10_000_000,
       minFeeActiveTvlRatio: 0.05,
       candleLimit: 100,
