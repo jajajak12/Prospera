@@ -16,33 +16,12 @@
  * - Health server
  */
 
+import "./init.js"; // Load .env FIRST — before any other module
+
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron";
-
-// Load .env manually — no dotenv
-// Handles: KEY=value, KEY="value", KEY='value'
-// Uses __dirname so path is reliable regardless of CWD
-(() => {
-  try {
-    const envPath = path.join(__dirname, ".env");
-    const env = fs.readFileSync(envPath, "utf8");
-    for (const line of env.split("\n")) {
-      const m = line.match(/^([^#=\s]+)\s*=\s*(.*)$/);
-      if (m) {
-        let val = m[2].trim();
-        // Strip surrounding quotes
-        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-          val = val.slice(1, -1);
-        }
-        if (!Object.prototype.hasOwnProperty.call(process.env, m[1])) {
-          process.env[m[1]] = val;
-        }
-      }
-    }
-  } catch (_) {}
-})();
 
 // ── Imports ────────────────────────────────────────────────────────────────────
 import { acquireScreeningLock, completeScreeningLock, acquireManagementLock, completeManagementLock } from "./tools/lock-manager.js";
@@ -69,7 +48,7 @@ if (!lpKey) {
   console.error("FATAL: LPAGENT_API_KEY not set in .env — cannot start");
   process.exit(1);
 }
-log("startup", `LPAgent keys loaded: primary=${lpKey ? "YES" : "MISSING"} backup=${lpKeyBackup ? "YES" : "MISSING"}`);
+log("startup", `LPAgent: primary=${lpKey ? "YES (len=" + lpKey.length + ")" : "MISSING"} backup=${lpKeyBackup ? "YES (len=" + lpKeyBackup.length + ")" : "MISSING"}`);
 
 // Also warn if Telegram not configured (non-fatal)
 if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
@@ -122,7 +101,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   // Distinguish LPAgent error from truly zero positions
   if (!prePositions || prePositions.error) {
     _m("warn", `LPAgent unavailable — ${prePositions?.error ?? "network error"} — skipping cycle (positions unknown)`);
-    logSkip("lpagent_unavailable", { error: prePositions?.error ?? "network_error" }, corrId);
+    logSkip("lpagent_unavailable", { error: prePositions?.error ?? "network_error" }, corrId, "management");
     completeManagementLock();
     return null;
   }

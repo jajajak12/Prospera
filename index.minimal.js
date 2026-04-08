@@ -16,23 +16,12 @@
  * - Health server
  */
 
+import "./init.js"; // Load .env FIRST — before any other module
+
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron";
-
-// Load .env manually — no dotenv
-(() => {
-  try {
-    const env = fs.readFileSync(".env", "utf8");
-    for (const line of env.split("\n")) {
-      const m = line.match(/^([^#=\s]+)\s*=\s*(.*)$/);
-      if (m && !Object.prototype.hasOwnProperty.call(process.env, m[1])) {
-        process.env[m[1]] = m[2].trim();
-      }
-    }
-  } catch (_) {}
-})();
 
 // ── Imports ────────────────────────────────────────────────────────────────────
 import { acquireScreeningLock, completeScreeningLock, acquireManagementLock, completeManagementLock } from "./tools/lock-manager.js";

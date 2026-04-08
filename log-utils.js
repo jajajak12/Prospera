@@ -46,6 +46,6 @@ export function logCycleStart(cycleName) {
  * @param {string} [corrId]   — existing correlation ID to reuse (required for proper tracing)
  * @returns {string} correlationId
  */
-export function logSkip(reason, meta = {}, corrId = null) {
-  return logWithId("screening", `SKIP [${reason}]`, { ...meta, skipReason: reason }, corrId);
+export function logSkip(reason, meta = {}, corrId = null, cat = "screening") {
+  return logWithId(cat, `SKIP [${reason}]`, { ...meta, skipReason: reason }, corrId);
 }
