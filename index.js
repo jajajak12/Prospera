@@ -231,9 +231,18 @@ export async function runManagementCycle({ silent = false } = {}) {
     return null;
   }
 
+  // ── Pre-check: skip entire cycle if no open positions ──────────────────
+  // Do this BEFORE setting _managementBusy to avoid blocking next cycle
+  const prePositions = await getMyPositions({ force: true }).catch(() => null);
+  const prePositionCount = prePositions?.positions?.length ?? 0;
+  if (prePositionCount === 0) {
+    log("cron", "No open positions — skipping management cycle");
+    return null;
+  }
+
   _managementBusy = true;
   timers.managementLastRun = Date.now();
-  log("cron", "Starting management cycle");
+  log("cron", `Starting management cycle (${prePositionCount} open position(s))`);
 
   const screeningIntervalMs = (config.schedule.screeningIntervalMin || 15) * 60_000;
 
@@ -242,7 +251,6 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   try {
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
-
     // LPAgent unavailable — skip cycle entirely, do NOT trigger screening
     // (we don't know actual position state, so don't act on stale assumptions)
     if (livePositions?.error) {
@@ -462,8 +470,6 @@ After acting, write a brief one-line result per position.
     // Trigger screening after management — wait for lock to clear first
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
-    const screeningIntervalMs = (config.schedule.screeningIntervalMin || 15) * 60_000;
-    const SCREENING_LOCK_GAP_MS = 60_000;
     if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningIntervalMs) {
       const lock = readScreeningLock();
       const lockAge = lock ? Date.now() - lock.ts : Infinity;
