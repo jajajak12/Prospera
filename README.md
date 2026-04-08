@@ -7,7 +7,7 @@ Autonomous DLMM liquidity provider agent untuk pool Meteora di Solana. Menggabun
 ## Gambaran Umum
 
 Prospera adalah LP agent yang berjalan sepenuhnya otomatis:
-- Menemukan token Solana trending dari semua DEX via GeckoTerminal (discovery), lalu mencari pool Meteora DLMM-nya
+- Menemukan token Solana trending dari semua DEX via Dexscreener (discovery), lalu mencari pool Meteora DLMM-nya
 - Memfilter berdasarkan sinyal entry Fibonacci (level Fib dari ATH menggunakan candle Birdeye — OHLCV 1m + daily)
 - Opsional: backtest setiap kandidat di data OHLCV historis sebelum deploy
 - Menjalankan filter keamanan token berlapis (organic score, RugCheck bundle/honeypot, usia token, blacklist)
@@ -66,7 +66,7 @@ Dibatasi di [35, 90]. `bins_above` selalu 0.
 
 Diterapkan secara berurutan dari yang paling murah ke paling mahal — kegagalan di satu tahap langsung mengeliminasi pool:
 
-1. **Discovery GeckoTerminal** — token Solana trending dari semua DEX (~40 token, 2 halaman)
+1. **Discovery Dexscreener** — token Solana trending dari semua DEX via boosts + profiles (~40 token)
 2. **Blacklist** — `token-blacklist.json` (mint address) dan `dev-blocklist.json` (alamat deployer)
 3. **Volume 1h Dexscreener** — volume 1 jam terakhir aktual dari SEMUA DEX (`minVolume`), lebih stabil dari snapshot 5m
 4. **Pre-filter mcap** — dari data Dexscreener (`minMcap` / `maxMcap`)
@@ -82,23 +82,32 @@ Diterapkan secara berurutan dari yang paling murah ke paling mahal — kegagalan
 
 ## Data Providers & Hybrid Architecture
 
-Prospera menggunakan **HybridDataProvider** dengan prioritas yang jelas untuk setiap kebutuhan data:
+Prospera menggunakan **HybridDataProvider** dengan prioritas yang jelas — setiap provider dipilih berdasarkan use-case spesifik dan rate limit:
 
 | Priority | Provider | Digunakan Untuk |
 |----------|----------|----------------|
-| **Primary** | Dexscreener | Volume 1h, data pool (liquidity, price), market cap |
-| **Fallback 1** | Birdeye | Chart OHLCV, RSI, EMA, Fibonacci calculation |
-| **Fallback 2** | GeckoTerminal | Trending token discovery, backtest historis |
+| **Primary** | Dexscreener | Discovery trending, volume 1h, data pool (liquidity, price, mcap) |
+| **Birdeye** | Birdeye | Chart OHLCV, RSI, EMA, Fibonacci calculation **(HANYA untuk 10 kandidat terbaik)** |
+| **Last Resort** | GeckoTerminal | Backtest historis, fallback jika Dexscreener + Birdeye error |
+
+### Birdeye Rate Limit Protection
+
+Birdeye memiliki limit **60 RPM**. Karena setiap Fib analysis = 2 calls (1m candles + daily candles), maximum **10 kandidat** yang lolos ke tahap Birdeye. Ini sudah termasuk margin keamanan (20 RPM digunakan dari 60 RPM limit).
 
 ### Alur Screening (sesuai implementasi)
 
 ```
-1. Discovery           → GeckoTerminal (trending token)
-2. Volume 1h           → Dexscreener  (minVolume = 150000)
-3. MCap pre-filter     → Dexscreener  (minMcap = 200000, maxMcap = 10000000)
-4. Teknis (Fib/RSI/EMA) → Birdeye via HybridDataProvider
-5. Pool Meteora DLMM   → dlmm.datapi.meteora.ag + RocketScan fallback
-6. Backtest (opsional)  → GeckoTerminal OHLCV historis
+1. Discovery           → Dexscreener boosts + profiles (trending Solana tokens)
+2. Blacklist filter    → token-blocklist.json + dev-blocklist.json
+3. Volume 1h           → Dexscreener  (minVolume = 150000)
+4. MCap pre-filter     → Dexscreener  (minMcap = 200000, maxMcap = 10000000)
+5. RugCheck            → bundle%, honeypot detection
+6. Jupiter safety      → top10 holders, bot holders, fees SOL
+7. Pool matching       → Meteora DLMM qualifying pools
+8. [NEW] Pre-Fib cap   → ranking by volume, ambil TOP 10 SAJA
+9. Fib/RSI/EMA         → Birdeye OHLCV (max 10 kandidat × 2 calls = 20 RPM)
+10. Smart money check  → wallets aktif di pool (non-blocking)
+11. Deploy             → kandidat dengan ENTRY signal → LLM deploy decision
 ```
 
 **Catatan:** `pool.price` (SOL-denominated) **tidak pernah** dipakai untuk Fib comparison — selalu pakai USD price dari Dexscreener atau Birdeye.
@@ -425,8 +434,9 @@ DRY_RUN=true node index.js
 | `maxTop10Pct` | 20 | Maksimal konsentrasi 10 holder teratas % |
 | `maxBotHoldersPct` | 30 | Maksimal % bot holder |
 | `rpcFallbacks` | [] | Daftar endpoint RPC fallback berurutan |
-| `fibConfluenceRequired` | true | Wajibkan Fib confluence untuk entry |
+| `fibConfluenceRequired` | true | Wajib Fib confluence untuk entry |
 | `candleLimit` | 100 | Candle OHLCV untuk analisis |
+| `maxBirdeyeCandidates` | 10 | Maksimal kandidat ke tahap Fib/Birdeye (Birdeye 60 RPM ÷ 2 calls = 30, margin 10) |
 | `autoBacktest` | false | Aktifkan filter backtest sebelum deploy |
 | `minBacktestWinRate` | 0.50 | Win rate minimum untuk lolos filter pre-deploy |
 | `backtestAggregate` | 15 | Ukuran candle untuk backtest (menit) |

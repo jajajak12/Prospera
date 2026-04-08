@@ -217,7 +217,9 @@ async function geckoOHLCV(poolAddress, chain, timeframe, limit) {
 export class HybridDataProvider {
   /**
    * Pool metadata (price in USD, mcap, volume, liquidity).
-   * Fallback: Dexscreener → Birdeye → GeckoTerminal.
+   * Priority: Dexscreener (primary) → Birdeye (fallback) → GeckoTerminal (last resort).
+   * Dexscreener is primary because it has highest rate limits and best freshness for pool data.
+   * Birdeye used only for Fib/RSI/EMA technical analysis (called on capped 10 candidates max).
    * @param {string} poolAddress
    * @param {string} [chain="solana"]
    */
@@ -245,6 +247,7 @@ export class HybridDataProvider {
 
   /**
    * OHLCV candles. Oldest-first.
+   * Called only for pre-filtered candidates (max 10) — Birdeye rate limit safe.
    *
    * If tokenMint provided: Birdeye token endpoint (best history) → Dexscreener → GeckoTerminal.
    * If tokenMint omitted:  Dexscreener → Birdeye (pair) → GeckoTerminal.

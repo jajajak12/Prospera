@@ -631,13 +631,25 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount, withPool_count: 0, fib_analyzed: 0 };
   }
 
-  // ── Step 8: Fibonacci analysis ───────────────────────────────────────────
-  // Birdeye OHLCV uses token mint; Meteora pool bin_step for bin range calculation.
+  // ── Step 7b: Pre-Fib ranking cap ────────────────────────────────────────
+  // Birdeye rate limit = 60 RPM. Each analyzeSignal = 2 Birdeye calls (1m + daily OHLCV).
+  // To stay safe: cap at maxBirdeyeCandidates (default 10) before Fib analysis.
+  // Rank by volume (best quality signal) descending.
+  const maxBirdeye = s.maxBirdeyeCandidates ?? 10;
+  const rankedCandidates = [...withPool].sort((a, b) => (b.token._vol5m ?? 0) - (a.token._vol5m ?? 0));
+  const toAnalyzeRaw = rankedCandidates.slice(0, maxBirdeye);
+  if (withPool.length > maxBirdeye) {
+    log.screening(`Pre-Fib cap: ${maxBirdeye} candidates selected (top by volume) from ${withPool.length} with pools — Birdeye calls now limited to ${toAnalyzeRaw.length * 2}/min`);
+  }
+
+  // ── Step 8: Fibonacci analysis ──────────────────────────────────────────
+  // Birdeye OHLCV called ONLY for the capped toAnalyzeRaw set.
+  // Meteora pool bin_step for bin range calculation.
 
   // Filter out pools cached as "broken support" — price far below Fib 0.618, no recovery expected soon
   // All price values are stored in USD (token.price from GT) to match GT OHLCV candle units.
   const now = Date.now();
-  const toAnalyze = withPool.filter(({ token, pool }) => {
+  const toAnalyze = toAnalyzeRaw.filter(({ token, pool }) => {
     // Skip pools that are actively crashing (>80% price drop in 24h) — not an entry signal
     if (pool.price_change_pct != null && pool.price_change_pct <= -80) {
       log("screening", `  ${pool.name}: SKIP — price crashed ${pool.price_change_pct.toFixed(1)}% in 24h`);
@@ -662,7 +674,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     }
     return true;
   });
-  log("screening", `Running Fibonacci analysis on ${toAnalyze.length} pools...`);
+  log.screening(`Running Fibonacci analysis on ${toAnalyze.length} pools (capped from ${toAnalyzeRaw.length} ranked)...`);
 
   const signalResults = await Promise.allSettled(
     toAnalyze.map(async ({ token, pool }) => {
@@ -779,8 +791,8 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   // Sort by confluence score descending
   filtered.sort((a, b) => (b.fib_signal.confluenceScore ?? 0) - (a.fib_signal.confluenceScore ?? 0));
 
-  log.screening(`Step 8 — Fibonacci: ${filtered.length}/${withPool.length} passed (analyzed: ${toAnalyze.length}, entry: ${candidates.length}${minConf > 0 && filtered.length < beforeConf ? `, dropped ${beforeConf - filtered.length} below minConf ${minConf}` : ""})`);
-  log.screening(`Summary: discovered=${dexTokens.length} → volume=${afterVolumeCount} → pools=${withPool.length} → fib_entry=${filtered.length}`);
+  log.screening(`Step 8 — Fibonacci: ${filtered.length}/${toAnalyzeRaw.length} ranked → ${toAnalyze.length} passed broken-support → ${candidates.length} ENTRY`);
+  log.screening(`Summary: discovered=${dexTokens.length} → volume=${afterVolumeCount} → pools=${withPool.length} → ranked_preFib=${toAnalyzeRaw.length} → fib_entry=${filtered.length}`);
 
   return {
     candidates:        filtered,
