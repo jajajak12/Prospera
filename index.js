@@ -27,6 +27,7 @@ import cron from "node-cron";
 import { acquireScreeningLock, completeScreeningLock, acquireManagementLock, completeManagementLock } from "./tools/lock-manager.js";
 import { agentLoop } from "./agent.js";
 import http from "http";
+import readline from "readline";
 import { log } from "./logger.js";
 import { logWithId, logSkip, shortId, logCycleStart } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
@@ -103,6 +104,60 @@ function startHealthServer(port = 3000) {
 
 function stopHealthServer() {
   if (_healthServer) { _healthServer.close(); _healthServer = null; }
+}
+
+// ── REPL Mode ─────────────────────────────────────────────────────────────────
+function startREPL() {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "prospera> " });
+  rl.on("line", async (line) => {
+    const cmd = line.trim();
+    if (!cmd) { rl.prompt(); return; }
+    if (cmd === "exit" || cmd === "quit") { rl.close(); process.exit(0); return; }
+    if (cmd === "status") {
+      const cb = getCircuitState();
+      const positions = await getMyPositions({ force: true }).catch(() => null);
+      const balance = await getWalletBalances().catch(() => null);
+      const deployedSol = (positions?.positions?.length ?? 0) > 0 ? calculateCurrentExposure(positions.positions) : 0;
+      const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
+      console.log(`Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"} | Circuit: ${cb?.isCircuitBroken ? "OPEN" : "OK"} | Positions: ${positions?.total_positions ?? 0}/${config.risk.maxPositions} | Exposure: ${exposurePct}% | SOL: ${balance?.sol?.toFixed(3) ?? "?"}`);
+      rl.prompt(); return;
+    }
+    if (cmd === "positions") {
+      const { positions } = await getMyPositions({ force: true }).catch(() => ({ positions: [] }));
+      if (!positions.length) { console.log("No open positions."); rl.prompt(); return; }
+      positions.forEach((p, i) => console.log(`${i+1}. ${p.pair} | $${p.total_value_usd} | PnL: ${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct}%`));
+      rl.prompt(); return;
+    }
+    if (cmd === "help") {
+      console.log("Commands: status, positions, close <N>, exposure, help, exit");
+      rl.prompt(); return;
+    }
+    const closeMatch = cmd.match(/^close\s+(\d+)$/i);
+    if (closeMatch) {
+      const idx = parseInt(closeMatch[1]) - 1;
+      const { positions } = await getMyPositions({ force: true }).catch(() => ({ positions: [] }));
+      if (idx < 0 || idx >= positions.length) { console.log("Invalid position number."); rl.prompt(); return; }
+      console.log(`Closing ${positions[idx].pair}...`);
+      await closePosition({ position_address: positions[idx].position }).catch(e => console.log(`Error: ${e.message}`));
+      console.log("Done.");
+      rl.prompt(); return;
+    }
+    // Forward to agent loop
+    const corrId = shortId();
+    const hasClose = /\bclose\b|\bsell\b/i.test(cmd);
+    const hasDeploy = /\bdeploy\b|\bopen\b|\blp into\b/i.test(cmd);
+    const role = hasDeploy ? "SCREENER" : "GENERAL";
+    try {
+      const { content } = await agentLoop(cmd, config.llm.maxSteps, [], role, config.llm.generalModel, null, corrId);
+      console.log(stripThink(content));
+    } catch (e) {
+      console.log(`Error: ${e.message}`);
+    }
+    rl.prompt();
+  });
+  rl.on("close", () => { console.log("Goodbye."); process.exit(0); });
+  console.log("Prospera REPL — type 'help' for commands, 'exit' to quit.");
+  rl.prompt();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -566,12 +621,10 @@ registerCronRestarter(() => { startCronJobs(); });
 const isTTY = process.stdin.isTTY;
 
 if (isTTY) {
-  // REPL mode — start cron + Telegram polling
+  // REPL mode — start cron + Telegram polling + REPL interface
   startCronJobs();
   startHealthServer();
-  _screeningLastTriggered = 0;
-  startPolling(handleTelegram);
-  console.log("\nFibonacci LP Agent — Minimal Mode — Running.\nCron: screening + management active.\n");
+  startREPL(); // does not return — blocks on readline
 } else {
   // PM2 / non-TTY mode
   log("startup", "Non-TTY mode — starting cycles.");
