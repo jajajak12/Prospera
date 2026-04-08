@@ -24,10 +24,26 @@ import {
   acquireScreeningLock, completeScreeningLock,
   acquireManagementLock, completeManagementLock,
   readScreeningLock, readManagementLock,
-  isScreeningRunning,
 } from "./tools/lock-manager.js";
 
-// ── Sweep proposal helpers ───────────────────────────────────────────────────
+import { agentLoop } from "./agent.js";
+import { log } from "./logger.js";
+import { logWithId, logSkip } from "./log-utils.js";
+import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
+import { getWalletBalances } from "./tools/wallet.js";
+import { getTopCandidates } from "./tools/screening.js";
+import { config, reloadScreeningThresholds, computeDeployAmount, getPositionSizing, calculateCurrentExposure, canOpenNewPosition, checkExposureCap } from "./config.js";
+import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
+import { registerCronRestarter } from "./tools/executor.js";
+import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyExposureWarning, notifyExposureHardCap, isEnabled as telegramEnabled } from "./telegram.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, getStateSummary } from "./state.js";
+import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
+import { runBacktest, runBacktestWithSweep } from "./backtest.js";
+
+// ── Sweep proposal helpers ─────────────────────────────────────────────────
+const SWEEP_PROPOSAL_PATH = path.join(__dirname, "sweep-proposal.json");
+const USER_CONFIG_PATH     = path.join(__dirname, "user-config.json");
+
 function saveSweepProposal(p) {
   fs.writeFileSync(SWEEP_PROPOSAL_PATH, JSON.stringify(p, null, 2));
 }
@@ -43,7 +59,6 @@ function applySweepProposal(proposal) {
   if (fs.existsSync(USER_CONFIG_PATH)) {
     userCfg = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
   }
-  // Backup sebelum apply
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   fs.writeFileSync(
     path.join(__dirname, `user-config.${stamp}.backup.json`),
@@ -53,19 +68,6 @@ function applySweepProposal(proposal) {
   fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userCfg, null, 2));
   reloadScreeningThresholds();
 }
-import { agentLoop } from "./agent.js";
-import { log } from "./logger.js";
-import { logWithId, logSkip } from "./log-utils.js";
-import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
-import { getWalletBalances } from "./tools/wallet.js";
-import { getTopCandidates } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount, getPositionSizing, calculateCurrentExposure, canOpenNewPosition, checkExposureCap } from "./config.js";
-import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
-import { registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyExposureWarning, notifyExposureHardCap, isEnabled as telegramEnabled } from "./telegram.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, getStateSummary } from "./state.js";
-import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
-import { runBacktest, runBacktestWithSweep } from "./backtest.js";
 
 log("startup", "Fibonacci LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
