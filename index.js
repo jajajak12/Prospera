@@ -462,13 +462,12 @@ After acting, write a brief one-line result per position.
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
     const screeningCooldownMs = (config.schedule.screeningIntervalMin || 15) * 60_000;
+    const SCREENING_LOCK_GAP_MS = 60_000;
     if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningCooldownMs) {
       const lock = readScreeningLock();
       const lockAge = lock ? Date.now() - lock.ts : Infinity;
-      const SCREENING_LOCK_GAP_MS = 60_000;
       if (lock && lock.status === "running") {
         log("cron", `Post-management: screening still locked (pid ${lock.pid}, ${Math.round(lockAge/1000)}s ago) — waiting`);
-        // Reschedule after lock expires
         setTimeout(() => {
           if (!(_managementBusy || _screeningBusy)) {
             runScreeningCycle().catch(e => log("cron_error", `Triggered screening failed: ${e.message}`));
