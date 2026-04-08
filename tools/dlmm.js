@@ -6,6 +6,7 @@ import {
 import BN from "bn.js";
 import bs58 from "bs58";
 import { config } from "../config.js";
+import { hybridDataProvider } from './dataProvider.js';
 import { log } from "../logger.js";
 import { getConnection, withRpcFallback, reportRpcSuccess, reportRpcError } from "../rpc.js";
 import {
@@ -103,6 +104,7 @@ export async function deployPosition({
   confluence_score,
   fib_zone,
   fib_entry_pct,
+  fib500,
   rsi,
   atr_pct,
   in_primary_zone,
@@ -111,6 +113,21 @@ export async function deployPosition({
 }) {
   pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
+
+  // Hard Fib 0.500 gate
+  if (fib500 != null) {
+    try {
+      const poolData = await hybridDataProvider.getPoolData(pool_address);
+      const currentPriceUSD = poolData.priceUSD;
+      if (currentPriceUSD < fib500) {
+        log("deploy", `Price ${currentPriceUSD} < Fib 0.500 ${fib500} — hard skip`);
+        return { success: false, error: "below Fib 0.500 — no entry allowed" };
+      }
+    } catch (err) {
+      log("deploy", `Failed to verify Fib 0.500: ${err.message}`);
+      return { success: false, error: "Fib 0.500 verification failed" };
+    }
+  }
 
   const activeBinsBelow = bins_below ?? config.strategy.binsBelow;
   // bins_above can be NEGATIVE for ATH zone (passive-bid: range entirely below current price).

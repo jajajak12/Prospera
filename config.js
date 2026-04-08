@@ -20,7 +20,7 @@ export const config = {
   risk: {
     maxPositions:       u.maxPositions       ?? 3,
     maxDeployAmount:    u.maxDeployAmount    ?? 50,
-    totalExposureCapPct: u.totalExposureCapPct ?? 0.50,  // max % of balance deployed at any time
+    totalExposureCapPct: u.totalExposureCapPct ?? 0.60,  // max % of balance deployed at any time (60% hard cap)
     exposureGasReserve:  u.exposureGasReserve  ?? 1.0,   // SOL reserved for gas (excluded from cap calc)
   },
 

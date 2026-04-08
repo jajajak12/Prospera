@@ -111,6 +111,7 @@ FIBONACCI STRATEGY RULES (hard):
   creating a passive-bid position entirely below current price. Do not override to 0.
 - amount_y: SOL only. Never set amount_x > 0.
 - Bin Step: Only deploy in pools with bin_step between 80 and 200.
+- Fib 0.500 hard gate: price must be >= fib500. Provide fib500 from fib_signal.fibLevels.fib500.
 
 WARNING: This executes a real on-chain transaction.`,
       parameters: {
@@ -135,6 +136,7 @@ WARNING: This executes a real on-chain transaction.`,
           confluence_score:      { type: "number",  description: "Fibonacci confluence score at entry (0-1)" },
           fib_zone:              { type: "string",  description: "Fib zone at entry: ATH_ZONE, PRIMARY, or SECONDARY" },
           fib_entry_pct:         { type: "number",  description: "Where in Fib zone was entry: 0=at fib236, 100=at fib618" },
+          fib500:                { type: "number",  description: "Fib 0.500 price level (USD). Hard gate: current price must be >= this value" },
           rsi:                   { type: "number",  description: "RSI value at entry from fib_signal.rsi" },
           atr_pct:               { type: "number",  description: "ATR% at entry from fib_signal.atrPct" },
           in_primary_zone:       { type: "boolean", description: "True if price was in primary zone (fib 0.236–0.382) at entry" },
