@@ -93,10 +93,11 @@ import {
   setCorrelationId,
 } from "./tools/circuit-breaker.js";
 
-// Two separate client instances — one per provider. No mutation.
+// Two immutable client instances — one per provider. No mutation.
+// Initialized at module scope. getClient() selects based on circuit state.
 const minimaxClient = new OpenAI({
   baseURL: "https://api.minimax.chat/v1",
-  apiKey: process.env.LLM_API_KEY || "placeholder",
+  apiKey: config.llm?.minimaxApiKey || "placeholder",
   timeout: 5 * 60 * 1000,
 });
 
