@@ -30,7 +30,7 @@ Fibonacci digambar dari **all-time-low → ATH** menggunakan candle OHLCV harian
 |--------|---------|--------|
 | **Harga** | Di atas Fib 0.618 (support belum jebol) | Token masih dalam range valid |
 | **Tren EMA** | EMA20 > EMA50 | Uptrend terkonfirmasi |
-| **Momentum RSI** | RSI > `rsiMin` (default 48) + slope naik | Momentum bullish |
+| **Momentum RSI** | RSI > `rsiMin` (default 45) + slope >= -2.0 | Momentum bullish (allows minor pullback) |
 | **Cek ATR** | ATR% < bin\_step% × 4 | Volatilitas kompatibel dengan pool |
 
 ### Tier Zone
@@ -386,7 +386,7 @@ DRY_RUN=true node index.js
 | `minTvl` / `maxTvl` | 5000 / 250000 | Range TVL pool ($) |
 | `minTokenAgeHours` / `maxTokenAgeHours` | 0.5 / 720 | Range usia token (min 30 menit) |
 | `minTokenFeesSol` | 30 | Min kumulatif fee dalam SOL (Jupiter — tips + priority + trading) |
-| `rsiMin` | 48 | RSI minimum untuk sinyal entry (auto-tuned oleh backtest sweep) |
+| `rsiMin` | 45 | RSI minimum untuk sinyal entry (auto-tuned oleh backtest sweep); slope >= -2.0 allowed |
 | `minConfluenceScore` | 0 | Gate minimum confluence score (auto-tuned oleh backtest sweep) |
 | `totalExposureCapPct` | 0.60 | Max % saldo deployable yang boleh di-deploy sekaligus (60%) |
 | `exposureGasReserve` | 0.5 | SOL yang direservasi untuk gas, dikecualikan dari exposure cap |
