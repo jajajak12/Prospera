@@ -165,7 +165,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     const deployedSol = calculateCurrentExposure(positions);
     const exposurePct = preBalance?.sol > 0 ? +((deployedSol / preBalance.sol) * 100).toFixed(1) : 0;
 
-    mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}%\n${reportLines.join("\n")}`;
+    mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}%\n\n${reportLines.join("\n")}`;
 
     if (positionData.length > 0) {
       const allBlocks = positionData.map(p => {
@@ -197,7 +197,7 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
     completeManagementLock();
     if (!silent && telegramEnabled() && mgmtReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-      sendMessage(`🔄 Management [${ts}]\nID: ${corrId}\n${stripThink(mgmtReport)}`).catch(() => {});
+      sendMessage(`🔄 Management Cycle [${ts}] ID: ${corrId}\n${stripThink(mgmtReport)}`).catch(() => {});
     }
   }
   return mgmtReport;
@@ -272,9 +272,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const reason = stats.afterVolume === 0 ? "no pools after volume filter" :
         stats.fibPassed === 0 ? "failed Fib 0.500" :
         "failed EMA/RSI confluence";
-      screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\nNo entry signals (${reason})`;
+      screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\nNo entry signals (${reason})`;
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-      if (!silent && telegramEnabled()) sendMessage(`🔍 Fibonacci Screening [${ts}]\nID: ${corrId}\n${screenReport}`).catch(() => {});
+      if (!silent && telegramEnabled()) sendMessage(`🔍 Fibonacci Screening [${ts}] ID: ${corrId}\n${screenReport}`).catch(() => {});
       _release();
       return screenReport;
     }
@@ -315,7 +315,7 @@ RULES:
 3. strategy=bid_ask. amount_y=${deployAmount} SOL.
     `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, corrId);
 
-    screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n→ ${candidates.length} candidate(s) passed Fib + RSI + EMA\n\n${content}`;
+    screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${candidates.length} candidate(s) passed Fib + RSI + EMA\n\n${content}`;
 
   } catch (error) {
     _s("error", `Screening failed: ${error.message}`);
@@ -324,8 +324,7 @@ RULES:
     _release();
     if (!silent && telegramEnabled() && screenReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-      // screenReport already has stats header — just send as-is
-      sendMessage(`🔍 Fibonacci Screening [${ts}]\nID: ${corrId}\n${stripThink(screenReport)}`).catch(() => {});
+      sendMessage(`🔍 Fibonacci Screening [${ts}] ID: ${corrId}\n${stripThink(screenReport)}`).catch(() => {});
     }
   }
   return screenReport;
