@@ -11,111 +11,76 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Paths ───────────────────────────────────────────────────────────────────
-export const SCREENING_LOCK_PATH = path.join(__dirname, "..", "screening-lock.json");
-export const MANAGEMENT_LOCK_PATH = path.join(__dirname, "..", "management.lock");
+export const SCREENING_LOCK_PATH  = path.join(__dirname, "..", "screening-lock.json");
+export const MANAGEMENT_LOCK_PATH  = path.join(__dirname, "..", "management.lock");
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const SCREENING_LOCK_GAP_MS = 60_000; // screening cooldown antar run
-const MANAGEMENT_LOCK_GAP_MS = 45_000; // management cooldown antar run
+const SCREENING_LOCK_GAP_MS   = 60_000;
+const MANAGEMENT_LOCK_GAP_MS  = 45_000;
+const STALE_THRESHOLD_MS      = 5 * 60_1000;  // 5 min — lock dari proses mati dianggap invalid
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-export function readScreeningLock() {
+// ── Core stale detection — reusable untuk semua lock types ─────────────────
+export function isStaleLock(lock) {
+  if (!lock || lock.pid === process.pid) return false;
+  if (lock.status !== "running") return false;
+  return Date.now() - lock.ts > STALE_THRESHOLD_MS;
+}
+
+// ── Read / Write helpers ─────────────────────────────────────────────────────
+function readLock(path) {
   try {
-    if (!fs.existsSync(SCREENING_LOCK_PATH)) return null;
-    const lock = JSON.parse(fs.readFileSync(SCREENING_LOCK_PATH, "utf8"));
-    // Stale lock: previous process died or restarted — treat as invalid
-    if (lock?.status === "running" && lock?.pid !== process.pid) {
-      const staleAge = Date.now() - lock.ts;
-      const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
-      if (staleAge > STALE_THRESHOLD_MS) {
-        return null; // lock is stale, treat as no lock
-      }
+    if (!fs.existsSync(path)) return null;
+    const lock = JSON.parse(fs.readFileSync(path, "utf8"));
+    if (isStaleLock(lock)) {
+      console.log(`[lock] stale lock detected (pid ${lock.pid}, age ${Math.round((Date.now() - lock.ts) / 1000)}s) — treating as empty`);
+      return null;
     }
     return lock;
   } catch { return null; }
 }
 
-export function writeScreeningLock(status) {
+function writeLock(path, status) {
   try {
-    fs.writeFileSync(
-      SCREENING_LOCK_PATH,
-      JSON.stringify({ ts: Date.now(), pid: process.pid, status }),
-      { flag: "w" }
-    );
+    fs.writeFileSync(path, JSON.stringify({ ts: Date.now(), pid: process.pid, status }), { flag: "w" });
   } catch { /* non-fatal */ }
 }
 
-export function readManagementLock() {
-  try {
-    if (!fs.existsSync(MANAGEMENT_LOCK_PATH)) return null;
-    const lock = JSON.parse(fs.readFileSync(MANAGEMENT_LOCK_PATH, "utf8"));
-    // Stale lock: previous process died or restarted — treat as invalid
-    if (lock?.status === "running" && lock?.pid !== process.pid) {
-      const staleAge = Date.now() - lock.ts;
-      const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
-      if (staleAge > STALE_THRESHOLD_MS) {
-        return null;
-      }
-    }
-    return lock;
-  } catch { return null; }
-}
+// ── Screening lock ───────────────────────────────────────────────────────────
+export function readScreeningLock()  { return readLock(SCREENING_LOCK_PATH); }
+export function writeScreeningLock(status) { writeLock(SCREENING_LOCK_PATH, status); }
 
-export function writeManagementLock(status) {
-  try {
-    fs.writeFileSync(
-      MANAGEMENT_LOCK_PATH,
-      JSON.stringify({ ts: Date.now(), pid: process.pid, status }),
-      { flag: "w" }
-    );
-  } catch { /* non-fatal */ }
-}
-
-// ── Screening Lock ────────────────────────────────────────────────────────────
 export function acquireScreeningLock() {
   const lock = readScreeningLock();
   const ageMs = lock ? Date.now() - lock.ts : Infinity;
 
   if (lock?.status === "running") {
-    return {
-      acquired: false,
-      reason: `screening lock: another cycle is running (pid ${lock.pid})`,
-      lock,
-    };
+    return { acquired: false, reason: `screening lock: another cycle running (pid ${lock.pid})`, lock };
   }
   if (ageMs < SCREENING_LOCK_GAP_MS) {
-    return {
-      acquired: false,
-      reason: `screening lock: last run ${Math.round(ageMs / 1000)}s ago (min gap ${SCREENING_LOCK_GAP_MS / 1000}s)`,
-      lock,
-    };
+    return { acquired: false, reason: `screening lock: last run ${Math.round(ageMs / 1000)}s ago (min ${SCREENING_LOCK_GAP_MS / 1000}s)`, lock };
   }
   writeScreeningLock("running");
   return { acquired: true };
 }
 
-export function completeScreeningLock() {
-  writeScreeningLock("completed");
-}
+export function completeScreeningLock() { writeScreeningLock("completed"); }
 
-// ── Management Lock ───────────────────────────────────────────────────────────
+// ── Management lock ──────────────────────────────────────────────────────────
+export function readManagementLock()  { return readLock(MANAGEMENT_LOCK_PATH); }
+export function writeManagementLock(status) { writeLock(MANAGEMENT_LOCK_PATH, status); }
+
 export function acquireManagementLock() {
   const lock = readManagementLock();
   const ageMs = lock ? Date.now() - lock.ts : Infinity;
 
   if (ageMs < MANAGEMENT_LOCK_GAP_MS) {
-    return {
-      acquired: false,
-      reason: `management lock: last run ${Math.round(ageMs / 1000)}s ago (min gap ${MANAGEMENT_LOCK_GAP_MS / 1000}s)`,
-    };
+    return { acquired: false, reason: `management lock: last run ${Math.round(ageMs / 1000)}s ago (min ${MANAGEMENT_LOCK_GAP_MS / 1000}s)` };
   }
   writeManagementLock("running");
   return { acquired: true };
 }
 
-export function completeManagementLock() {
-  writeManagementLock("completed");
-}
+export function completeManagementLock() { writeManagementLock("completed"); }
 
 // ── Guard utilities ──────────────────────────────────────────────────────────
 export function isScreeningRunning() {

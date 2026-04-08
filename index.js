@@ -1481,28 +1481,10 @@ Commands:
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startHealthServer();
   startCronJobs();
-  // Reset screening timestamp so first cron tick always passes cooldown
+  // Reset so first cron tick always passes screening cooldown
   _screeningLastTriggered = 0;
-
-  // Startup screening: langsung jalan 5s setelah restart
-  // Jangan cek lock file — lock dari proses lama sudah tidak valid setelah restart
-  setTimeout(() => {
-    log("startup", "Startup screening triggered");
-    runScreeningCycle().catch(e => log("cron_error", `Startup screening failed: ${e.message}`));
-  }, 5000);
-
-  // Startup management: 8s delay — setelah startup screening selesai/timeout
-  setTimeout(() => {
-    // Lock file check tetap berguna untuk prevent rapid re-run setelah crash
-    const lock = readManagementLock();
-    const lockAge = lock ? Date.now() - lock.ts : Infinity;
-    const MANAGEMENT_MIN_GAP_MS = 45_000;
-    if (lockAge < MANAGEMENT_MIN_GAP_MS) {
-      log("startup", `Startup management skipped — lock file: ${Math.round(lockAge / 1000)}s ago (< ${MANAGEMENT_MIN_GAP_MS / 1000}s gap)`);
-    } else {
-      runManagementCycle().catch(e => log("cron_error", `Startup management failed: ${e.message}`));
-    }
-  }, 8000);
+  // Cron jobs handle everything — no manual setTimeout triggers needed.
+  // Lock-manager stale detection ensures previous-process locks are ignored.
 
   // Telegram handler for non-TTY mode
   const _nonTtyQueue = [];
