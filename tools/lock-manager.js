@@ -5,6 +5,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { logWithId } from "../logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,7 +45,9 @@ function readLock(filePath, type) {
     const lock = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (isStaleLock(lock, type)) {
       const age = Math.round((Date.now() - lock.ts) / 1000);
-      console.log(`[lock] Stale ${type} lock detected from PID ${lock.pid} (age: ${age}s, status: ${lock.status}) — ignoring`);
+      logWithId("lock", `Stale lock detected — ignoring`, {
+        lockType: type, lockPid: lock.pid, lockAge: age, lockStatus: lock.status, skipReason: "lock",
+      });
       return null;
     }
     return lock;

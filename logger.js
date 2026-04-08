@@ -107,18 +107,33 @@ export function shortId() {
 }
 
 /**
- * Correlation-aware log with structured ctx + auto shortId.
+ * Correlation-aware log helper.
+ * Injects correlationId into ctx and prefixes message.
+ * Delegates to existing log() for actual output.
+ *
  * @param {string} category  — e.g. "screening", "management"
  * @param {string} message
- * @param {object} [meta]    — any structured data (symbol, fibLevel, rsi, exposurePct, etc.)
+ * @param {object} [meta]    — structured fields merged into ctx
+ * @returns {string} correlationId
  */
 export function logWithId(category, message, meta = {}) {
   const id = shortId();
-  const level = category.includes("error") ? "error"
-    : category.includes("warn")  ? "warn"
-    : "info";
-  winstonLogger.log(level, `[${id}] ${message}`, { category, id, ctx: { ...meta, correlationId: id } });
-  return id; // caller can use it for chained logs
+  const ctx = { ...meta, correlationId: id };
+  // Use existing log() — it handles level from category automatically
+  log(category, `[${id}] ${message}`, ctx);
+  return id;
+}
+
+/**
+ * Convenience wrapper for screening skips.
+ * Always uses "screening" category with "skip" level hint.
+ *
+ * @param {string} reason    — one of: fib | rsi | exposure | lock | max_positions | insufficient_balance
+ * @param {object} [meta]    — symbol, fibLevel, rsi, exposurePct, etc.
+ * @returns {string} correlationId
+ */
+export function logSkip(reason, meta = {}) {
+  return logWithId("screening", `SKIP [${reason}]`, { ...meta, skipReason: reason });
 }
 
 /**

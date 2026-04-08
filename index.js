@@ -55,6 +55,7 @@ function applySweepProposal(proposal) {
 }
 import { agentLoop } from "./agent.js";
 import { log, logWithId } from "./logger.js";
+import { logSkip } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
@@ -520,12 +521,12 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   // ── Hard cap pause check ──────────────────────────────────────────────
   if (_exposureHardPausedUntil > Date.now()) {
     const remaining = Math.ceil((_exposureHardPausedUntil - Date.now()) / 60000);
-    log("cron", `Screening skipped — HARD CAP pause active (${remaining}m remaining)`);
+    logWithId("screening", `HARD CAP pause active`, { skipReason: "exposure_pause", pauseRemainingMin: remaining });
     return null;
   }
 
   if (!lockResult.acquired) {
-    log("cron", `Screening skipped — ${lockResult.reason}`);
+    logWithId("screening", `Lock not acquired`, { skipReason: "lock", lockReason: lockResult.reason });
     return null;
   }
 
@@ -536,7 +537,7 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   const _releaseAndSkip = (msg) => {
     completeScreeningLock();
     _screeningBusy = false;
-    if (msg) log("cron", msg);
+    if (msg) log("screening", msg);
     return null;
   };
 
@@ -550,13 +551,15 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
 
     // ── Max positions check ───────────────────────────────────────────────
     if (prePositions.total_positions >= config.risk.maxPositions) {
-      return _releaseAndSkip(`Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
+      logSkip("max_positions", { currentPositions: prePositions.total_positions, maxPositions: config.risk.maxPositions });
+      return _releaseAndSkip(null);
     }
 
     // ── Deploy sizing (tiered) ────────────────────────────────────────────
     deployAmount = getPositionSizing(preBalance.sol);
     if (deployAmount === 0) {
-      return _releaseAndSkip(`Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} SOL, need at least ${(config.risk.exposureGasReserve ?? 1) + 1} SOL)`);
+      logSkip("insufficient_balance", { walletSol: preBalance.sol, gasReserve: config.risk.exposureGasReserve });
+      return _releaseAndSkip(null);
     }
 
     // ── Exposure cap check — warning (50%) + hard cap (60%) ─────────────────
@@ -564,8 +567,16 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     const cap = checkExposureCap(currentExposure, preBalance.sol, deployAmount);
 
     if (cap.level === "hard_pause") {
-      _exposureHardPausedUntil = cap.pauseUntil; // centralized from config
-      log("error", `HARD CAP TRIGGERED — screening paused until ${new Date(cap.pauseUntil).toISOString()}. ${cap.reason}`);
+      _exposureHardPausedUntil = cap.pauseUntil;
+      logWithId("error", `HARD CAP TRIGGERED — new entry paused`, {
+        skipReason: "exposure",
+        exposurePct: cap.exposurePct,
+        currentExposureSol: cap.currentExposureSol,
+        projectedExposureSol: cap.projectedExposureSol,
+        maxExposureSol: cap.maxExposureSol,
+        gasReserveSol: cap.gasReserveSol,
+        pauseUntil: cap.pauseUntil,
+      });
       if (telegramEnabled()) {
         notifyExposureHardCap({
           exposurePct: cap.exposurePct,
@@ -579,17 +590,19 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     }
 
     if (cap.level === "warning") {
-      log("warn", `EXPOSURE WARNING — ${cap.reason}`);
-      if (telegramEnabled()) {
-        notifyExposureWarning({
-          exposurePct: cap.exposurePct,
-          projectedSol: cap.projectedExposureSol.toFixed(2),
-          maxSol: cap.maxExposureSol.toFixed(2),
-          gasReserveSol: cap.gasReserveSol.toFixed(2),
-        }).catch(() => {});
-      }
+      logWithId("warn", `SOFT WARNING — approaching hard cap`, {
+        skipReason: "exposure_warning",
+        exposurePct: cap.exposurePct,
+        projectedExposureSol: cap.projectedExposureSol,
+        maxExposureSol: cap.maxExposureSol,
+      });
     } else {
-      log("cron", `Exposure check OK: ${currentExposure.toFixed(2)} → ${cap.projectedExposureSol.toFixed(2)} SOL (${cap.exposurePct}%)`);
+      logWithId("screening", `Exposure check OK`, {
+        currentExposureSol: currentExposure,
+        projectedExposureSol: cap.projectedExposureSol,
+        exposurePct: cap.exposurePct,
+        gasReserveSol: cap.gasReserveSol,
+      });
     }
   } catch (e) {
     return _releaseAndSkip(`Screening pre-check failed: ${e.message}`);
