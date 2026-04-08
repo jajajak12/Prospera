@@ -18,11 +18,12 @@ if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 export const config = {
   // ─── Risk Limits ─────────────────────────
   risk: {
-    maxPositions:        u.maxPositions        ?? 3,
-    maxDeployAmount:     u.maxDeployAmount     ?? 50,
-    exposureWarningPct:  u.exposureWarningPct  ?? 0.50,  // soft warning threshold (50%)
-    totalExposureCapPct: u.totalExposureCapPct ?? 0.60, // max % of balance deployed (60% hard cap)
-    exposureGasReserve:  u.exposureGasReserve  ?? 1.0,   // SOL reserved for gas (excluded from cap calc)
+    maxPositions:              u.maxPositions              ?? 3,
+    maxDeployAmount:           u.maxDeployAmount           ?? 50,
+    exposureWarningPct:        u.exposureWarningPct        ?? 0.50,  // soft warning threshold (50%)
+    totalExposureCapPct:       u.totalExposureCapPct       ?? 0.60,  // max % of balance deployed (60% hard cap)
+    exposureHardPauseMinutes:  u.exposureHardPauseMinutes ?? 15,    // hard pause duration (minutes)
+    exposureGasReserve:        u.exposureGasReserve        ?? 1.0,   // SOL reserved for gas (excluded from cap calc)
   },
 
   // ─── Pool Screening Thresholds ───────────
@@ -204,24 +205,22 @@ export function canOpenNewPosition(proposedAmountSol, currentExposureSol, wallet
 /**
  * Robust exposure check: pre-deployment validation with warning + hard cap.
  * Returns level: "ok" | "warning" | "hard_pause"
- * - warning: exposure >= exposureWarningPct (50%) but < hard cap
- * - hard_pause: exposure >= totalExposureCapPct (60%)
  *
  * @param {number} currentExposureSol - Total SOL already deployed
  * @param {number} walletSol         - Current wallet SOL balance
  * @param {number} proposedAmountSol - Proposed SOL to deploy (optional, default = getPositionSizing)
  * @returns {{ level: string, exposurePct: number, warningPct: number, hardCapPct: number,
- *            currentExposureSol: number, projectedExposureSol: number,
- *            maxExposureSol: number, allowed: boolean, reason?: string }}
+ *            gasReserveSol: number, currentExposureSol: number, projectedExposureSol: number,
+ *            maxExposureSol: number, allowed: boolean, reason?: string, pauseUntil?: number }}
  */
 export function checkExposureCap(currentExposureSol, walletSol, proposedAmountSol = null) {
-  const gasReserve      = config.risk.exposureGasReserve ?? 1.0;
-  const warningPct      = config.risk.exposureWarningPct ?? 0.50;
-  const hardCapPct      = config.risk.totalExposureCapPct ?? 0.60;
+  const gasReserve     = config.risk.exposureGasReserve ?? 1.0;
+  const warningPct     = (config.risk.exposureWarningPct ?? 0.50) * 100;
+  const hardCapPct     = (config.risk.totalExposureCapPct ?? 0.60) * 100;
+  const pauseMinutes   = config.risk.exposureHardPauseMinutes ?? 15;
 
   const exposurableBalance = Math.max(0, walletSol - gasReserve);
-  const maxExposureSol    = parseFloat((exposurableBalance * hardCapPct).toFixed(4));
-  const warningThreshold  = parseFloat((exposurableBalance * warningPct).toFixed(4));
+  const maxExposureSol     = parseFloat((exposurableBalance * hardCapPct / 100).toFixed(4));
 
   if (proposedAmountSol === null) {
     proposedAmountSol = getPositionSizing(walletSol);
@@ -233,40 +232,44 @@ export function checkExposureCap(currentExposureSol, walletSol, proposedAmountSo
     : 100;
 
   // Hard cap check
-  if (exposurePct >= hardCapPct * 100) {
+  if (exposurePct >= hardCapPct) {
     return {
       level: "hard_pause",
       exposurePct,
-      warningPct: warningPct * 100,
-      hardCapPct: hardCapPct * 100,
+      warningPct,
+      hardCapPct,
+      gasReserveSol: gasReserve,
       currentExposureSol: parseFloat(currentExposureSol.toFixed(3)),
       projectedExposureSol,
       maxExposureSol,
       allowed: false,
-      reason: `⚠️ HARD CAP: exposure ${exposurePct}% >= ${(hardCapPct * 100).toFixed(0)}% — new entry PAUSED. Current ${currentExposureSol.toFixed(2)} SOL + pending ${proposedAmountSol.toFixed(2)} SOL = ${projectedExposureSol.toFixed(2)} SOL (max ${maxExposureSol.toFixed(2)} SOL)`,
+      pauseUntil: Date.now() + pauseMinutes * 60_000,
+      reason: `⚠️ HARD CAP: exposure ${exposurePct}% >= ${hardCapPct.toFixed(0)}% — new entry PAUSED for ${pauseMinutes} min. Current ${currentExposureSol.toFixed(2)} SOL + pending ${proposedAmountSol.toFixed(2)} SOL = ${projectedExposureSol.toFixed(2)} SOL (max ${maxExposureSol.toFixed(2)} SOL)`,
     };
   }
 
   // Soft warning check
-  if (exposurePct >= warningPct * 100) {
+  if (exposurePct >= warningPct) {
     return {
       level: "warning",
       exposurePct,
-      warningPct: warningPct * 100,
-      hardCapPct: hardCapPct * 100,
+      warningPct,
+      hardCapPct,
+      gasReserveSol: gasReserve,
       currentExposureSol: parseFloat(currentExposureSol.toFixed(3)),
       projectedExposureSol,
       maxExposureSol,
       allowed: true,
-      reason: `⚠️ SOFT WARNING: exposure ${exposurePct}% >= ${(warningPct * 100).toFixed(0)}% — approaching hard cap. Projected ${projectedExposureSol.toFixed(2)} SOL / ${maxExposureSol.toFixed(2)} SOL`,
+      reason: `⚠️ SOFT WARNING: exposure ${exposurePct}% >= ${warningPct.toFixed(0)}% — approaching hard cap. Projected ${projectedExposureSol.toFixed(2)} SOL / ${maxExposureSol.toFixed(2)} SOL`,
     };
   }
 
   return {
     level: "ok",
     exposurePct,
-    warningPct: warningPct * 100,
-    hardCapPct: hardCapPct * 100,
+    warningPct,
+    hardCapPct,
+    gasReserveSol: gasReserve,
     currentExposureSol: parseFloat(currentExposureSol.toFixed(3)),
     projectedExposureSol,
     maxExposureSol,

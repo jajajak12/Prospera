@@ -564,25 +564,28 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
     const cap = checkExposureCap(currentExposure, preBalance.sol, deployAmount);
 
     if (cap.level === "hard_pause") {
-      _exposureHardPausedUntil = Date.now() + 15 * 60 * 1000; // hard pause 15 min
-      log("cron", `[EXPOSURE HARD CAP] ${cap.reason}`);
+      _exposureHardPausedUntil = cap.pauseUntil; // centralized from config
+      log("error", `HARD CAP TRIGGERED — screening paused until ${new Date(cap.pauseUntil).toISOString()}. ${cap.reason}`);
       if (telegramEnabled()) {
         notifyExposureHardCap({
           exposurePct: cap.exposurePct,
           projectedSol: cap.projectedExposureSol.toFixed(2),
           maxSol: cap.maxExposureSol.toFixed(2),
+          gasReserveSol: cap.gasReserveSol.toFixed(2),
+          pauseMinutes: config.risk.exposureHardPauseMinutes ?? 15,
         }).catch(() => {});
       }
-      return _releaseAndSkip("Screening skipped — HARD CAP: exposure limit reached. New entry paused 15 min.");
+      return _releaseAndSkip(`HARD CAP: exposure limit reached. New entry paused. Auto-resume at ${new Date(cap.pauseUntil).toLocaleTimeString()}.`);
     }
 
     if (cap.level === "warning") {
-      log("cron", `[EXPOSURE WARNING] ${cap.reason}`);
+      log("warn", `EXPOSURE WARNING — ${cap.reason}`);
       if (telegramEnabled()) {
         notifyExposureWarning({
           exposurePct: cap.exposurePct,
           projectedSol: cap.projectedExposureSol.toFixed(2),
           maxSol: cap.maxExposureSol.toFixed(2),
+          gasReserveSol: cap.gasReserveSol.toFixed(2),
         }).catch(() => {});
       }
     } else {

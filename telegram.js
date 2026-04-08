@@ -175,20 +175,25 @@ export async function notifyOutOfRange({ pair, minutesOOR }) {
   );
 }
 
-export async function notifyExposureWarning({ exposurePct, projectedSol, maxSol }) {
+export async function notifyExposureWarning({ exposurePct, projectedSol, maxSol, gasReserveSol }) {
   await sendHTML(
     `⚠️ <b>Exposure Warning</b>\n` +
     `Exposure: <b>${exposurePct}%</b>\n` +
-    `Projected: ${projectedSol} SOL / ${maxSol} SOL max`
+    `Projected: ${projectedSol} SOL / ${maxSol} SOL max\n` +
+    `Gas reserve: ${gasReserveSol} SOL (excluded from cap)`
   );
 }
 
-export async function notifyExposureHardCap({ exposurePct, projectedSol, maxSol }) {
+export async function notifyExposureHardCap({ exposurePct, projectedSol, maxSol, gasReserveSol, pauseMinutes }) {
   await sendHTML(
     `🔴 <b>HARD CAP TRIGGERED</b>\n` +
     `Exposure: <b>${exposurePct}%</b> — new entry PAUSED\n` +
     `Projected: ${projectedSol} SOL / ${maxSol} SOL max\n` +
-    `Manual intervention required to resume.`
+    `Gas reserve: ${gasReserveSol} SOL\n` +
+    `Pause duration: ${pauseMinutes} minutes\n` +
+    `─────────────────────\n` +
+    `To resume early: reduce deployed positions or increase wallet SOL.\n` +
+    `Auto-resume after pause or manual intervention.`
   );
 }
 
