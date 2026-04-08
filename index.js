@@ -452,10 +452,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         stats.fibPassed === 0 ? "failed Fib 0.500" :
         "failed EMA/RSI confluence";
       screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\nNo entry signals (${reason})`;
-      const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-      if (!silent && telegramEnabled()) sendMessage(`🔍 Fibonacci Screening [${ts}] ID: ${corrId}\n${screenReport}`).catch(() => {});
-      _release();
-      return screenReport;
+      return screenReport; // finally block handles Telegram send + lock release
     }
 
     const PENDING_ATH_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "screening-pending.json");
