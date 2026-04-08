@@ -251,13 +251,23 @@ export async function runScreeningCycle({ silent = false } = {}) {
   _s("screening", `Starting cycle | deploy: ${deployAmount} SOL | wallet: ${preBalance.sol} SOL`);
 
   let screenReport = null;
+  let _sentTelegram = false; // prevent double Telegram send
+
   try {
     const topResult = await getTopCandidates({ limit: 20, correlationId: corrId }).catch(() => null);
     const candidates = topResult?.candidates || [];
+    const stats = {
+      discovered: topResult?.total_screened ?? 0,
+      afterVolume: topResult?.after_volume_count ?? 0,
+      meteoraPools: topResult?.withPool_count ?? 0,
+      fibPassed: topResult?.fib_passed ?? 0,
+    };
+
     if (candidates.length === 0) {
-      screenReport = "No entry signals";
-      if (telegramEnabled()) sendMessage(`Screening [${corrId}] [${new Date().toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit",hour12:false})}] — No entry signals`).catch(() => {});
+      screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\nNo entry signals`;
+      // Don't send Telegram here — let finally handle it with proper format
       _release();
+      _sentTelegram = true; // flag so finally knows to skip
       return screenReport;
     }
 
@@ -304,9 +314,10 @@ RULES:
     screenReport = `Failed: ${error.message}`;
   } finally {
     _release();
-    if (!silent && telegramEnabled() && screenReport) {
+    if (!silent && telegramEnabled() && screenReport && !_sentTelegram) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-      sendMessage(`Screening [${corrId}] [${ts}]\n\n${stripThink(screenReport)}`).catch(() => {});
+      const prefix = screenReport.startsWith("Discovered:") ? "🔍" : "🔍 Fibonacci Screening";
+      sendMessage(`${prefix} [${ts}]\n${stripThink(screenReport)}`).catch(() => {});
     }
   }
   return screenReport;
