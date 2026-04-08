@@ -41,6 +41,7 @@ import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositi
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
+import { config, computeDeployAmount, getPositionSizing, calculateCurrentExposure, canOpenNewPosition, checkExposureCap } from "./config.js";
 
 // ── Startup validation ─────────────────────────────────────────────────────────
 const lpKey     = process.env.LPAGENT_API_KEY;
