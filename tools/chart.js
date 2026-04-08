@@ -467,7 +467,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   }
 
   // ── Check 3: RSI Momentum ─────────────────────────────────────────────────
-  const rsiMin = opts.rsiMin ?? 45; // RSI minimum 45 (was 48), slope >= -2.0 allows minor pullback in Fib zone
+  const rsiMin = opts.rsiMin ?? 45; // RSI min 45, slope >= -2.0
   if (rsi != null) {
     if (rsi < rsiMin) {
       return skip(
@@ -475,7 +475,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
         currentPrice, fib
       );
     }
-    if (rsiSlope < -2.0) { // RSI slope longgar ke >= -2.0 untuk izinkan minor pullback di zona Fib
+    if (rsiSlope < -2.0) { // slope >= -2.0 allowed
       return skip(
         `RSI slope declining (${rsiSlope.toFixed(1)} over 5 candles). Need rising momentum for valid entry.`,
         currentPrice, fib
