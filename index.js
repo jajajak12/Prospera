@@ -161,7 +161,11 @@ export async function runManagementCycle({ silent = false } = {}) {
       return `${p.pair} | PnL: ${pnl} | ${inRange} | ${act.action}`;
     });
 
-    mgmtReport = reportLines.join("\n");
+    // Compute total exposure percentage
+    const deployedSol = calculateCurrentExposure(positions);
+    const exposurePct = preBalance?.sol > 0 ? +((deployedSol / preBalance.sol) * 100).toFixed(1) : 0;
+
+    mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}%\n${reportLines.join("\n")}`;
 
     if (positionData.length > 0) {
       const allBlocks = positionData.map(p => {
@@ -264,9 +268,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
     };
 
     if (candidates.length === 0) {
-      screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\nNo entry signals`;
+      // Build skip reason from available stats
+      const reason = stats.afterVolume === 0 ? "no pools after volume filter" :
+        stats.fibPassed === 0 ? "failed Fib 0.500" :
+        "failed EMA/RSI confluence";
+      screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\nNo entry signals (${reason})`;
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-      if (!silent && telegramEnabled()) sendMessage(`🔍 Fibonacci Screening [${ts}]\n${screenReport}`).catch(() => {});
+      if (!silent && telegramEnabled()) sendMessage(`🔍 Fibonacci Screening [${ts}]\nID: ${corrId}\n${screenReport}`).catch(() => {});
       _release();
       return screenReport;
     }
@@ -307,7 +315,7 @@ RULES:
 3. strategy=bid_ask. amount_y=${deployAmount} SOL.
     `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, corrId);
 
-    screenReport = content;
+    screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n→ ${candidates.length} candidate(s) passed Fib + RSI + EMA\n\n${content}`;
 
   } catch (error) {
     _s("error", `Screening failed: ${error.message}`);
@@ -316,8 +324,8 @@ RULES:
     _release();
     if (!silent && telegramEnabled() && screenReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-      const prefix = screenReport.startsWith("Discovered:") ? "🔍" : "🔍 Fibonacci Screening";
-      sendMessage(`${prefix} [${ts}]\n${stripThink(screenReport)}`).catch(() => {});
+      // screenReport already has stats header — just send as-is
+      sendMessage(`🔍 Fibonacci Screening [${ts}]\nID: ${corrId}\n${stripThink(screenReport)}`).catch(() => {});
     }
   }
   return screenReport;
