@@ -926,9 +926,11 @@ export function startCronJobs() {
     }
   });
 
-  // Periodic backtest — runs at 02:00 server time every day
-  const backtestTask = cron.schedule("0 2 * * *", () => {
-    runPeriodicBacktest().catch(e => log("cron_error", `Periodic backtest failed: ${e.message}`));
+  // Daily backtest — runs at 00:00 server time
+  const backtestTask = cron.schedule("0 0 * * *", () => {
+    const corrId = shortId();
+    runDailyBacktest({ correlationId: corrId, hours: 168 })
+      .catch(e => log("cron_error", `Daily backtest failed: ${e.message}`));
   });
 
   _cronTasks = [mgmtTask, screenTask, briefingTask, backtestTask];
