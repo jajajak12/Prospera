@@ -95,9 +95,12 @@ import {
 
 // Two immutable client instances — one per provider. No mutation.
 // Initialized at module scope. getClient() selects based on circuit state.
+// MiniMax key is invalid (401) — use OpenRouter as primary for agent calls.
+const _minimaxKeyValid = !!(config.llm?.minimaxApiKey && config.llm.minimaxApiKey !== "placeholder" && config.llm.minimaxApiKey.length > 10);
+
 const minimaxClient = new OpenAI({
   baseURL: "https://api.minimax.chat/v1",
-  apiKey: config.llm?.minimaxApiKey || "placeholder",
+  apiKey: _minimaxKeyValid ? config.llm.minimaxApiKey : "INVALID_KEY",
   timeout: 5 * 60 * 1000,
 });
 
@@ -108,7 +111,9 @@ const openrouterClient = new OpenAI({
 });
 
 function getClient() {
-  return getActiveProvider() === "openrouter" ? openrouterClient : minimaxClient;
+  // Use OpenRouter if MiniMax key is invalid or circuit is broken
+  if (!_minimaxKeyValid || getActiveProvider() === "openrouter") return openrouterClient;
+  return minimaxClient;
 }
 
 const DEFAULT_MODEL = process.env.LLM_MODEL || config.llm?.generalModel || "minimax-2.7";
