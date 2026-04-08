@@ -460,7 +460,7 @@ Returns summary stats + individual trade list. PnL is approximate (IL simplified
           fee_pct:      { type: "number",  description: "Pool base fee % (e.g. 1.0)" },
           aggregate:    { type: "number",  enum: [1, 5, 15, 60], description: "Candle size in minutes. Default 5." },
           candle_limit: { type: "number",  description: "Indicator window size. Default 100." },
-          preset:       { type: "string",  enum: ["default"], description: "Strategy preset to simulate. Default: current config." },
+          preset:       { type: "string",  enum: ["fibonacci"], description: "Strategy preset to simulate. Default: current config." },
         },
         required: ["pool_address", "bin_step", "fee_pct"],
       },
@@ -476,7 +476,7 @@ Returns summary stats + individual trade list. PnL is approximate (IL simplified
     function: {
       name: "list_strategies",
       description: `List all available LP strategy presets with descriptions.
-Presets: default (Fibonacci + Volume Profile — single strategy).`,
+Presets: fibonacci (Fibonacci + Volume Profile — single default strategy).`,
       parameters: { type: "object", properties: {} },
     },
   },
@@ -486,14 +486,14 @@ Presets: default (Fibonacci + Volume Profile — single strategy).`,
     function: {
       name: "apply_strategy",
       description: `Apply a strategy preset, updating screening and management config in bulk.
-Available: default (single preset — Fibonacci + Volume Profile).
+Available: fibonacci (single default — Fibonacci + Volume Profile).
 This will overwrite the relevant config keys — use list_strategies to see what each changes.`,
       parameters: {
         type: "object",
         properties: {
           name: {
             type: "string",
-            enum: ["default"],
+            enum: ["fibonacci"],
             description: "Strategy preset name to apply",
           },
         },
