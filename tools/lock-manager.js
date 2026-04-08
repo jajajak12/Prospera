@@ -17,13 +17,15 @@ export const MANAGEMENT_LOCK_PATH  = path.join(__dirname, "..", "management.lock
 // ── Config ──────────────────────────────────────────────────────────────────
 const SCREENING_LOCK_GAP_MS   = 60_000;
 const MANAGEMENT_LOCK_GAP_MS  = 45_000;
-const STALE_THRESHOLD_MS      = 5 * 60_1000;  // 5 min — lock dari proses mati dianggap invalid
+const STALE_THRESHOLD_MS      = 5 * 60 * 1000;  // 5 min — lock dari proses mati dianggap invalid
 
 // ── Core stale detection — reusable untuk semua lock types ─────────────────
+// Lock dianggap stale jika: PID berbeda DAN age > 5 min
+//不在乎 status running/completed — selama proses pemilik sudah mati, lock invalid
 export function isStaleLock(lock) {
-  if (!lock || lock.pid === process.pid) return false;
-  if (lock.status !== "running") return false;
-  return Date.now() - lock.ts > STALE_THRESHOLD_MS;
+  if (!lock) return false;
+  if (lock.pid === process.pid) return false;          // lock dari proses ini sendiri — valid
+  return Date.now() - lock.ts > STALE_THRESHOLD_MS;    // lock dari PID lain yang sudah tua — stale
 }
 
 // ── Read / Write helpers ─────────────────────────────────────────────────────
@@ -32,7 +34,7 @@ function readLock(path) {
     if (!fs.existsSync(path)) return null;
     const lock = JSON.parse(fs.readFileSync(path, "utf8"));
     if (isStaleLock(lock)) {
-      console.log(`[lock] stale lock detected (pid ${lock.pid}, age ${Math.round((Date.now() - lock.ts) / 1000)}s) — treating as empty`);
+      console.log(`[lock] stale lock detected (pid ${lock.pid}, status ${lock.status}, age ${Math.round((Date.now() - lock.ts) / 1000)}s) — treating as empty`);
       return null;
     }
     return lock;
