@@ -81,6 +81,71 @@ function stopCronJobs() {
   _cronTasks = [];
 }
 
+// ── Morning Briefing ─────────────────────────────────────────────────────────
+async function runMorningBriefing() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (getLastBriefingDate() === today) return; // already briefed today
+
+  const corrId = shortId();
+  const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+
+  // Positions + PnL
+  const positions = await getMyPositions({ force: true }).catch(() => null);
+  const posList = positions?.positions ?? [];
+  const totalPositions = positions?.total_positions ?? 0;
+
+  // Balance + exposure
+  const balance = await getWalletBalances().catch(() => null);
+  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList) : 0;
+  const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
+
+  // Circuit state
+  const cb = getCircuitState();
+
+  // Backtest results from yesterday
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  let backtestSummary = null;
+  try {
+    const backtestDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "backtest");
+    for (const label of ["7d", "14d"]) {
+      const file = path.join(backtestDir, `${yesterday}_${label}.json`);
+      if (fs.existsSync(file)) {
+        const data = JSON.parse(fs.readFileSync(file, "utf8"));
+        const winRate = data.results?.length > 0
+          ? ((data.results.filter(r => (r.pnl_pct ?? 0) > 0).length / data.results.length) * 100).toFixed(0)
+          : "N/A";
+        backtestSummary = `${label}: ${data.results?.length ?? 0} pools | WR: ${winRate}%`;
+        break; // show 7d first
+      }
+    }
+  } catch { /**/ }
+
+  // Build lines
+  const lines = [
+    `📊 Open Positions: ${totalPositions}`,
+    `💰 Exposure: ${exposurePct}% | SOL: ${balance?.sol?.toFixed(3) ?? "?"}`,
+  ];
+
+  if (cb?.isCircuitBroken) {
+    lines.push(`🔧 Circuit: OPEN (${cb.cooldownRemainingSec}s left)`);
+  }
+
+  if (backtestSummary) {
+    lines.push(`📈 Yesterday Backtest: ${backtestSummary}`);
+  }
+
+  if (posList.length > 0) {
+    const totalPnl = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
+    lines.push(`📉 Total PnL: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}%`);
+  }
+
+  const msg = `🌅 Morning Briefing [${ts}]\n\n${lines.join("\n")}`;
+  if (telegramEnabled()) sendMessage(msg).catch(() => {});
+
+  setLastBriefingDate();
+  log("briefing", `Morning briefing sent — positions: ${totalPositions}, exposure: ${exposurePct}%`);
+}
+
 function stripThink(text) {
   if (!text) return text;
   return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
@@ -356,7 +421,11 @@ export function startCronJobs() {
     runDailyBacktest({ correlationId: corrId, hours: 336 }).catch(e => log("cron_error", `Daily backtest failed: ${e.message}`));
   });
 
-  _cronTasks = [mgmtTask, screenTask, backtestTask];
+  const briefingTask = cron.schedule("0 9 * * *", () => {
+    runMorningBriefing().catch(e => log("cron_error", `Morning briefing failed: ${e.message}`));
+  });
+
+  _cronTasks = [mgmtTask, screenTask, backtestTask, briefingTask];
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }
 
