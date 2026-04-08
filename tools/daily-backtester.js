@@ -122,8 +122,10 @@ export async function runDailyBacktest({ correlationId = null, hours = 168 } = {
 
   _l(`Daily backtest starting... [${hours}h window]`);
 
-  const pools7d  = getClosedPoolsForBacktest({ hours: Math.min(hours, 168), limit: 8 });
-  const pools14d = getClosedPoolsForBacktest({ hours: Math.min(hours, 336), limit: 8 });
+  // 7d window: always 168h regardless of hours param
+  // 14d window: only run if hours >= 336, otherwise skip
+  const pools7d  = getClosedPoolsForBacktest({ hours: 168, limit: 8 });
+  const pools14d = hours >= 336 ? getClosedPoolsForBacktest({ hours: 336, limit: 8 }) : [];
 
   if (pools7d.length === 0 && pools14d.length === 0) {
     _l("No closed pools — skipping");
