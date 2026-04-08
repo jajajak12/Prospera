@@ -284,7 +284,6 @@ export async function runManagementCycle({ silent = false } = {}) {
   if (preCount === 0) {
     _m("management", "No open positions — skipping management cycle");
     logSkip("no_open_positions", {}, corrId);
-    if (!silent && telegramEnabled()) sendMessage(`Management [${corrId}] — No open positions`).catch(() => {});
     return null;
   }
 

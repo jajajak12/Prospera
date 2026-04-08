@@ -39,7 +39,7 @@
   "screeningIntervalMin": 15,
   "managementModel": "minimax-2.7",
   "screeningModel": "minimax-2.7",
-  "generalModel": "openai/gpt-4o",
+  "generalModel": "minimax-2.7",
   "minimaxApiKey": "sk-api-z7KDcklxT37-A9ySDlww0jl6Ft9LtwYq_Qk83dVNIH32yu1Mk8iQL0OC3BcSrU9dFCbWk-mwg2A5ktW7aXYxpAwi-2D6xnKu3RrapzRjddKpYDmcKYEICJM",
   "solMode": true,
   "gasReserve": 0.1,
