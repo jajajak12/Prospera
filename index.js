@@ -210,37 +210,42 @@ function stopCronJobs() {
 // ═══════════════════════════════════════════
 
 export async function runManagementCycle({ silent = false } = {}) {
+  // ── Correlation ID: one per cycle, propagated to all log lines ────────
+  const corrId = logCycleStart("management");
+
+  const _m = (category, message, meta = {}) => logWithId(category, message, meta, corrId);
+
   if (_managementBusy) {
-    logWithId("management", "Cycle busy — skipped", { skipReason: "busy" });
+    _m("management", "Cycle busy — skipped", { skipReason: "busy" });
     return null;
   }
   if (_screeningBusy) {
-    logWithId("management", "Screening running — skipped", { skipReason: "screening_busy" });
+    _m("management", "Screening running — skipped", { skipReason: "screening_busy" });
     return null;
   }
   const lockResult = acquireManagementLock();
   if (!lockResult.acquired) {
-    logWithId("management", "Lock not acquired", { skipReason: "lock", lockReason: lockResult.reason });
+    _m("management", "Lock not acquired", { skipReason: "lock", lockReason: lockResult.reason });
     return null;
   }
 
   const msSinceCompleted = Date.now() - _managementLastCompleted;
   const MANAGEMENT_MIN_GAP_MS = 45_000;
   if (_managementLastCompleted > 0 && msSinceCompleted < MANAGEMENT_MIN_GAP_MS) {
-    logWithId("management", "Min gap not reached", { skipReason: "min_gap", msSinceCompleted, minGapMs: MANAGEMENT_MIN_GAP_MS });
+    _m("management", "Min gap not reached", { skipReason: "min_gap", msSinceCompleted, minGapMs: MANAGEMENT_MIN_GAP_MS });
     return null;
   }
 
   const prePositions = await getMyPositions({ force: true }).catch(() => null);
   const prePositionCount = prePositions?.positions?.length ?? 0;
   if (prePositionCount === 0) {
-    logSkip("no_open_positions", { skipReason: "no_positions" });
+    logSkip("no_open_positions", { skipReason: "no_positions" }, corrId);
     return null;
   }
 
   _managementBusy = true;
   timers.managementLastRun = Date.now();
-  logWithId("management", `Starting cycle`, { openPositions: prePositionCount });
+  _m("management", `Starting cycle`, { openPositions: prePositionCount });
 
   const screeningIntervalMs = (config.schedule.screeningIntervalMin || 15) * 60_000;
 
@@ -252,7 +257,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     // LPAgent unavailable — skip cycle entirely, do NOT trigger screening
     // (we don't know actual position state, so don't act on stale assumptions)
     if (livePositions?.error) {
-      logWithId("management", "LPAgent error — skipped", { skipReason: "lpagent_error", error: livePositions.error });
+      _m("management", "LPAgent error — skipped", { skipReason: "lpagent_error", error: livePositions.error });
       return null;
     }
 
@@ -260,11 +265,11 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     if (positions.length === 0) {
       if (Date.now() - _screeningLastTriggered > screeningIntervalMs) {
-        logWithId("management", "No positions — triggering screening", { skipReason: "no_positions" });
-        runScreeningCycle().catch(e => logWithId("error", `Triggered screening failed`, { error: e.message }));
+        _m("management", "No positions — triggering screening", { skipReason: "no_positions" });
+        runScreeningCycle().catch(e => _m("error", `Triggered screening failed`, { error: e.message }));
       } else {
         const waitMin = Math.ceil((screeningIntervalMs - (Date.now() - _screeningLastTriggered)) / 60000);
-        logWithId("management", "No positions — screening cooldown active", { skipReason: "cooldown", waitMin });
+        _m("management", "No positions — screening cooldown active", { skipReason: "cooldown", waitMin });
       }
       return null;
     }
@@ -472,30 +477,30 @@ After acting, write a brief one-line result per position.
       const lock = readScreeningLock();
       const lockAge = lock ? Date.now() - lock.ts : Infinity;
       if (lock && lock.status === "running") {
-        logWithId("management", "Post-management: screening still locked — waiting", { lockPid: lock.pid, lockAgeSec: Math.round(lockAge / 1000) });
+        _m("management", "Post-management: screening still locked — waiting", { lockPid: lock.pid, lockAgeSec: Math.round(lockAge / 1000) });
         setTimeout(() => {
           if (!(_managementBusy || _screeningBusy)) {
-            runScreeningCycle().catch(e => logWithId("error", `Triggered screening failed`, { error: e.message }));
+            runScreeningCycle().catch(e => _m("error", `Triggered screening failed`, { error: e.message }));
           }
         }, Math.max(SCREENING_LOCK_GAP_MS - lockAge + 5000, 5000));
       } else {
-        logWithId("management", `Post-management: ${afterCount}/${config.risk.maxPositions} positions — triggering screening`, { openPositions: afterCount, maxPositions: config.risk.maxPositions });
-        runScreeningCycle().catch(e => logWithId("error", `Triggered screening failed`, { error: e.message }));
+        _m("management", `Post-management: ${afterCount}/${config.risk.maxPositions} positions — triggering screening`, { openPositions: afterCount, maxPositions: config.risk.maxPositions });
+        runScreeningCycle().catch(e => _m("error", `Triggered screening failed`, { error: e.message }));
       }
     }
 
   } catch (error) {
-    logWithId("error", `Management cycle failed`, { error: error.message });
+    _m("error", `Management cycle failed`, { error: error.message });
     mgmtReport = `Management cycle failed: ${error.message}`;
   } finally {
     _managementBusy = false;
     _managementLastCompleted = Date.now();
-    completeManagementLock(); // tulis timestamp selesai — TIDAK menghapus file
+    completeManagementLock();
     if (!silent && telegramEnabled()) {
-      if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => {});
+      if (mgmtReport) sendMessage(`🔄 Management Cycle [${corrId}]\n\n${stripThink(mgmtReport)}`).catch(() => {});
       for (const p of positions) {
         if (!p.in_range && (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-          notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range }).catch(() => {});
+          notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range, correlationId: corrId }).catch(() => {});
         }
       }
     }
@@ -507,6 +512,11 @@ After acting, write a brief one-line result per position.
 //  SCREENING CYCLE
 // ═══════════════════════════════════════════
 export async function runScreeningCycle({ silent = false, force = false } = {}) {
+  // ── Correlation ID: one per cycle, propagated to all log lines ────────
+  const corrId = logCycleStart("screening");
+
+  const _s = (category, message, meta = {}) => logWithId(category, message, meta, corrId);
+
   // Layer 1: in-memory busy flag
   if (_screeningBusy) {
     log("cron", "Screening skipped — cycle sedang berjalan (_screeningBusy flag)");
@@ -517,12 +527,12 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   // ── Hard cap pause check ──────────────────────────────────────────────
   if (_exposureHardPausedUntil > Date.now()) {
     const remaining = Math.ceil((_exposureHardPausedUntil - Date.now()) / 60000);
-    logWithId("screening", `HARD CAP pause active`, { skipReason: "exposure_pause", pauseRemainingMin: remaining });
+    _s("screening", `HARD CAP pause active`, { skipReason: "exposure_pause", pauseRemainingMin: remaining });
     return null;
   }
 
   if (!lockResult.acquired) {
-    logWithId("screening", `Lock not acquired`, { skipReason: "lock", lockReason: lockResult.reason });
+    _s("screening", `Lock not acquired`, { skipReason: "lock", lockReason: lockResult.reason });
     return null;
   }
 
@@ -533,7 +543,7 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   const _releaseAndSkip = (msg) => {
     completeScreeningLock();
     _screeningBusy = false;
-    if (msg) log("screening", msg);
+    if (msg) _s("screening", msg);
     return null;
   };
 
@@ -547,14 +557,14 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
 
     // ── Max positions check ───────────────────────────────────────────────
     if (prePositions.total_positions >= config.risk.maxPositions) {
-      logSkip("max_positions", { currentPositions: prePositions.total_positions, maxPositions: config.risk.maxPositions });
+      logSkip("max_positions", { currentPositions: prePositions.total_positions, maxPositions: config.risk.maxPositions }, corrId);
       return _releaseAndSkip(null);
     }
 
     // ── Deploy sizing (tiered) ────────────────────────────────────────────
     deployAmount = getPositionSizing(preBalance.sol);
     if (deployAmount === 0) {
-      logSkip("insufficient_balance", { walletSol: preBalance.sol, gasReserve: config.risk.exposureGasReserve });
+      logSkip("insufficient_balance", { walletSol: preBalance.sol, gasReserve: config.risk.exposureGasReserve }, corrId);
       return _releaseAndSkip(null);
     }
 
@@ -564,7 +574,7 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
 
     if (cap.level === "hard_pause") {
       _exposureHardPausedUntil = cap.pauseUntil;
-      logWithId("error", `HARD CAP TRIGGERED — new entry paused`, {
+      _s("error", `HARD CAP TRIGGERED — new entry paused`, {
         skipReason: "exposure",
         exposurePct: cap.exposurePct,
         currentExposureSol: cap.currentExposureSol,
@@ -580,20 +590,21 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
           maxSol: cap.maxExposureSol.toFixed(2),
           gasReserveSol: cap.gasReserveSol.toFixed(2),
           pauseMinutes: config.risk.exposureHardPauseMinutes ?? 15,
+          correlationId: corrId,
         }).catch(() => {});
       }
       return _releaseAndSkip(`HARD CAP: exposure limit reached. New entry paused. Auto-resume at ${new Date(cap.pauseUntil).toLocaleTimeString()}.`);
     }
 
     if (cap.level === "warning") {
-      logWithId("warn", `SOFT WARNING — approaching hard cap`, {
+      _s("warn", `SOFT WARNING — approaching hard cap`, {
         skipReason: "exposure_warning",
         exposurePct: cap.exposurePct,
         projectedExposureSol: cap.projectedExposureSol,
         maxExposureSol: cap.maxExposureSol,
       });
     } else {
-      logWithId("screening", `Exposure check OK`, {
+      _s("screening", `Exposure check OK`, {
         currentExposureSol: currentExposure,
         projectedExposureSol: cap.projectedExposureSol,
         exposurePct: cap.exposurePct,
@@ -605,22 +616,22 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   }
 
   timers.screeningLastRun = Date.now();
-  logWithId("screening", `Starting Fibonacci screening cycle`, { model: config.llm.screeningModel, deployAmountSol: deployAmount, walletSol: preBalance.sol });
-  logWithId("screening", `Deploy amount: ${deployAmount} SOL`, { walletSol: preBalance.sol });
+  _s("screening", `Starting Fibonacci screening cycle`, { model: config.llm.screeningModel, deployAmountSol: deployAmount, walletSol: preBalance.sol });
+  _s("screening", `Deploy amount: ${deployAmount} SOL`, { walletSol: preBalance.sol });
   let screenReport = null;
   let topResult    = null;
 
   try {
 
     // Fetch Fibonacci-filtered candidates
-    topResult = await getTopCandidates({ limit: 20 }).catch(() => null);
+    topResult = await getTopCandidates({ limit: 20, correlationId: corrId }).catch(() => null);
     const candidates = topResult?.candidates || [];
 
     // If GeckoTerminal returned nothing (rate limit / network), allow retry in 60s
     // (partial reset — not full 0, to avoid double-fire on management's next tick)
     if ((topResult?.total_screened ?? 0) === 0) {
       _screeningLastTriggered = Date.now() - (config.schedule.screeningIntervalMin * 60 * 1000) + 60_000;
-      logWithId("error", `Screening aborted — 0 tokens returned`, { skipReason: "zero_tokens" });
+      _s("error", `Screening aborted — 0 tokens returned`, { skipReason: "zero_tokens" });
       return _releaseAndSkip(null);
     }
 
@@ -768,18 +779,18 @@ reason: <one sentence why this over others>
     screenReport = content;
 
   } catch (error) {
-    log("cron_error", `Screening cycle failed: ${error.message}`);
+    _s("error", `Screening cycle failed`, { error: error.message });
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
-    completeScreeningLock(); // release file lock via lock-manager
-    _screeningBusy = false;  // release in-process guard
+    completeScreeningLock();
+    _screeningBusy = false;
     if (!silent && telegramEnabled()) {
       if (screenReport) {
         const _ts  = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
         const _tot = topResult?.total_screened    ?? 0;
         const _vol = topResult?.after_volume_count ?? 0;
         const _mtr = topResult?.withPool_count     ?? 0;
-        const _hdr = `🔍 Fibonacci Screening [${_ts}]\nDiscovered: ${_tot} | After volume: ${_vol} | Meteora pools: ${_mtr}\n\n`;
+        const _hdr = `🔍 Fibonacci Screening [${corrId}] [${_ts}]\nDiscovered: ${_tot} | After volume: ${_vol} | Meteora pools: ${_mtr}\n\n`;
         sendMessage(`${_hdr}${stripThink(screenReport)}`).catch(() => {});
       }
     }

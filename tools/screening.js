@@ -13,6 +13,7 @@
 
 import { config } from "../config.js";
 import { log } from "../logger.js";
+import { logWithId, logSkip } from "../log-utils.js";
 import { analyzeSignal } from "./chart.js";
 import { hybridDataProvider } from "./dataProvider.js";
 import { getTokenAdvancedInfo, getTokenPriceInfo } from "./okx.js";
@@ -427,8 +428,17 @@ async function fetchMeteoraDlmmPoolMap() {
  * @param {object} opts
  * @param {number} opts.limit - Max tokens to fully analyze (default 20)
  */
-export async function getTopCandidates({ limit = 20 } = {}) {
+export async function getTopCandidates({ limit = 20, correlationId = null } = {}) {
   const s = config.screening;
+
+  // ── Correlation helper: uses existing ID when provided ──────────────────
+  // Falls back to log() for non-cycle calls (e.g. direct getTopCandidates usage)
+  const _s = (category, message, meta = {}) => {
+    if (correlationId) {
+      return logWithId(category, message, meta, correlationId);
+    }
+    return log(category, message, meta);
+  };
 
   // ── Step 1: Discover tokens ──────────────────────────────────────────────
   const dexTokens = await discoverTokensFromDexscreener();
@@ -532,7 +542,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       log("screening", `  ${t.symbol}: OK — bundle=${okx.bundlePct ?? "?"}%, insiders=${okx.graphInsiders ?? "?"}`);
       return true;
     });
-    log("screening", `RugCheck filter: ${eligible.length}/${before} passed`);
+    _s("screening", `RugCheck filter: ${eligible.length}/${before} passed`);
   }
 
   if (eligible.length === 0) {
@@ -564,7 +574,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       log("screening", `  ${t.symbol}: OK — top10=${jup.top10Pct ?? "?"}%, bots=${jup.botHoldersPct ?? "?"}%, fees=${jup.feesSOL ?? "?"} SOL`);
       return true;
     });
-    log("screening", `Jupiter filter: ${eligible.length}/${before} passed`);
+    _s("screening", `Jupiter filter: ${eligible.length}/${before} passed`);
   }
 
   if (eligible.length === 0) {
@@ -588,7 +598,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       t._ath = pr.ath;
       return true;
     });
-    log("screening", `ATH filter: ${eligible.length}/${before} passed`);
+    _s("screening", `ATH filter: ${eligible.length}/${before} passed`);
   }
 
   if (eligible.length === 0) {
@@ -626,7 +636,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       meteoraPoolMap.set(token.mint, pool);
     }
     if (fallbacks.length > 0) {
-      log("screening", `RocketScan fallback: ${fallbacks.length}/${missingTokens.length} token mendapat pool`);
+      _s("screening", `RocketScan fallback: ${fallbacks.length}/${missingTokens.length} token mendapat pool`);
     }
   }
 
@@ -640,7 +650,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       return true;
     });
 
-  log.screening(`Step 7 — Meteora pool match: ${withPool.length}/${eligibleForPoolMatch.length} top candidates have pools`);
+  _s("screening", `Step 7 — Meteora pool match: ${withPool.length}/${eligibleForPoolMatch.length} top candidates have pools`);
 
   if (withPool.length === 0) {
     return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount, withPool_count: 0, fib_analyzed: 0 };
@@ -679,7 +689,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     }
     return true;
   });
-  log.screening(`Running Fibonacci analysis on ${toAnalyze.length} pools (pre-pool capped from ${maxTechAnalysis} top by volume)...`);
+  _s("screening", `Running Fibonacci analysis on ${toAnalyze.length} pools (pre-pool capped from ${maxTechAnalysis} top by volume)...`);
 
   const signalResults = await Promise.allSettled(
     toAnalyze.map(async ({ token, pool }) => {
@@ -776,7 +786,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
         }
       }
     } catch (e) {
-      log("screening", `Smart wallet check failed (non-fatal): ${e.message}`);
+      _s("screening", `Smart wallet check failed (non-fatal): ${e.message}`);
     }
   }
 
@@ -796,8 +806,8 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   // Sort by confluence score descending
   filtered.sort((a, b) => (b.fib_signal.confluenceScore ?? 0) - (a.fib_signal.confluenceScore ?? 0));
 
-  log.screening(`Step 8 — Fibonacci: ${filtered.length}/${withPool.length} passed broken-support → ${candidates.length} ENTRY`);
-  log.screening(`Summary: discovered=${dexTokens.length} → volume=${afterVolumeCount} → eligible=${eligible.length} → prePoolCap=${maxTechAnalysis} → pools=${withPool.length} → fib_entry=${filtered.length}`);
+  _s("screening", `Step 8 — Fibonacci: ${filtered.length}/${withPool.length} passed broken-support → ${candidates.length} ENTRY`);
+  _s("screening", `Summary: discovered=${dexTokens.length} → volume=${afterVolumeCount} → eligible=${eligible.length} → prePoolCap=${maxTechAnalysis} → pools=${withPool.length} → fib_entry=${filtered.length}`);
 
   return {
     candidates:        filtered,

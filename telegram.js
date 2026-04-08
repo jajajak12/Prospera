@@ -168,25 +168,28 @@ export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOu
   );
 }
 
-export async function notifyOutOfRange({ pair, minutesOOR }) {
+export async function notifyOutOfRange({ pair, minutesOOR, correlationId = null }) {
+  const corr = correlationId ? ` [${correlationId}]` : "";
   await sendHTML(
-    `⚠️ <b>Out of Range</b> ${pair}\n` +
+    `⚠️ <b>Out of Range</b> ${pair}${corr}\n` +
     `Been OOR for ${minutesOOR} minutes`
   );
 }
 
-export async function notifyExposureWarning({ exposurePct, projectedSol, maxSol, gasReserveSol }) {
+export async function notifyExposureWarning({ exposurePct, projectedSol, maxSol, gasReserveSol, correlationId = null }) {
+  const corr = correlationId ? ` [${correlationId}]` : "";
   await sendHTML(
-    `⚠️ <b>Exposure Warning</b>\n` +
+    `⚠️ <b>Exposure Warning</b>${corr}\n` +
     `Exposure: <b>${exposurePct}%</b>\n` +
     `Projected: ${projectedSol} SOL / ${maxSol} SOL max\n` +
     `Gas reserve: ${gasReserveSol} SOL (excluded from cap)`
   );
 }
 
-export async function notifyExposureHardCap({ exposurePct, projectedSol, maxSol, gasReserveSol, pauseMinutes }) {
+export async function notifyExposureHardCap({ exposurePct, projectedSol, maxSol, gasReserveSol, pauseMinutes, correlationId = null }) {
+  const corr = correlationId ? ` [${correlationId}]` : "";
   await sendHTML(
-    `🔴 <b>HARD CAP TRIGGERED</b>\n` +
+    `🔴 <b>HARD CAP TRIGGERED</b>${corr}\n` +
     `Exposure: <b>${exposurePct}%</b> — new entry PAUSED\n` +
     `Projected: ${projectedSol} SOL / ${maxSol} SOL max\n` +
     `Gas reserve: ${gasReserveSol} SOL\n` +
