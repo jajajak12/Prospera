@@ -26,13 +26,13 @@ import cron from "node-cron";
 // ── Imports ────────────────────────────────────────────────────────────────────
 import { acquireScreeningLock, completeScreeningLock, acquireManagementLock, completeManagementLock } from "./tools/lock-manager.js";
 import { agentLoop } from "./agent.js";
+import http from "http";
 import { log } from "./logger.js";
 import { logWithId, logSkip, shortId, logCycleStart } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { getCircuitState } from "./tools/circuit-breaker.js";
-import { config, computeDeployAmount, getPositionSizing, calculateCurrentExposure, canOpenNewPosition, checkExposureCap } from "./config.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled } from "./telegram.js";
@@ -74,6 +74,36 @@ let _exposureHardPausedUntil = 0;
 const timers = { managementLastRun: 0, screeningLastRun: 0 };
 
 const POSITION_META_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "position-meta.json");
+
+// ── Health Server ──────────────────────────────────────────────────────────────
+let _healthServer = null;
+
+function startHealthServer(port = 3000) {
+  if (_healthServer) return;
+  _healthServer = http.createServer((req, res) => {
+    if (req.url === "/health") {
+      const cb = getCircuitState();
+      const body = JSON.stringify({
+        status: "ok",
+        uptime: Math.round(process.uptime()),
+        lastScreening: timers.screeningLastRun ? new Date(timers.screeningLastRun).toISOString() : null,
+        lastManagement: timers.managementLastRun ? new Date(timers.managementLastRun).toISOString() : null,
+        circuitState: cb,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(body);
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  _healthServer.listen(port, () => log("health", `Health server listening on port ${port}`));
+  _healthServer.on("error", e => log("health", `Health server error: ${e.message}`));
+}
+
+function stopHealthServer() {
+  if (_healthServer) { _healthServer.close(); _healthServer = null; }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function stopCronJobs() {
@@ -438,6 +468,7 @@ async function shutdown(signal) {
     fallbackProvider: cb.isFallbackActive ? "openrouter" : "minimax",
   });
   stopPolling();
+  stopHealthServer();
   const positions = await getMyPositions().catch(() => ({}));
   log("shutdown", `[${corrId}] Open positions: ${positions.total_positions ?? "?"}`);
   process.exit(0);
@@ -495,6 +526,7 @@ const isTTY = process.stdin.isTTY;
 if (isTTY) {
   // REPL mode — start cron + Telegram polling
   startCronJobs();
+  startHealthServer();
   _screeningLastTriggered = 0;
   startPolling(handleTelegram);
   console.log("\nFibonacci LP Agent — Minimal Mode — Running.\nCron: screening + management active.\n");
@@ -502,6 +534,7 @@ if (isTTY) {
   // PM2 / non-TTY mode
   log("startup", "Non-TTY mode — starting cycles.");
   startCronJobs();
+  startHealthServer();
   _screeningLastTriggered = 0;
   startPolling(handleTelegram);
 }
