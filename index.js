@@ -95,43 +95,37 @@ export async function runManagementCycle({ silent = false } = {}) {
   if (_managementBusy) { _m("management", "Cycle busy — skipped"); return null; }
   if (_screeningBusy) { _m("management", "Screening running — skipped"); return null; }
 
-  const lockResult = acquireManagementLock();
-  if (!lockResult.acquired) { _m("management", "Lock not acquired"); return null; }
-
+  // ── Fast path: cek posisi dulu sebelum acquire lock / busy flag ─────────────
+  // Jika 0 posisi → skip secepat mungkin, tidak perlu lock, tidak perlu LPAgent call
   const prePositions = await getMyPositions({ force: true }).catch(() => null);
 
-  // Distinguish LPAgent error from truly zero positions
   if (!prePositions || prePositions.error) {
-    _m("warn", `LPAgent unavailable — ${prePositions?.error ?? "network error"} — skipping cycle (positions unknown)`);
+    _m("warn", `LPAgent unavailable — ${prePositions?.error ?? "network error"} — skipping cycle`);
     logSkip("lpagent_unavailable", { error: prePositions?.error ?? "network_error" }, corrId, "management");
-    completeManagementLock();
+    if (!silent && telegramEnabled()) sendMessage(`Management [${corrId}] — LPAgent unavailable, skipping`).catch(() => {});
     return null;
   }
 
   const preCount = prePositions?.positions?.length ?? 0;
   if (preCount === 0) {
-    _m("management", "No open positions");
+    _m("management", "No open positions — skipping management cycle");
     logSkip("no_open_positions", {}, corrId);
-    if (telegramEnabled()) sendMessage(`Management [${corrId}] — No open positions`).catch(() => {});
-    completeManagementLock();
+    if (!silent && telegramEnabled()) sendMessage(`Management [${corrId}] — No open positions`).catch(() => {});
     return null;
   }
+
+  // ── Has positions → acquire lock and run full management ───────────────────
+  const lockResult = acquireManagementLock();
+  if (!lockResult.acquired) { _m("management", "Lock not acquired"); return null; }
 
   _managementBusy = true;
   timers.managementLastRun = Date.now();
   _m("management", `Starting cycle`, { openPositions: preCount });
 
   let mgmtReport = null;
-  let positions = [];
+  let positions = prePositions.positions ?? [];
 
   try {
-    const livePositions = await getMyPositions({ force: true }).catch(() => null);
-    if (!livePositions || livePositions.error) {
-      _m("error", `LPAgent unavailable: ${livePositions?.error ?? "network error"}`);
-      completeManagementLock();
-      return null;
-    }
-    positions = livePositions?.positions || [];
     if (positions.length === 0) {
       if (Date.now() - _screeningLastTriggered > SCREENING_INTERVAL_MS) {
         _m("management", "No positions — triggering screening");
