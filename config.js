@@ -105,9 +105,9 @@ export const config = {
     temperature:     u.temperature     ?? 0.373,
     maxTokens:       u.maxTokens       ?? 4096,
     maxSteps:        u.maxSteps        ?? 12,
-    managementModel: u.managementModel ?? process.env.LLM_MODEL ?? "deepseek/deepseek-r1",
-    screeningModel:  u.screeningModel  ?? process.env.LLM_MODEL ?? "deepseek/deepseek-r1",
-    generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "deepseek/deepseek-r1",
+    screeningModel:  u.screeningModel  ?? "qwen/qwen3-coder-480b",
+    managementModel: u.managementModel ?? "deepseek/deepseek-v3.2",
+    generalModel:    u.generalModel    ?? "deepseek/deepseek-v3.2",
   },
 
   // ─── Common Token Mints ────────────────
