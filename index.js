@@ -491,6 +491,21 @@ async function handleTelegram(text) {
       await sendMessage(`Open Positions (${total_positions}):\n${lines.join("\n")}`);
       return;
     }
+    if (text === "/help") {
+      await sendMessage(`Prospera Commands:\n/positions — list open positions\n/status — agent status overview\n/close <N> — close position N\n/help — show this message`);
+      return;
+    }
+    if (text === "/status") {
+      const cb = getCircuitState();
+      const positions = await getMyPositions({ force: true }).catch(() => null);
+      const balance = await getWalletBalances().catch(() => null);
+      const deployedSol = (positions?.positions?.length ?? 0) > 0 ? calculateCurrentExposure(positions.positions) : 0;
+      const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
+      const lastScreen = timers.screeningLastRun ? new Date(timers.screeningLastRun).toLocaleString("id-ID") : "never";
+      const lastMgmt = timers.managementLastRun ? new Date(timers.managementLastRun).toLocaleString("id-ID") : "never";
+      await sendMessage(`Prospera Status\n\nMode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}\nCircuit: ${cb?.isCircuitBroken ? "OPEN (fallback)" : "OK (Minimax)"}\nLast Screening: ${lastScreen}\nLast Management: ${lastMgmt}\nOpen Positions: ${positions?.total_positions ?? 0}/${config.risk.maxPositions}\nExposure: ${exposurePct}%\nSOL Balance: ${balance?.sol?.toFixed(3) ?? "?"}`);
+      return;
+    }
     const closeMatch = text.match(/^\/close\s+(\d+)$/i);
     if (closeMatch) {
       const idx = parseInt(closeMatch[1]) - 1;
