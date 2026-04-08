@@ -40,6 +40,7 @@ import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, not
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, getStateSummary } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest, runBacktestWithSweep } from "./backtest.js";
+import { runDailyBacktest } from "./tools/daily-backtester.js";
 
 // ── Sweep proposal helpers ─────────────────────────────────────────────────
 const SWEEP_PROPOSAL_PATH = path.join(__dirname, "sweep-proposal.json");
@@ -804,165 +805,13 @@ reason: <one sentence why this over others>
 
 // ═══════════════════════════════════════════
 //  PERIODIC BACKTEST (02:00 daily)
+//  Now delegated to runDailyBacktest() in tools/daily-backtester.js
+//  Kept as thin wrapper for backward compat with Telegram /backtest command.
 // ═══════════════════════════════════════════
 async function runPeriodicBacktest() {
-  log("cron", "Periodic backtest starting...");
-
-  const pools = getClosedPoolsForBacktest({ hours: 168, limit: 8 });
-  if (pools.length === 0) {
-    log("cron", "Periodic backtest: no closed pools in last 7 days — skipping");
-    return;
-  }
-
-  const results = [];
-  for (const p of pools) {
-    let bt = null; let sweepBest = null; let sweepAll = [];
-    for (const agg of [15, 5, 1]) {
-      try {
-        const res = await runBacktestWithSweep({ poolAddress: p.pool, binStep: p.bin_step, feePct: p.fee_pct, aggregate: agg, candleLimit: 200 });
-        bt = res.backtest; sweepBest = res.sweepBest; sweepAll = res.sweepAll ?? [];
-        if (bt && bt.totalTrades >= 3) break;
-      } catch { bt = null; sweepBest = null; }
-    }
-    results.push({ ...p, bt, sweepBest, sweepAll });
-  }
-
-  // ── Build suggestions ───────────────────────────────────────────────────────
-  const withData    = results.filter(r => r.bt && r.bt.totalTrades >= 3);
-  const suggestions = [];
-
-  if (withData.length > 0) {
-    const avgBtWr = withData.reduce((s, r) => s + r.bt.winRate, 0) / withData.length;
-
-    // Suggest raising minBacktestWinRate if most pools backtest poorly
-    if (avgBtWr < 0.45 && !config.screening.autoBacktest) {
-      suggestions.push(`Aktifkan auto-backtest filter (WR rata-rata: ${(avgBtWr*100).toFixed(0)}%)`);
-    }
-
-    // Suggest bin_step focus if one range clearly outperforms
-    const byStep = {};
-    for (const r of withData) {
-      const bucket = r.bin_step <= 100 ? "80–100" : r.bin_step <= 150 ? "100–150" : "150–200";
-      if (!byStep[bucket]) byStep[bucket] = [];
-      byStep[bucket].push(r.bt.winRate);
-    }
-    let bestBucket = null, bestWr = 0;
-    for (const [bucket, wrs] of Object.entries(byStep)) {
-      const avg = wrs.reduce((a, b) => a + b, 0) / wrs.length;
-      if (avg > bestWr) { bestWr = avg; bestBucket = bucket; }
-    }
-    if (bestBucket && bestWr > 0.60) {
-      suggestions.push(`Bin step ${bestBucket} unggul (WR ${(bestWr*100).toFixed(0)}%) — pertimbangkan fokuskan range bin step`);
-    }
-
-    // Suggest stop loss tightening if many stop-loss exits
-    const slHits = withData.filter(r => r.close_reason === "stop_loss").length;
-    if (slHits >= Math.ceil(withData.length * 0.5)) {
-      suggestions.push(`${slHits}/${withData.length} posisi kena stop loss — pertimbangkan perketat confluence`);
-    }
-
-    // Parameter sweep recommendation — aggregate best params across all pools
-    const sweepable = withData.filter(r => r.sweepBest);
-    if (sweepable.length >= 2) {
-      const curRsi  = config.screening.rsiMin          ?? 48;
-      const curConf = config.screening.minConfluenceScore ?? 0.30;
-
-      // Vote tally
-      const rsiVotes = {}, confVotes = {};
-      for (const r of sweepable) {
-        rsiVotes[r.sweepBest.rsiMin]             = (rsiVotes[r.sweepBest.rsiMin]             || 0) + 1;
-        confVotes[r.sweepBest.minConfluenceScore] = (confVotes[r.sweepBest.minConfluenceScore] || 0) + 1;
-      }
-      const bestRsi  = Object.entries(rsiVotes).sort((a, b) => b[1] - a[1])[0];
-      const bestConf = Object.entries(confVotes).sort((a, b) => b[1] - a[1])[0];
-      const majority = Math.ceil(sweepable.length * 0.5);
-
-      // WR improvement: average (sweepBest.winRate - baseline.winRate) across pools
-      const avgWrImprovement = sweepable.reduce((s, r) => s + (r.sweepBest.winRate - r.bt.winRate), 0) / sweepable.length;
-      const MIN_WR_IMPROVEMENT = 0.07; // +7%
-
-      const proposed = {};
-
-      // RSI: majority consensus + WR improvement + max ±4 pts per run
-      if (bestRsi && bestRsi[1] >= majority && avgWrImprovement >= MIN_WR_IMPROVEMENT) {
-        const raw   = Number(bestRsi[0]);
-        const delta = Math.max(-4, Math.min(4, raw - curRsi));
-        const clamped = curRsi + delta;
-        if (clamped !== curRsi) {
-          proposed.rsiMin = clamped;
-          suggestions.push(`Sweep: RSI min ${curRsi} → ${clamped} (konsensus ${bestRsi[1]}/${sweepable.length}, WR +${(avgWrImprovement*100).toFixed(0)}%)`);
-        }
-      } else if (bestRsi && Number(bestRsi[0]) !== curRsi) {
-        const reason = bestRsi[1] < majority
-          ? `konsensus lemah (${bestRsi[1]}/${sweepable.length})`
-          : `WR improvement +${(avgWrImprovement*100).toFixed(0)}% < 7%`;
-        suggestions.push(`Sweep: RSI min ${curRsi} → ${bestRsi[0]} — ${reason}, tidak di-apply`);
-      }
-
-      // Confluence: majority consensus + WR improvement + max ±0.05 per run
-      if (bestConf && bestConf[1] >= majority && avgWrImprovement >= MIN_WR_IMPROVEMENT) {
-        const raw   = Number(bestConf[0]);
-        const delta = Math.max(-0.05, Math.min(0.05, raw - curConf));
-        const clamped = Math.round((curConf + delta) * 100) / 100;
-        if (Math.abs(clamped - curConf) >= 0.01) {
-          proposed.minConfluenceScore = clamped;
-          suggestions.push(`Sweep: confluence min ${curConf} → ${clamped} (konsensus ${bestConf[1]}/${sweepable.length}, WR +${(avgWrImprovement*100).toFixed(0)}%)`);
-        }
-      } else if (bestConf && Math.abs(Number(bestConf[0]) - curConf) >= 0.05) {
-        const reason = bestConf[1] < majority
-          ? `konsensus lemah (${bestConf[1]}/${sweepable.length})`
-          : `WR improvement +${(avgWrImprovement*100).toFixed(0)}% < 7%`;
-        suggestions.push(`Sweep: confluence min ${curConf} → ${bestConf[0]} — ${reason}, tidak di-apply`);
-      }
-
-      // Send Telegram preview + save proposal (user must confirm via /apply_sweep)
-      if (Object.keys(proposed).length > 0) {
-        const proposal = {
-          changes: proposed,
-          curRsi, curConf,
-          avgWrImprovement: +avgWrImprovement.toFixed(3),
-          pools: sweepable.length,
-          createdAt: new Date().toISOString(),
-        };
-        saveSweepProposal(proposal);
-        const previewLines = Object.entries(proposed).map(([k, v]) => {
-          const cur = k === "rsiMin" ? curRsi : curConf;
-          return `  ${k}: ${cur} → ${v}`;
-        });
-        await sendMessage(
-          `🔬 Sweep proposal (WR +${(avgWrImprovement*100).toFixed(0)}%, ${sweepable.length} pools):\n` +
-          previewLines.join("\n") + "\n\n" +
-          `Ketik /apply_sweep untuk apply, /reject_sweep untuk batalkan.\n` +
-          `Config lama akan di-backup otomatis sebelum di-apply.`
-        ).catch(() => {});
-        log("cron", `Sweep proposal saved: ${JSON.stringify(proposed)}`);
-      }
-    }
-
-    if (suggestions.length === 0) {
-      suggestions.push("Tidak ada perubahan yang disarankan — strategi berjalan sesuai ekspektasi");
-    }
-  }
-
-  // ── Build Telegram message ──────────────────────────────────────────────────
-  const lines = results.map(r => {
-    if (!r.bt || r.bt.totalTrades < 3) return `  • ${r.pool_name} — data tidak cukup`;
-    const wr   = `WR ${(r.bt.winRate*100).toFixed(0)}%`;
-    const avg  = `avgPnL ${r.bt.avgPnlPct?.toFixed(1)}%`;
-    const act  = r.actual_pnl != null ? ` | live ${r.actual_pnl >= 0 ? "+" : ""}${r.actual_pnl.toFixed(1)}%` : "";
-    const best = r.sweepBest ? ` | best: RSI${r.sweepBest.rsiMin} conf${r.sweepBest.minConfluenceScore}` : "";
-    return `  • ${r.pool_name} — ${wr} ${avg} (${r.bt.totalTrades}t)${act}${best}`;
-  });
-
-  const msg =
-    `📊 Periodic Backtest (7 hari terakhir)\n\n` +
-    `Pool ditest: ${pools.length} | Data cukup: ${withData.length}\n\n` +
-    lines.join("\n") +
-    `\n\n💡 Saran:\n` +
-    suggestions.map(s => `  • ${s}`).join("\n");
-
-  await sendMessage(msg).catch(() => {});
-  log("cron", `Periodic backtest done — ${withData.length}/${pools.length} pools had data`);
+  const { shortId } = await import("./log-utils.js");
+  const corrId = shortId();
+  return runDailyBacktest({ correlationId: corrId, hours: 168 });
 }
 
 // ═══════════════════════════════════════════
@@ -1357,13 +1206,15 @@ if (isTTY) {
       const range = (btMatch[1] || "7d").toLowerCase();
       const hours = range === "30d" ? 720 : range === "all" ? 99999 : 168;
       const label = range === "30d" ? "30 hari" : range === "all" ? "semua waktu" : "7 hari";
-      await sendMessage(`🔄 Menjalankan backtest (${label})...`);
       const saved = getClosedPoolsForBacktest({ hours, limit: 8 });
       if (saved.length === 0) {
         await sendMessage(`Belum ada pool yang ditutup dalam ${label}.`);
         return;
       }
-      await runPeriodicBacktest().catch(e => sendMessage(`Error: ${e.message}`).catch(() => {}));
+      await sendMessage(`🔄 Menjalankan backtest (${label})...`);
+      const { shortId } = await import("./log-utils.js");
+      const corrId = shortId();
+      await runDailyBacktest({ correlationId: corrId, hours }).catch(e => sendMessage(`Error: ${e.message}`).catch(() => {}));
       return;
     }
 
