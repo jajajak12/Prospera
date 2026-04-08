@@ -595,16 +595,31 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
-  // ── Step 7: Find Meteora DLMM pool for each passing token ────────────────
+  // ── Step 6b: Pre-pool cap & ranking ─────────────────────────────────────
+  // Birdeye rate limit = 60 RPM. Each analyzeSignal = 2 Birdeye calls
+  // (OHLCV 1m + daily candles). Max candidates = floor(60 ÷ 2) = 30.
+  // We cap at 10 to stay well within safe margin (only ~33% of limit).
+  // Ranking by volume (_vol5m) before expensive Meteora API calls = efficiency.
+  // Pre-pool cap means we only fetch pools for the top N candidates.
+  const maxTechAnalysis = s.maxTechnicalAnalysisCandidates ?? 10;
+  const rankedEligible = [...eligible].sort((a, b) => (b._vol5m ?? 0) - (a._vol5m ?? 0));
+  const topCandidates = rankedEligible.slice(0, maxTechAnalysis);
+  if (eligible.length > maxTechAnalysis) {
+    log.screening(`Pre-pool cap: top ${maxTechAnalysis} by volume selected from ${eligible.length} passing filters — Meteora/RocketScan calls now limited to ${maxTechAnalysis}, Birdeye = ${maxTechAnalysis * 2} RPM`);
+  }
+  const eligibleForPoolMatch = topCandidates; // rename for clarity in pool matching step
+
+  // ── Step 7: Find Meteora DLMM pool — only for top N candidates ──────────
   // Fetch all qualifying pools in one bulk request, then match by token mint.
-  log("screening", `Finding Meteora DLMM pools for ${eligible.length} tokens...`);
+  // Only top N tokens are matched (efficiency: skip pool lookup for low-volume tokens).
+  log("screening", `Finding Meteora DLMM pools for ${eligibleForPoolMatch.length} top candidates (pre-capped from ${eligible.length})...`);
   const meteoraPoolMap = await fetchMeteoraDlmmPoolMap();
   log("screening", `Meteora pool universe: ${meteoraPoolMap.size} qualifying pools fetched`);
 
-  // ── Step 7b: RocketScan fallback untuk token yang tidak ditemukan ─────────
+  // ── Step 7b: RocketScan fallback — only for top N tokens not in Meteora ──
   // pool-discovery-api butuh waktu untuk mengindex pool baru.
-  // RocketScan mendeteksi pool secara on-chain sehingga lebih cepat.
-  const missingTokens = eligible.filter(t => !meteoraPoolMap.has(t.mint));
+  // RocketScan mendeteksi pool on-chain, lebih cepat untuk pool baru.
+  const missingTokens = eligibleForPoolMatch.filter(t => !meteoraPoolMap.has(t.mint));
   if (missingTokens.length > 0) {
     const fallbacks = await fetchRocketScanFallback(missingTokens, s);
     for (const { token, pool } of fallbacks) {
@@ -615,7 +630,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     }
   }
 
-  const withPool = eligible
+  const withPool = eligibleForPoolMatch
     .map(t => ({ token: t, pool: meteoraPoolMap.get(t.mint) ?? null }))
     .filter(({ token, pool }) => {
       if (!pool) {
@@ -625,31 +640,21 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       return true;
     });
 
-  log.screening(`Step 7 — Meteora pool match: ${withPool.length}/${eligible.length} tokens have qualifying pools`);
+  log.screening(`Step 7 — Meteora pool match: ${withPool.length}/${eligibleForPoolMatch.length} top candidates have pools`);
 
   if (withPool.length === 0) {
     return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount, withPool_count: 0, fib_analyzed: 0 };
   }
 
-  // ── Step 7b: Pre-Fib ranking cap ────────────────────────────────────────
-  // Birdeye rate limit = 60 RPM. Each analyzeSignal = 2 Birdeye calls (1m + daily OHLCV).
-  // To stay safe: cap at maxBirdeyeCandidates (default 10) before Fib analysis.
-  // Rank by volume (best quality signal) descending.
-  const maxBirdeye = s.maxBirdeyeCandidates ?? 10;
-  const rankedCandidates = [...withPool].sort((a, b) => (b.token._vol5m ?? 0) - (a.token._vol5m ?? 0));
-  const toAnalyzeRaw = rankedCandidates.slice(0, maxBirdeye);
-  if (withPool.length > maxBirdeye) {
-    log.screening(`Pre-Fib cap: ${maxBirdeye} candidates selected (top by volume) from ${withPool.length} with pools — Birdeye calls now limited to ${toAnalyzeRaw.length * 2}/min`);
-  }
-
   // ── Step 8: Fibonacci analysis ──────────────────────────────────────────
-  // Birdeye OHLCV called ONLY for the capped toAnalyzeRaw set.
+  // Birdeye OHLCV called ONLY for the capped top N candidates.
   // Meteora pool bin_step for bin range calculation.
+  // Birdeye 60 RPM ÷ 2 calls = 30 candidates max. We use 10 (~33% capacity).
 
   // Filter out pools cached as "broken support" — price far below Fib 0.618, no recovery expected soon
-  // All price values are stored in USD (token.price from GT) to match GT OHLCV candle units.
+  // All price values are stored in USD (token.price from Dexscreener) to match OHLCV candle units.
   const now = Date.now();
-  const toAnalyze = toAnalyzeRaw.filter(({ token, pool }) => {
+  const toAnalyze = withPool.filter(({ token, pool }) => {
     // Skip pools that are actively crashing (>80% price drop in 24h) — not an entry signal
     if (pool.price_change_pct != null && pool.price_change_pct <= -80) {
       log("screening", `  ${pool.name}: SKIP — price crashed ${pool.price_change_pct.toFixed(1)}% in 24h`);
@@ -674,7 +679,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
     }
     return true;
   });
-  log.screening(`Running Fibonacci analysis on ${toAnalyze.length} pools (capped from ${toAnalyzeRaw.length} ranked)...`);
+  log.screening(`Running Fibonacci analysis on ${toAnalyze.length} pools (pre-pool capped from ${maxTechAnalysis} top by volume)...`);
 
   const signalResults = await Promise.allSettled(
     toAnalyze.map(async ({ token, pool }) => {
@@ -791,8 +796,8 @@ export async function getTopCandidates({ limit = 20 } = {}) {
   // Sort by confluence score descending
   filtered.sort((a, b) => (b.fib_signal.confluenceScore ?? 0) - (a.fib_signal.confluenceScore ?? 0));
 
-  log.screening(`Step 8 — Fibonacci: ${filtered.length}/${toAnalyzeRaw.length} ranked → ${toAnalyze.length} passed broken-support → ${candidates.length} ENTRY`);
-  log.screening(`Summary: discovered=${dexTokens.length} → volume=${afterVolumeCount} → pools=${withPool.length} → ranked_preFib=${toAnalyzeRaw.length} → fib_entry=${filtered.length}`);
+  log.screening(`Step 8 — Fibonacci: ${filtered.length}/${withPool.length} passed broken-support → ${candidates.length} ENTRY`);
+  log.screening(`Summary: discovered=${dexTokens.length} → volume=${afterVolumeCount} → eligible=${eligible.length} → prePoolCap=${maxTechAnalysis} → pools=${withPool.length} → fib_entry=${filtered.length}`);
 
   return {
     candidates:        filtered,

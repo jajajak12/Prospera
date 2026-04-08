@@ -23,7 +23,7 @@ export const STRATEGIES = {
       minFeeActiveTvlRatio:  0.05,
       candleLimit:           100,
       fibConfluenceRequired: true,
-      maxBirdeyeCandidates: 10,   // Birdeye 60 RPM — 10×2calls = 20 RPM (safe)
+      maxTechnicalAnalysisCandidates: 10,   // Birdeye 60 RPM ÷ 2 calls = 30 max. We use 10 (~33% capacity).
     },
     management: {
       stopLossPct:            -20,

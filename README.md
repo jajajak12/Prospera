@@ -92,7 +92,7 @@ Prospera menggunakan **HybridDataProvider** dengan prioritas yang jelas — seti
 
 ### Birdeye Rate Limit Protection
 
-Birdeye memiliki limit **60 RPM**. Karena setiap Fib analysis = 2 calls (1m candles + daily candles), maximum **10 kandidat** yang lolos ke tahap Birdeye. Ini sudah termasuk margin keamanan (20 RPM digunakan dari 60 RPM limit).
+Birdeye memiliki limit **60 RPM**. Karena setiap Fib analysis = 2 calls (1m candles + daily candles), maximum **10 kandidat** yang lolos ke tahap Birdeye. Cap ini diterapkan **sebelum** pool matching (Step 8) sehingga Meteora API calls juga berkurang. Total Birdeye usage: ~20 RPM dari 60 RPM limit (~33% capacity, safe margin).
 
 ### Alur Screening (sesuai implementasi)
 
@@ -104,7 +104,7 @@ Birdeye memiliki limit **60 RPM**. Karena setiap Fib analysis = 2 calls (1m cand
 5. RugCheck            → bundle%, honeypot detection
 6. Jupiter safety      → top10 holders, bot holders, fees SOL
 7. Pool matching       → Meteora DLMM qualifying pools
-8. [NEW] Pre-Fib cap   → ranking by volume, ambil TOP 10 SAJA
+8. [NEW] Pre-pool cap  → ranking by volume, ambil TOP 10 SAJA (maxTechnicalAnalysisCandidates)
 9. Fib/RSI/EMA         → Birdeye OHLCV (max 10 kandidat × 2 calls = 20 RPM)
 10. Smart money check  → wallets aktif di pool (non-blocking)
 11. Deploy             → kandidat dengan ENTRY signal → LLM deploy decision
@@ -436,7 +436,7 @@ DRY_RUN=true node index.js
 | `rpcFallbacks` | [] | Daftar endpoint RPC fallback berurutan |
 | `fibConfluenceRequired` | true | Wajib Fib confluence untuk entry |
 | `candleLimit` | 100 | Candle OHLCV untuk analisis |
-| `maxBirdeyeCandidates` | 10 | Maksimal kandidat ke tahap Fib/Birdeye (Birdeye 60 RPM ÷ 2 calls = 30, margin 10) |
+| `maxTechnicalAnalysisCandidates` | 10 | Maksimal kandidat pre-pool cap (Birdeye 60 RPM ÷ 2 calls = 30 max, margin 10) |
 | `autoBacktest` | false | Aktifkan filter backtest sebelum deploy |
 | `minBacktestWinRate` | 0.50 | Win rate minimum untuk lolos filter pre-deploy |
 | `backtestAggregate` | 15 | Ukuran candle untuk backtest (menit) |

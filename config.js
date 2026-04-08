@@ -50,7 +50,7 @@ export const config = {
     // Fibonacci-specific
     candleLimit:           u.candleLimit           ?? 100,
     fibConfluenceRequired: u.fibConfluenceRequired ?? true,
-    maxBirdeyeCandidates: u.maxBirdeyeCandidates  ?? 10,   // Birdeye 60 RPM limit — 10 candidates × 2 calls = 20 RPM (safe margin)
+    maxTechnicalAnalysisCandidates: u.maxTechnicalAnalysisCandidates ?? 10,  // Birdeye 60 RPM ÷ 2 calls = 30 max. We use 10 (~33% of limit).
     // Auto-backtest pre-deploy filter
     autoBacktest:         u.autoBacktest         ?? false,
     minBacktestWinRate:   u.minBacktestWinRate   ?? 0.50,
@@ -307,7 +307,7 @@ export function reloadScreeningThresholds() {
     if (fresh.timeframe      != null) s.timeframe      = fresh.timeframe;
     if (fresh.candleLimit           != null) s.candleLimit           = fresh.candleLimit;
     if (fresh.fibConfluenceRequired !== undefined) s.fibConfluenceRequired = fresh.fibConfluenceRequired;
-    if (fresh.maxBirdeyeCandidates   != null) s.maxBirdeyeCandidates   = fresh.maxBirdeyeCandidates;
+    if (fresh.maxTechnicalAnalysisCandidates != null) s.maxTechnicalAnalysisCandidates = fresh.maxTechnicalAnalysisCandidates;
     if (fresh.maxTop10HolderPct     != null) s.maxTop10HolderPct     = fresh.maxTop10HolderPct;
     if (fresh.minFeeActiveTvlRatio  != null) s.minFeeActiveTvlRatio  = fresh.minFeeActiveTvlRatio;
     if (fresh.minTokenAgeHours      !== undefined) s.minTokenAgeHours = fresh.minTokenAgeHours;
