@@ -130,9 +130,15 @@ export async function agentLoop(
 
     try {
       const activeModel = model || DEFAULT_MODEL;
-      const FALLBACK_MODEL = "stepfun/step-3.5-flash:free";
+      const FALLBACK_CHAIN = [
+        "qwen/qwen3-coder-480b",
+        "deepseek/deepseek-v3.2",
+        "stepfun/step-3.5-flash:free",
+        "deepseek/deepseek-r1",
+      ];
       let response;
       let usedModel = activeModel;
+      let fallbackIndex = 0;
 
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap)\b/i;
       const toolChoice = (step === 0 && agentType === "GENERAL" && ACTION_INTENTS.test(goal)) ? "required" : "auto";
@@ -148,11 +154,12 @@ export async function agentLoop(
         });
         if (response.choices?.length) break;
         const errCode = response.error?.code;
-        if (errCode === 502 || errCode === 503 || errCode === 529) {
+        if (errCode === 429 || errCode === 502 || errCode === 503 || errCode === 529) {
           const wait = (attempt + 1) * 5000;
-          if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
-            usedModel = FALLBACK_MODEL;
-            log("agent", `Switching to fallback model ${FALLBACK_MODEL}`);
+          if (fallbackIndex < FALLBACK_CHAIN.length) {
+            fallbackIndex++;
+            usedModel = FALLBACK_CHAIN[fallbackIndex - 1];
+            log("agent", `Fallback ${fallbackIndex}: trying ${usedModel} (err ${errCode})`);
           } else {
             log("agent", `Provider error ${errCode}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
             await new Promise(r => setTimeout(r, wait));
