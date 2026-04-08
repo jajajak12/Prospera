@@ -52,6 +52,12 @@ import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
 
+// ── Startup validation ─────────────────────────────────────────────────────────
+if (!process.env.LPAGENT_API_KEY) {
+  console.error("FATAL: LPAGENT_API_KEY not set in .env — cannot start");
+  process.exit(1);
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const _startTime = Date.now();
 let _lastCorrelationId = null;
@@ -94,8 +100,21 @@ export async function runManagementCycle({ silent = false } = {}) {
   if (!lockResult.acquired) { _m("management", "Lock not acquired"); return null; }
 
   const prePositions = await getMyPositions({ force: true }).catch(() => null);
+
+  // Distinguish LPAgent error from truly zero positions
+  if (!prePositions || prePositions.error) {
+    _m("error", `LPAgent unavailable: ${prePositions?.error ?? "network error"}`);
+    completeManagementLock();
+    return null;
+  }
+
   const preCount = prePositions?.positions?.length ?? 0;
-  if (preCount === 0) { logSkip("no_open_positions", {}, corrId); return null; }
+  if (preCount === 0) {
+    _m("management", "No open positions");
+    logSkip("no_open_positions", {}, corrId);
+    completeManagementLock();
+    return null;
+  }
 
   _managementBusy = true;
   timers.managementLastRun = Date.now();
@@ -106,7 +125,11 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   try {
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
-    if (livePositions?.error) { _m("management", "LPAgent error"); return null; }
+    if (!livePositions || livePositions.error) {
+      _m("error", `LPAgent unavailable: ${livePositions?.error ?? "network error"}`);
+      completeManagementLock();
+      return null;
+    }
     positions = livePositions?.positions || [];
     if (positions.length === 0) {
       if (Date.now() - _screeningLastTriggered > SCREENING_INTERVAL_MS) {
@@ -204,6 +227,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
   let prePositions, preBalance, deployAmount;
   try {
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
+
+    if (!prePositions || prePositions.error) {
+      _s("error", `LPAgent unavailable: ${prePositions?.error ?? "network error"}`);
+      _release();
+      return null;
+    }
+
     if (prePositions.total_positions >= config.risk.maxPositions) { logSkip("max_positions", {}, corrId); _release(); return null; }
     deployAmount = getPositionSizing(preBalance.sol);
     if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
