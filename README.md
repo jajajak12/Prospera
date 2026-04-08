@@ -7,8 +7,8 @@ Autonomous DLMM liquidity provider agent untuk pool Meteora di Solana. Menggabun
 ## Gambaran Umum
 
 Prospera adalah LP agent yang berjalan sepenuhnya otomatis:
-- Menemukan token Solana trending dari semua DEX via GeckoTerminal, lalu mencari pool Meteora DLMM-nya
-- Memfilter berdasarkan sinyal entry Fibonacci (level Fib dari ATH menggunakan candle GeckoTerminal)
+- Menemukan token Solana trending dari semua DEX via GeckoTerminal (discovery), lalu mencari pool Meteora DLMM-nya
+- Memfilter berdasarkan sinyal entry Fibonacci (level Fib dari ATH menggunakan candle Birdeye — OHLCV 1m + daily)
 - Opsional: backtest setiap kandidat di data OHLCV historis sebelum deploy
 - Menjalankan filter keamanan token berlapis (organic score, RugCheck bundle/honeypot, usia token, blacklist)
 - Mengelola posisi terbuka dengan aturan bertingkat (stop loss, LLM decision zone, auto take-profit)
@@ -22,7 +22,7 @@ Prospera adalah LP agent yang berjalan sepenuhnya otomatis:
 
 ### Level Fibonacci
 
-Fibonacci digambar dari **all-time-low → ATH** menggunakan candle OHLCV harian (GeckoTerminal). Untuk token dengan ≤ 3 candle harian, ekstrem intraday juga disertakan untuk menangkap high/low sesi berjalan. Karena data diambil fresh setiap siklus screening, ATH baru otomatis tercermin di run berikutnya.
+Fibonacci digambar dari **all-time-low → ATH** menggunakan candle OHLCV harian (Birdeye). Untuk token dengan ≤ 3 candle harian, ekstrem intraday juga disertakan untuk menangkap high/low sesi berjalan. Karena data diambil fresh setiap siklus screening, ATH baru otomatis tercermin di run berikutnya.
 
 ### Syarat Sinyal (semua harus lolos)
 
@@ -69,14 +69,39 @@ Diterapkan secara berurutan dari yang paling murah ke paling mahal — kegagalan
 1. **Discovery GeckoTerminal** — token Solana trending dari semua DEX (~40 token, 2 halaman)
 2. **Blacklist** — `token-blacklist.json` (mint address) dan `dev-blocklist.json` (alamat deployer)
 3. **Volume 1h Dexscreener** — volume 1 jam terakhir aktual dari SEMUA DEX (`minVolume`), lebih stabil dari snapshot 5m
-4. **Pre-filter mcap** — dari data GeckoTerminal (`minMcap` / `maxMcap`)
+4. **Pre-filter mcap** — dari data Dexscreener (`minMcap` / `maxMcap`)
 5. **Filter RugCheck** — deteksi honeypot/rugged, cek bundle %, verifikasi alamat creator
 6. **Keamanan token Jupiter** — konsentrasi 10 holder teratas, % bot holder, kumulatif fee SOL (`minTokenFeesSol`)
 7. **Pool Discovery Meteora** — bulk fetch semua pool DLMM qualifying dalam satu request (`page_size=100`, `timeframe=24h`), match by `token_x.address` client-side; filter usia diterapkan client-side
 8. **RocketScan fallback** — token yang tidak ditemukan di Meteora API dicari via RocketScan (deteksi on-chain, lebih cepat); detail pool di-fetch dari `dlmm.datapi.meteora.ag`
 9. **Filter ATH proximity** (opsional) — skip token yang terlalu dekat ATH (`athFilterPct`)
-10. **Filter sinyal Fibonacci** — Fib zone, EMA, RSI, ATR, gate confluenceScore (paling mahal — dijalankan terakhir)
+10. **Filter sinyal Fibonacci** — Fib zone, EMA, RSI, ATR, confluenceScore via Birdeye OHLCV (paling mahal — dijalankan terakhir)
 11. **Filter auto-backtest** (opsional) — cek win rate historis setiap kandidat sebelum deploy
+
+---
+
+## Data Providers & Hybrid Architecture
+
+Prospera menggunakan **HybridDataProvider** dengan prioritas yang jelas untuk setiap kebutuhan data:
+
+| Priority | Provider | Digunakan Untuk |
+|----------|----------|----------------|
+| **Primary** | Dexscreener | Volume 1h, data pool (liquidity, price), market cap |
+| **Fallback 1** | Birdeye | Chart OHLCV, RSI, EMA, Fibonacci calculation |
+| **Fallback 2** | GeckoTerminal | Trending token discovery, backtest historis |
+
+### Alur Screening (sesuai implementasi)
+
+```
+1. Discovery           → GeckoTerminal (trending token)
+2. Volume 1h           → Dexscreener  (minVolume = 150000)
+3. MCap pre-filter     → Dexscreener  (minMcap = 200000, maxMcap = 10000000)
+4. Teknis (Fib/RSI/EMA) → Birdeye via HybridDataProvider
+5. Pool Meteora DLMM   → dlmm.datapi.meteora.ag + RocketScan fallback
+6. Backtest (opsional)  → GeckoTerminal OHLCV historis
+```
+
+**Catatan:** `pool.price` (SOL-denominated) **tidak pernah** dipakai untuk Fib comparison — selalu pakai USD price dari Dexscreener atau Birdeye.
 
 ---
 
@@ -270,14 +295,14 @@ state.js              Registry posisi, trailing TP, tracking PnL
 lessons.js            Engine learning: performa → evolusi threshold (binsByStep)
 pool-memory.js        History deploy per-pool + snapshot
 smart-wallets.js      Smart money tracker dengan auto-promosi self-learning
-strategy-library.js   Preset strategi (fibonacci / conservative / aggressive / trending)
+strategy-library.js   Preset strategi (fibonacci — single default)
 signal-weights.js     Bobot sinyal adaptif Darwinian
 ecosystem.config.cjs  Config PM2: autorestart, restart_delay, max_restarts
 
 tools/
   chart.js            Engine sinyal: OHLCV Birdeye + Fib (ATH-based) + EMA + RSI; broken support = price < fib500
   screening.js        Discovery pool + filter berlapis + sinyal Fib + cek smart wallet
-  dataProvider.js     HybridDataProvider: Dexscreener → Birdeye → GeckoTerminal fallback
+  dataProvider.js     HybridDataProvider: Dexscreener (volume/pool) → Birdeye (chart/OHLCV/Fib) → GeckoTerminal (backtest)
   definitions.js      Schema tool (format OpenAI function-calling)
   executor.js         Dispatch tool + safety check + post-close hooks
   dlmm.js             SDK Meteora DLMM (deploy, close, claim, posisi)
@@ -383,7 +408,7 @@ DRY_RUN=true node index.js
 | `minBinStep` / `maxBinStep` | 80 / 200 | Range bin step pool |
 | `minVolume` | 150000 | Min volume **1h** aktual dari semua DEX ($) — `volume.h1` Dexscreener |
 | `minFeeActiveTvlRatio` | 0.05 | Min rasio fee/active TVL pool Meteora (timeframe 24h) |
-| `minMcap` / `maxMcap` | 150k / 5M | Range market cap token |
+| `minMcap` / `maxMcap` | 200k / 10M | Range market cap token |
 | `minTvl` / `maxTvl` | 5000 / 250000 | Range TVL pool ($) |
 | `minTokenAgeHours` / `maxTokenAgeHours` | 0.5 / 720 | Range usia token (min 30 menit) |
 | `minTokenFeesSol` | 30 | Min kumulatif fee dalam SOL (Jupiter — tips + priority + trading) |
