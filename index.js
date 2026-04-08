@@ -192,7 +192,8 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
     _managementLastCompleted = Date.now();
     completeManagementLock();
     if (!silent && telegramEnabled() && mgmtReport) {
-      sendMessage(`Management [${corrId}]\n\n${stripThink(mgmtReport)}`).catch(() => {});
+      const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+      sendMessage(`🔄 Management [${ts}]\nID: ${corrId}\n${stripThink(mgmtReport)}`).catch(() => {});
     }
   }
   return mgmtReport;
@@ -251,7 +252,6 @@ export async function runScreeningCycle({ silent = false } = {}) {
   _s("screening", `Starting cycle | deploy: ${deployAmount} SOL | wallet: ${preBalance.sol} SOL`);
 
   let screenReport = null;
-  let _sentTelegram = false; // prevent double Telegram send
 
   try {
     const topResult = await getTopCandidates({ limit: 20, correlationId: corrId }).catch(() => null);
@@ -265,9 +265,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     if (candidates.length === 0) {
       screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\nNo entry signals`;
-      // Don't send Telegram here — let finally handle it with proper format
+      const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+      if (!silent && telegramEnabled()) sendMessage(`🔍 Fibonacci Screening [${ts}]\n${screenReport}`).catch(() => {});
       _release();
-      _sentTelegram = true; // flag so finally knows to skip
       return screenReport;
     }
 
@@ -314,7 +314,7 @@ RULES:
     screenReport = `Failed: ${error.message}`;
   } finally {
     _release();
-    if (!silent && telegramEnabled() && screenReport && !_sentTelegram) {
+    if (!silent && telegramEnabled() && screenReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
       const prefix = screenReport.startsWith("Discovered:") ? "🔍" : "🔍 Fibonacci Screening";
       sendMessage(`${prefix} [${ts}]\n${stripThink(screenReport)}`).catch(() => {});
