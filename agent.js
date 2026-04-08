@@ -131,10 +131,8 @@ export async function agentLoop(
     try {
       const activeModel = model || DEFAULT_MODEL;
       const FALLBACK_CHAIN = [
-        "qwen/qwen3-coder-480b",
         "deepseek/deepseek-v3.2",
         "stepfun/step-3.5-flash:free",
-        "deepseek/deepseek-r1",
       ];
       let response;
       let usedModel = activeModel;
