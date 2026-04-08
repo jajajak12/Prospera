@@ -176,6 +176,29 @@ async function runMorningBriefing() {
   log("briefing", `Morning briefing sent — positions: ${totalPositions}, exposure: ${exposurePct}%`);
 }
 
+// ── PnL Poll ──────────────────────────────────────────────────────────────────
+async function runPnLPoll() {
+  const corrId = shortId();
+  const positions = await getMyPositions({ force: true }).catch(() => null);
+  const balance = await getWalletBalances().catch(() => null);
+  const posList = positions?.positions ?? [];
+  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList) : 0;
+  const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
+  const totalPnl = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
+  const totalValue = posList.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
+
+  const lines = [
+    `📊 Positions: ${positions?.total_positions ?? 0}/${config.risk.maxPositions}`,
+    `💰 Exposure: ${exposurePct}% | SOL: ${balance?.sol?.toFixed(3) ?? "?"}`,
+    `📉 Total PnL: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}%`,
+  ];
+  if (posList.length > 0) lines.push(`💵 TVL: $${totalValue.toFixed(0)}`);
+
+  const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (telegramEnabled()) sendMessage(`📈 PnL Poll [${ts}] ID: ${corrId}\n\n${lines.join("\n")}`).catch(() => {});
+  log("pnl_poll", `PnL poll — positions: ${positions?.total_positions ?? 0}, exposure: ${exposurePct}%, pnl: ${totalPnl.toFixed(2)}%`);
+}
+
 function stripThink(text) {
   if (!text) return text;
   return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
@@ -455,7 +478,11 @@ export function startCronJobs() {
     runMorningBriefing().catch(e => log("cron_error", `Morning briefing failed: ${e.message}`));
   });
 
-  _cronTasks = [mgmtTask, screenTask, backtestTask, briefingTask];
+  const pollTask = cron.schedule("*/30 * * * *", () => {
+    runPnLPoll().catch(e => log("cron_error", `PnL poll failed: ${e.message}`));
+  });
+
+  _cronTasks = [mgmtTask, screenTask, backtestTask, briefingTask, pollTask];
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }
 
