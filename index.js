@@ -23,6 +23,7 @@ import readline from "readline";
 import {
   acquireScreeningLock, completeScreeningLock,
   acquireManagementLock, completeManagementLock,
+  readScreeningLock, readManagementLock,
   isScreeningRunning,
 } from "./tools/lock-manager.js";
 

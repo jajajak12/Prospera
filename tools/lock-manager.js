@@ -61,7 +61,7 @@ export function acquireScreeningLock() {
   if (lock?.status === "running") {
     return {
       acquired: false,
-      reason: "screening lock: another cycle is running (pid ${lock.pid})",
+      reason: `screening lock: another cycle is running (pid ${lock.pid})`,
       lock,
     };
   }
