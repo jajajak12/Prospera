@@ -683,7 +683,7 @@ export async function getTopCandidates({ limit = 20 } = {}) {
       if (!currentPrice) {
         return { signal: "SKIP", reason: "Missing USD price — skip to avoid unit mismatch" };
       }
-      return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? 48 }, pool.pool);
+      return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? 45 }, pool.pool); // RSI min 45, slope >= -2.0
     })
   );
 
