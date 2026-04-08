@@ -1481,19 +1481,28 @@ Commands:
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startHealthServer();
   startCronJobs();
-  // Startup management: cek lock file terlebih dahulu.
-  // Jika proses lama baru saja selesai cycle (<45s), skip startup management.
-  // Ini mencegah double-cycle saat PM2 restart di tengah-tengah atau setelah cycle selesai.
+  // Reset screening timestamp so first cron tick always passes cooldown
+  _screeningLastTriggered = 0;
+
+  // Startup screening: langsung jalan 5s setelah restart
+  // Jangan cek lock file — lock dari proses lama sudah tidak valid setelah restart
   setTimeout(() => {
+    log("startup", "Startup screening triggered");
+    runScreeningCycle().catch(e => log("cron_error", `Startup screening failed: ${e.message}`));
+  }, 5000);
+
+  // Startup management: 8s delay — setelah startup screening selesai/timeout
+  setTimeout(() => {
+    // Lock file check tetap berguna untuk prevent rapid re-run setelah crash
     const lock = readManagementLock();
     const lockAge = lock ? Date.now() - lock.ts : Infinity;
     const MANAGEMENT_MIN_GAP_MS = 45_000;
     if (lockAge < MANAGEMENT_MIN_GAP_MS) {
-      log("startup", `Startup management skipped — lock file menunjukkan cycle selesai ${Math.round(lockAge / 1000)}s lalu (< ${MANAGEMENT_MIN_GAP_MS / 1000}s)`);
+      log("startup", `Startup management skipped — lock file: ${Math.round(lockAge / 1000)}s ago (< ${MANAGEMENT_MIN_GAP_MS / 1000}s gap)`);
     } else {
       runManagementCycle().catch(e => log("cron_error", `Startup management failed: ${e.message}`));
     }
-  }, 3000);
+  }, 8000);
 
   // Telegram handler for non-TTY mode
   const _nonTtyQueue = [];
