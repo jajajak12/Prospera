@@ -51,8 +51,10 @@ if (!lpKey) {
 log("startup", `LPAgent: primary=${lpKey ? "YES (len=" + lpKey.length + ")" : "MISSING"} backup=${lpKeyBackup ? "YES (len=" + lpKeyBackup.length + ")" : "MISSING"}`);
 
 // Also warn if Telegram not configured (non-fatal)
-if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
-  log("startup", "WARNING: Telegram not configured — notifications disabled");
+const _tel = telegramEnabled();
+log("startup", `Telegram: bot=${_tel ? "ACTIVE" : "DISABLED"} chatId=${process.env.TELEGRAM_CHAT_ID || "MISSING"}`);
+if (_tel) {
+  sendMessage("✅ Prospera Agent started — LIVE mode").catch(() => {});
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
