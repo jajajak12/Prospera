@@ -340,7 +340,7 @@ export function startCronJobs() {
 
   const backtestTask = cron.schedule("0 0 * * *", () => {
     const corrId = shortId();
-    runDailyBacktest({ correlationId: corrId, hours: 168 }).catch(e => log("cron_error", `Daily backtest failed: ${e.message}`));
+    runDailyBacktest({ correlationId: corrId, hours: 336 }).catch(e => log("cron_error", `Daily backtest failed: ${e.message}`));
   });
 
   _cronTasks = [mgmtTask, screenTask, backtestTask];
