@@ -1,0 +1,52 @@
+{
+  "weights": {
+    "organic_score": 1,
+    "fee_tvl_ratio": 1,
+    "volume_5m": 1,
+    "confluence_score": 1,
+    "fib_zone": 1,
+    "bin_step": 1,
+    "volatility": 1
+  },
+  "history": [
+    {
+      "win": false,
+      "ts": "2026-04-07T06:38:22.357Z",
+      "signals": {
+        "organic_score": 83,
+        "fee_tvl_ratio": 3.8689,
+        "volume_5m": 531838,
+        "confluence_score": 0.13,
+        "fib_zone": "PRIMARY",
+        "bin_step": 100,
+        "volatility": 1.78
+      }
+    },
+    {
+      "win": false,
+      "ts": "2026-04-07T09:03:39.600Z",
+      "signals": {
+        "organic_score": 82,
+        "fee_tvl_ratio": 7.3506,
+        "volume_5m": 191087,
+        "confluence_score": 0.04,
+        "fib_zone": "PRIMARY",
+        "bin_step": 125,
+        "volatility": 4.98
+      }
+    },
+    {
+      "win": false,
+      "ts": "2026-04-07T10:28:44.906Z",
+      "signals": {
+        "organic_score": 84,
+        "fee_tvl_ratio": 11.2862,
+        "volume_5m": 260732,
+        "confluence_score": 0.09,
+        "fib_zone": "PRIMARY",
+        "bin_step": 125,
+        "volatility": 4.56
+      }
+    }
+  ]
+}

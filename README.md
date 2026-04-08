@@ -28,16 +28,17 @@ Fibonacci digambar dari **all-time-low → ATH** menggunakan candle OHLCV harian
 
 | Sinyal | Kondisi | Tujuan |
 |--------|---------|--------|
-| **Harga** | Di atas Fib 0.618 (support belum jebol) | Token masih dalam range valid |
+| **Harga** | Di atas Fib 0.500 (hard gate — di bawah = skip langsung) | Token masih dalam range valid |
 | **Tren EMA** | EMA20 > EMA50 | Uptrend terkonfirmasi |
 | **Momentum RSI** | RSI > `rsiMin` (default 45) + slope >= -2.0 | Momentum bullish (allows minor pullback) |
 | **Cek ATR** | ATR% < bin\_step% × 4 | Volatilitas kompatibel dengan pool |
 
-### Tier Zone
+### Zone Entry
 
-- **ATH Zone (di atas 0.236)** — entry pre-posisi, harga masih dekat ATH, range diset dari Fib 0.236 → 0.618 mengantisipasi pullback
+- **ATH Zone (di atas 0.236)** — entry pre-posisi, harga masih dekat ATH
 - **Primary zone (0.236–0.382)** — entry ideal, pullback dangkal
-- **Secondary zone (0.382–0.618)** — entry valid, pullback lebih dalam
+- **Secondary zone (0.382–0.500)** — entry valid, pullback lebih dalam
+- **Hard gate: Fib 0.500** — harga di bawah 0.500 = skip + reason "below Fib 0.500", tidak ada excepciones
 
 ### Confluence Score
 
