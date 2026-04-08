@@ -83,12 +83,12 @@ import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 
 const client = new OpenAI({
-  baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
-  apiKey:  process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY,
+  baseURL: process.env.LLM_BASE_URL || "https://api.minimax.chat/v1",
+  apiKey:  process.env.LLM_API_KEY || config.llm?.minimaxApiKey,
   timeout: 5 * 60 * 1000,
 });
 
-const DEFAULT_MODEL = process.env.LLM_MODEL || config.llm?.generalModel || "deepseek/deepseek-r1";
+const DEFAULT_MODEL = process.env.LLM_MODEL || config.llm?.generalModel || "minimax-2.7";
 
 /**
  * Core ReAct agent loop.
@@ -131,8 +131,8 @@ export async function agentLoop(
     try {
       const activeModel = model || DEFAULT_MODEL;
       const FALLBACK_CHAIN = [
+        "qwen/qwen3-coder-480b",
         "deepseek/deepseek-v3.2",
-        "stepfun/step-3.5-flash:free",
       ];
       let response;
       let usedModel = activeModel;
@@ -152,14 +152,21 @@ export async function agentLoop(
         });
         if (response.choices?.length) break;
         const errCode = response.error?.code;
-        if (errCode === 429 || errCode === 502 || errCode === 503 || errCode === 529) {
+        const isRetryable = errCode === 429 || errCode === 502 || errCode === 503 || errCode === 529;
+        const isMinimaxOverloaded = /overloaded|timeout|rate.?limit/i.test(response.error?.message || "");
+        if (isRetryable || isMinimaxOverloaded) {
           const wait = (attempt + 1) * 5000;
           if (fallbackIndex < FALLBACK_CHAIN.length) {
             fallbackIndex++;
             usedModel = FALLBACK_CHAIN[fallbackIndex - 1];
-            log("agent", `Fallback ${fallbackIndex}: trying ${usedModel} (err ${errCode})`);
+            client.baseURL = "https://openrouter.ai/api/v1";
+            client.apiKey = process.env.OPENROUTER_API_KEY;
+            log("warn", `Minimax limit, fallback to OpenRouter`, { model: usedModel });
           } else {
             log("agent", `Provider error ${errCode}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
+            usedModel = activeModel; // reset to Minimax for retry
+            client.baseURL = "https://api.minimax.chat/v1";
+            client.apiKey = process.env.LLM_API_KEY || config.llm?.minimaxApiKey;
             await new Promise(r => setTimeout(r, wait));
           }
         } else {
