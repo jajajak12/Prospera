@@ -34,7 +34,7 @@ const PROVIDERS = {
   openrouter: {
     baseURL: "https://openrouter.ai/api/v1",
     apiKeyEnv: "OPENROUTER_API_KEY",
-    model: "anthropic/claude-sonnet-4",
+    model: "deepseek/deepseek-v3.2",
   },
 };
 
