@@ -20,12 +20,11 @@ import { fileURLToPath } from "url";
 import cron from "node-cron";
 import readline from "readline";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const USER_CONFIG_PATH         = path.join(__dirname, "user-config.json");
-const SWEEP_PROPOSAL_PATH      = path.join(__dirname, "sweep-proposal.json");
-const POSITION_META_PATH       = path.join(__dirname, "position-meta.json");
-const MANAGEMENT_LOCK_PATH     = path.join(__dirname, "management.lock");
-const SCREENING_LOCK_PATH      = path.join(__dirname, "screening-lock.json");
+import {
+  acquireScreeningLock, completeScreeningLock,
+  acquireManagementLock, completeManagementLock,
+  isScreeningRunning,
+} from "./tools/lock-manager.js";
 
 // ── Sweep proposal helpers ───────────────────────────────────────────────────
 function saveSweepProposal(p) {
@@ -189,33 +188,11 @@ function stripThink(text) {
 //  CRON STATE
 // ═══════════════════════════════════════════
 let _cronTasks = [];
-let _managementBusy        = false;
+let _managementBusy          = false;
 let _managementLastCompleted = 0;
-let _screeningBusy          = false; // in-process guard — synced with file lock
-let _screeningLastTriggered = 0;
-let _pollTriggeredAt        = 0;
-
-// ── File-based screening lock (survives PM2 restart) ─────────────────────────
-// status="running" → block unconditionally
-// status="done"    → block if ts < 60s ago
-const SCREENING_LOCK_GAP_MS = 60_000;
-
-function _readScreeningLock() {
-  try {
-    if (!fs.existsSync(SCREENING_LOCK_PATH)) return null;
-    return JSON.parse(fs.readFileSync(SCREENING_LOCK_PATH, "utf8"));
-  } catch { return null; }
-}
-
-function _writeScreeningLock(status) {
-  try {
-    fs.writeFileSync(
-      SCREENING_LOCK_PATH,
-      JSON.stringify({ ts: Date.now(), pid: process.pid, status }),
-      { flag: "w" }
-    );
-  } catch { /* non-fatal */ }
-}
+let _screeningBusy           = false; // in-process guard — synced with lock-manager
+let _screeningLastTriggered  = 0;
+let _pollTriggeredAt         = 0;
 
 function stopCronJobs() {
   for (const task of _cronTasks) task?.stop?.();
@@ -226,45 +203,6 @@ function stopCronJobs() {
 // ═══════════════════════════════════════════
 //  MANAGEMENT CYCLE
 // ═══════════════════════════════════════════
-const MANAGEMENT_MIN_GAP_MS = 45_000; // minimum gap antar cycle (45 detik)
-
-// Lock file TIDAK PERNAH dihapus — hanya di-overwrite.
-// Ini memastikan proses baru (setelah PM2 restart) bisa membaca kapan management
-// terakhir selesai, dan tidak langsung jalan ulang jika belum 45 detik.
-function _readLockAge() {
-  try {
-    if (!fs.existsSync(MANAGEMENT_LOCK_PATH)) return Infinity;
-    const raw = fs.readFileSync(MANAGEMENT_LOCK_PATH, "utf8");
-    const { ts } = JSON.parse(raw);
-    return Date.now() - ts;
-  } catch {
-    return Infinity; // file corrupt/hilang → anggap expired, izinkan cycle
-  }
-}
-
-function _writeLock(status) {
-  try {
-    fs.writeFileSync(
-      MANAGEMENT_LOCK_PATH,
-      JSON.stringify({ ts: Date.now(), pid: process.pid, status }),
-      { flag: "w" }
-    );
-  } catch { /* non-fatal */ }
-}
-
-function _acquireManagementLock() {
-  const ageMs = _readLockAge();
-  if (ageMs < MANAGEMENT_MIN_GAP_MS) {
-    return { acquired: false, reason: `lock file: terakhir jalan ${Math.round(ageMs / 1000)}s lalu (min gap ${MANAGEMENT_MIN_GAP_MS / 1000}s)` };
-  }
-  _writeLock("running");
-  return { acquired: true };
-}
-
-// Dipanggil di finally — tulis timestamp selesai tanpa menghapus file.
-function _completeManagementLock() {
-  _writeLock("completed");
-}
 
 export async function runManagementCycle({ silent = false } = {}) {
   // Layer 1: in-memory busy flag — cycle sedang berjalan di proses ini
@@ -277,16 +215,18 @@ export async function runManagementCycle({ silent = false } = {}) {
     log("cron", "Management skipped — screening cycle sedang berjalan");
     return null;
   }
-  // Layer 3: timestamp in-memory — terlalu cepat sejak cycle terakhir
-  const msSinceCompleted = Date.now() - _managementLastCompleted;
-  if (_managementLastCompleted > 0 && msSinceCompleted < MANAGEMENT_MIN_GAP_MS) {
-    log("cron", `Management skipped — cycle terakhir selesai ${Math.round(msSinceCompleted / 1000)}s lalu (min gap: ${MANAGEMENT_MIN_GAP_MS / 1000}s)`);
+  // Layer 3: file-based lock via lock-manager
+  const lockResult = acquireManagementLock();
+  if (!lockResult.acquired) {
+    log("cron", `Management skipped — ${lockResult.reason}`);
     return null;
   }
-  // Layer 4: file-based lock — cross-call protection (survive rapid concurrent triggers)
-  const lock = _acquireManagementLock();
-  if (!lock.acquired) {
-    log("cron", `Management skipped — ${lock.reason}`);
+
+  // Layer 4: timestamp in-memory check
+  const msSinceCompleted = Date.now() - _managementLastCompleted;
+  const MANAGEMENT_MIN_GAP_MS = 45_000;
+  if (_managementLastCompleted > 0 && msSinceCompleted < MANAGEMENT_MIN_GAP_MS) {
+    log("cron", `Management skipped — cycle terakhir selesai ${Math.round(msSinceCompleted / 1000)}s lalu (min gap: ${MANAGEMENT_MIN_GAP_MS / 1000}s)`);
     return null;
   }
 
@@ -531,7 +471,7 @@ After acting, write a brief one-line result per position.
   } finally {
     _managementBusy = false;
     _managementLastCompleted = Date.now();
-    _completeManagementLock(); // tulis timestamp selesai — TIDAK menghapus file
+    completeManagementLock(); // tulis timestamp selesai — TIDAK menghapus file
     if (!silent && telegramEnabled()) {
       if (mgmtReport) sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => {});
       for (const p of positions) {
@@ -548,36 +488,24 @@ After acting, write a brief one-line result per position.
 //  SCREENING CYCLE
 // ═══════════════════════════════════════════
 export async function runScreeningCycle({ silent = false, force = false } = {}) {
-  // ── File-based lock check (survives PM2 restart) ─────────────────────────
-  {
-    const lock = _readScreeningLock();
-    if (lock) {
-      const age = Date.now() - lock.ts;
-      if (lock.status === "running") {
-        log("cron", `Screening skipped — lock running (pid=${lock.pid}, ${Math.round(age / 1000)}s ago)`);
-        return null;
-      }
-      if (lock.status === "done" && age < SCREENING_LOCK_GAP_MS) {
-        log("cron", `Screening skipped — completed ${Math.round(age / 1000)}s ago (min gap: ${SCREENING_LOCK_GAP_MS / 1000}s)`);
-        return null;
-      }
-    }
+  // Layer 1: in-memory busy flag
+  if (_screeningBusy) {
+    log("cron", "Screening skipped — cycle sedang berjalan (_screeningBusy flag)");
+    return null;
   }
-  // Cooldown check (cron interval)
-  if (!force) {
-    const cooldownMs = config.schedule.screeningIntervalMin * 60 * 1000;
-    const elapsed = Date.now() - _screeningLastTriggered;
-    if (elapsed < cooldownMs) {
-      return null;
-    }
+  // Layer 2: file-based lock via lock-manager
+  const lockResult = acquireScreeningLock();
+  if (!lockResult.acquired) {
+    log("cron", `Screening skipped — ${lockResult.reason}`);
+    return null;
   }
-  _writeScreeningLock("running"); // file lock — persists across PM2 restart
-  _screeningBusy = true;          // in-process guard — synced with file lock
+
+  _screeningBusy = true;
   _screeningLastTriggered = Date.now();
 
-  // Release both file lock + in-process flag; used by all early-return paths
+  // Release lock helper; used by all early-return paths
   const _releaseAndSkip = (msg) => {
-    _writeScreeningLock("done");
+    completeScreeningLock();
     _screeningBusy = false;
     if (msg) log("cron", msg);
     return null;
@@ -785,8 +713,8 @@ reason: <one sentence why this over others>
     log("cron_error", `Screening cycle failed: ${error.message}`);
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
-    _writeScreeningLock("done"); // release file lock (synced)
-    _screeningBusy = false;      // release in-process guard (synced)
+    completeScreeningLock(); // release file lock via lock-manager
+    _screeningBusy = false;  // release in-process guard
     if (!silent && telegramEnabled()) {
       if (screenReport) {
         const _ts  = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
