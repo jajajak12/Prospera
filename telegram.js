@@ -175,6 +175,23 @@ export async function notifyOutOfRange({ pair, minutesOOR }) {
   );
 }
 
+export async function notifyExposureWarning({ exposurePct, projectedSol, maxSol }) {
+  await sendHTML(
+    `⚠️ <b>Exposure Warning</b>\n` +
+    `Exposure: <b>${exposurePct}%</b>\n` +
+    `Projected: ${projectedSol} SOL / ${maxSol} SOL max`
+  );
+}
+
+export async function notifyExposureHardCap({ exposurePct, projectedSol, maxSol }) {
+  await sendHTML(
+    `🔴 <b>HARD CAP TRIGGERED</b>\n` +
+    `Exposure: <b>${exposurePct}%</b> — new entry PAUSED\n` +
+    `Projected: ${projectedSol} SOL / ${maxSol} SOL max\n` +
+    `Manual intervention required to resume.`
+  );
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }

@@ -58,10 +58,10 @@ import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount, getPositionSizing, calculateCurrentExposure, canOpenNewPosition } from "./config.js";
+import { config, reloadScreeningThresholds, computeDeployAmount, getPositionSizing, calculateCurrentExposure, canOpenNewPosition, checkExposureCap } from "./config.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyExposureWarning, notifyExposureHardCap, isEnabled as telegramEnabled } from "./telegram.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, getStateSummary } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest, runBacktestWithSweep } from "./backtest.js";
@@ -190,10 +190,11 @@ function stripThink(text) {
 // ═══════════════════════════════════════════
 let _cronTasks = [];
 let _managementBusy          = false;
-let _managementLastCompleted = 0;
+let _managementLastCompleted  = 0;
 let _screeningBusy           = false; // in-process guard — synced with lock-manager
 let _screeningLastTriggered  = 0;
 let _pollTriggeredAt         = 0;
+let _exposureHardPausedUntil = 0; // timestamp when hard cap pause expires (0 = not paused)
 
 function stopCronJobs() {
   for (const task of _cronTasks) task?.stop?.();
@@ -516,6 +517,13 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
   }
   // Layer 2: file-based lock via lock-manager
   const lockResult = acquireScreeningLock();
+  // ── Hard cap pause check ──────────────────────────────────────────────
+  if (_exposureHardPausedUntil > Date.now()) {
+    const remaining = Math.ceil((_exposureHardPausedUntil - Date.now()) / 60000);
+    log("cron", `Screening skipped — HARD CAP pause active (${remaining}m remaining)`);
+    return null;
+  }
+
   if (!lockResult.acquired) {
     log("cron", `Screening skipped — ${lockResult.reason}`);
     return null;
@@ -551,18 +559,35 @@ export async function runScreeningCycle({ silent = false, force = false } = {}) 
       return _releaseAndSkip(`Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} SOL, need at least ${(config.risk.exposureGasReserve ?? 1) + 1} SOL)`);
     }
 
-    // ── Exposure cap check (50%) ──────────────────────────────────────────
+    // ── Exposure cap check — warning (50%) + hard cap (60%) ─────────────────
     const currentExposure = calculateCurrentExposure(prePositions.positions);
-    const exposureCheck   = canOpenNewPosition(deployAmount, currentExposure, preBalance.sol);
-    if (!exposureCheck.allowed) {
-      log("cron", `Screening skipped — ${exposureCheck.reason}`, {
-        currentExposure: currentExposure.toFixed(2),
-        maxExposure: exposureCheck.maxExposureSol.toFixed(2),
-        proposed: deployAmount,
-      });
-      return _releaseAndSkip(null);
+    const cap = checkExposureCap(currentExposure, preBalance.sol, deployAmount);
+
+    if (cap.level === "hard_pause") {
+      _exposureHardPausedUntil = Date.now() + 15 * 60 * 1000; // hard pause 15 min
+      log("cron", `[EXPOSURE HARD CAP] ${cap.reason}`);
+      if (telegramEnabled()) {
+        notifyExposureHardCap({
+          exposurePct: cap.exposurePct,
+          projectedSol: cap.projectedExposureSol.toFixed(2),
+          maxSol: cap.maxExposureSol.toFixed(2),
+        }).catch(() => {});
+      }
+      return _releaseAndSkip("Screening skipped — HARD CAP: exposure limit reached. New entry paused 15 min.");
     }
-    log("cron", `Exposure check OK: ${currentExposure.toFixed(2)}→${exposureCheck.projectedExposureSol.toFixed(2)} SOL (${exposureCheck.exposurePct}% of ${(preBalance.sol - (config.risk.exposureGasReserve ?? 1)).toFixed(2)} SOL deployable)`);
+
+    if (cap.level === "warning") {
+      log("cron", `[EXPOSURE WARNING] ${cap.reason}`);
+      if (telegramEnabled()) {
+        notifyExposureWarning({
+          exposurePct: cap.exposurePct,
+          projectedSol: cap.projectedExposureSol.toFixed(2),
+          maxSol: cap.maxExposureSol.toFixed(2),
+        }).catch(() => {});
+      }
+    } else {
+      log("cron", `Exposure check OK: ${currentExposure.toFixed(2)} → ${cap.projectedExposureSol.toFixed(2)} SOL (${cap.exposurePct}%)`);
+    }
   } catch (e) {
     return _releaseAndSkip(`Screening pre-check failed: ${e.message}`);
   }
