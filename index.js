@@ -1481,10 +1481,8 @@ Commands:
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startHealthServer();
   startCronJobs();
-  // Reset so first cron tick always passes screening cooldown
+  // Reset so first screening cron tick bypasses cooldown after restart
   _screeningLastTriggered = 0;
-  // Cron jobs handle everything — no manual setTimeout triggers needed.
-  // Lock-manager stale detection ensures previous-process locks are ignored.
 
   // Telegram handler for non-TTY mode
   const _nonTtyQueue = [];

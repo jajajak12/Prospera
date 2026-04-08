@@ -1,7 +1,5 @@
 /**
  * lock-manager.js — Anti-overlap protection via file-based lock.
- * Satu lock per loop type: screening vs management.
- * Lock TIDAK PERNAH dihapus — hanya di-overwrite (survives PM2 restart).
  */
 
 import fs from "fs";
@@ -15,41 +13,58 @@ export const SCREENING_LOCK_PATH  = path.join(__dirname, "..", "screening-lock.j
 export const MANAGEMENT_LOCK_PATH  = path.join(__dirname, "..", "management.lock");
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const SCREENING_LOCK_GAP_MS   = 60_000;
-const MANAGEMENT_LOCK_GAP_MS  = 45_000;
-const STALE_THRESHOLD_MS      = 5 * 60 * 1000;  // 5 min — lock dari proses mati dianggap invalid
+const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
 
-// ── Core stale detection — reusable untuk semua lock types ─────────────────
-// Lock dianggap stale jika: PID berbeda DAN age > 5 min
-//不在乎 status running/completed — selama proses pemilik sudah mati, lock invalid
-export function isStaleLock(lock) {
+/**
+ * Determine if a lock is stale.
+ * @param {object|null} lock
+ * @param {"screening"|"management"} type
+ * @returns {boolean}
+ *
+ * Stale rules:
+ *  - lock null → not stale (no lock to check)
+ *  - same PID → not stale (lock from current process)
+ *  - "running" from old PID → immediately stale (process died while holding lock)
+ *  - "completed" from old PID → stale only if age > 5 min (respect normal gap)
+ */
+export function isStaleLock(lock, type) {
   if (!lock) return false;
-  if (lock.pid === process.pid) return false;          // lock dari proses ini sendiri — valid
-  return Date.now() - lock.ts > STALE_THRESHOLD_MS;    // lock dari PID lain yang sudah tua — stale
+  if (lock.pid === process.pid) return false;
+
+  if (lock.status === "running") return true; // process died holding lock
+
+  const age = Date.now() - lock.ts;
+  return age > STALE_THRESHOLD_MS;
 }
 
-// ── Read / Write helpers ─────────────────────────────────────────────────────
-function readLock(path) {
+// ── Low-level read/write ─────────────────────────────────────────────────────
+function readLock(filePath, type) {
   try {
-    if (!fs.existsSync(path)) return null;
-    const lock = JSON.parse(fs.readFileSync(path, "utf8"));
-    if (isStaleLock(lock)) {
-      console.log(`[lock] stale lock detected (pid ${lock.pid}, status ${lock.status}, age ${Math.round((Date.now() - lock.ts) / 1000)}s) — treating as empty`);
+    if (!fs.existsSync(filePath)) return null;
+    const lock = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (isStaleLock(lock, type)) {
+      const age = Math.round((Date.now() - lock.ts) / 1000);
+      console.log(`[lock] Stale ${type} lock detected from PID ${lock.pid} (age: ${age}s, status: ${lock.status}) — ignoring`);
       return null;
     }
     return lock;
   } catch { return null; }
 }
 
-function writeLock(path, status) {
+function writeLock(filePath, status) {
   try {
-    fs.writeFileSync(path, JSON.stringify({ ts: Date.now(), pid: process.pid, status }), { flag: "w" });
+    fs.writeFileSync(filePath, JSON.stringify({ ts: Date.now(), pid: process.pid, status }), { flag: "w" });
   } catch { /* non-fatal */ }
 }
 
 // ── Screening lock ───────────────────────────────────────────────────────────
-export function readScreeningLock()  { return readLock(SCREENING_LOCK_PATH); }
-export function writeScreeningLock(status) { writeLock(SCREENING_LOCK_PATH, status); }
+export function readScreeningLock() {
+  return readLock(SCREENING_LOCK_PATH, "screening");
+}
+
+export function writeScreeningLock(status) {
+  writeLock(SCREENING_LOCK_PATH, status);
+}
 
 export function acquireScreeningLock() {
   const lock = readScreeningLock();
@@ -58,37 +73,46 @@ export function acquireScreeningLock() {
   if (lock?.status === "running") {
     return { acquired: false, reason: `screening lock: another cycle running (pid ${lock.pid})`, lock };
   }
-  if (ageMs < SCREENING_LOCK_GAP_MS) {
-    return { acquired: false, reason: `screening lock: last run ${Math.round(ageMs / 1000)}s ago (min ${SCREENING_LOCK_GAP_MS / 1000}s)`, lock };
+  if (ageMs < 60_000) {
+    return { acquired: false, reason: `screening lock: last run ${Math.round(ageMs / 1000)}s ago (min 60s)`, lock };
   }
   writeScreeningLock("running");
   return { acquired: true };
 }
 
-export function completeScreeningLock() { writeScreeningLock("completed"); }
+export function completeScreeningLock() {
+  writeScreeningLock("completed");
+}
 
 // ── Management lock ──────────────────────────────────────────────────────────
-export function readManagementLock()  { return readLock(MANAGEMENT_LOCK_PATH); }
-export function writeManagementLock(status) { writeLock(MANAGEMENT_LOCK_PATH, status); }
+export function readManagementLock() {
+  return readLock(MANAGEMENT_LOCK_PATH, "management");
+}
+
+export function writeManagementLock(status) {
+  writeLock(MANAGEMENT_LOCK_PATH, status);
+}
 
 export function acquireManagementLock() {
   const lock = readManagementLock();
   const ageMs = lock ? Date.now() - lock.ts : Infinity;
 
-  if (ageMs < MANAGEMENT_LOCK_GAP_MS) {
-    return { acquired: false, reason: `management lock: last run ${Math.round(ageMs / 1000)}s ago (min ${MANAGEMENT_LOCK_GAP_MS / 1000}s)` };
+  if (ageMs < 45_000) {
+    return { acquired: false, reason: `management lock: last run ${Math.round(ageMs / 1000)}s ago (min 45s)` };
   }
   writeManagementLock("running");
   return { acquired: true };
 }
 
-export function completeManagementLock() { writeManagementLock("completed"); }
+export function completeManagementLock() {
+  writeManagementLock("completed");
+}
 
 // ── Guard utilities ──────────────────────────────────────────────────────────
 export function isScreeningRunning() {
   const lock = readScreeningLock();
   if (!lock) return false;
-  return lock.status === "running" || (Date.now() - lock.ts) < SCREENING_LOCK_GAP_MS;
+  return lock.status === "running" || (Date.now() - lock.ts) < 60_000;
 }
 
 export function getLockAge(lockPath) {
