@@ -12,7 +12,8 @@
  * - Management interval: 3m default (faster for Fib strategy)
  */
 
-import "dotenv/config";
+import { config as dotenvConfig } from "dotenv";
+dotenvConfig();
 import fs from "fs";
 import http from "http";
 import path from "path";
@@ -42,7 +43,7 @@ import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest, runBacktestWithSweep } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
 
-// ── Sweep proposal helpers ─────────────────────────────────────────────────
+// -- Sweep proposal helpers -----------------------------------------------
 const SWEEP_PROPOSAL_PATH = path.join(__dirname, "sweep-proposal.json");
 const USER_CONFIG_PATH     = path.join(__dirname, "user-config.json");
 
@@ -202,6 +203,10 @@ let _pollTriggeredAt         = 0;
 let _exposureHardPausedUntil = 0; // timestamp when hard cap pause expires (0 = not paused)
 let _lastCorrelationId      = null; // last active cycle correlation ID for graceful shutdown
 
+// Pre-computed constants — available immediately after module loads
+// NOTE: config must be imported at module top level (line 36) for this to work
+const SCREENING_INTERVAL_MS = (config.schedule?.screeningIntervalMin || 15) * 60_000;
+
 function stopCronJobs() {
   for (const task of _cronTasks) task?.stop?.();
   if (_cronTasks._pnlPollInterval) clearInterval(_cronTasks._pnlPollInterval);
@@ -251,8 +256,6 @@ export async function runManagementCycle({ silent = false } = {}) {
   timers.managementLastRun = Date.now();
   _m("management", `Starting cycle`, { openPositions: prePositionCount });
 
-  const screeningIntervalMs = (config.schedule.screeningIntervalMin || 15) * 60_000;
-
   let mgmtReport = null;
   let positions = [];
 
@@ -268,11 +271,11 @@ export async function runManagementCycle({ silent = false } = {}) {
     positions = livePositions?.positions || [];
 
     if (positions.length === 0) {
-      if (Date.now() - _screeningLastTriggered > screeningIntervalMs) {
+      if (Date.now() - _screeningLastTriggered > SCREENING_INTERVAL_MS) {
         _m("management", "No positions — triggering screening", { skipReason: "no_positions" });
         runScreeningCycle().catch(e => _m("error", `Triggered screening failed`, { error: e.message }));
       } else {
-        const waitMin = Math.ceil((screeningIntervalMs - (Date.now() - _screeningLastTriggered)) / 60000);
+        const waitMin = Math.ceil((SCREENING_INTERVAL_MS - (Date.now() - _screeningLastTriggered)) / 60000);
         _m("management", "No positions — screening cooldown active", { skipReason: "cooldown", waitMin });
       }
       return null;
@@ -477,7 +480,7 @@ After acting, write a brief one-line result per position.
     // Trigger screening after management — wait for lock to clear first
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
-    if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningIntervalMs) {
+    if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > SCREENING_INTERVAL_MS) {
       const lock = readScreeningLock();
       const lockAge = lock ? Date.now() - lock.ts : Infinity;
       if (lock && lock.status === "running") {
