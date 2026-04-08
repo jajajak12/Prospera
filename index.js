@@ -25,7 +25,7 @@ import cron from "node-cron";
 
 // ── Imports ────────────────────────────────────────────────────────────────────
 import { acquireScreeningLock, completeScreeningLock, acquireManagementLock, completeManagementLock } from "./tools/lock-manager.js";
-import { agentLoop } from "./agent.js";
+import { agentLoop, probeLLMProviders } from "./agent.js";
 import http from "http";
 import readline from "readline";
 import { log } from "./logger.js";
@@ -52,10 +52,7 @@ if (!lpKey) {
 }
 log("startup", `LPAgent: primary=${lpKey ? "YES (len=" + lpKey.length + ")" : "MISSING"} backup=${lpKeyBackup ? "YES (len=" + lpKeyBackup.length + ")" : "MISSING"}`);
 
-// MiniMax key check — log provider decision transparently
-const mmKeyRaw = process.env.LPAGENT_API_KEY?.trim() || "";
-const mmKeyValid = !!(mmKeyRaw && mmKeyRaw !== "placeholder" && mmKeyRaw.length > 10);
-log("startup", `LLM Provider: ${mmKeyValid ? "MiniMax" : "OpenRouter (MiniMax key MISSING/INVALID)"} | key preview: ${mmKeyValid ? mmKeyRaw.slice(0, 10) + "..." : "N/A"}`);
+// LLM provider probe — called async below in startAgent()
 
 // Also warn if Telegram not configured (non-fatal)
 const _tel = telegramEnabled();
@@ -647,16 +644,19 @@ registerCronRestarter(() => { startCronJobs(); });
 
 const isTTY = process.stdin.isTTY;
 
-if (isTTY) {
-  // REPL mode — start cron + Telegram polling + REPL interface
-  startCronJobs();
-  startHealthServer();
-  startREPL(); // does not return — blocks on readline
-} else {
-  // PM2 / non-TTY mode
-  log("startup", "Non-TTY mode — starting cycles.");
-  startCronJobs();
-  startHealthServer();
-  _screeningLastTriggered = 0;
-  startPolling(handleTelegram);
-}
+// Probe LLM providers before starting cycles
+probeLLMProviders().catch(e => log("startup", `LLM probe error: ${e.message}`)).finally(() => {
+  if (isTTY) {
+    // REPL mode — start cron + Telegram polling + REPL interface
+    startCronJobs();
+    startHealthServer();
+    startREPL(); // does not return — blocks on readline
+  } else {
+    // PM2 / non-TTY mode
+    log("startup", "Non-TTY mode — starting cycles.");
+    startCronJobs();
+    startHealthServer();
+    _screeningLastTriggered = 0;
+    startPolling(handleTelegram);
+  }
+});

@@ -93,28 +93,129 @@ import {
   setCorrelationId,
 } from "./tools/circuit-breaker.js";
 
-// Two immutable client instances — one per provider. No mutation.
-// Initialized at module scope. getClient() selects based on circuit state.
-// Key validation happens at startup; transparent fallback to OpenRouter on 401.
-const _minimaxKeyRaw = config.llm?.minimaxApiKey || "";
-const _minimaxKeyValid = !!(_minimaxKeyRaw && _minimaxKeyRaw !== "placeholder" && _minimaxKeyRaw.length > 10);
+// ── Key resolution (single source of truth) ────────────────────────────────
+// Priority: process.env.LLM_API_KEY → config.llm.minimaxApiKey (user-config.json)
+const _minimaxKey = (process.env.LLM_API_KEY || config.llm?.minimaxApiKey || "").trim();
+const _minimaxKeyPresent = !!(_minimaxKey && _minimaxKey !== "placeholder" && _minimaxKey.length > 10);
 
+const _openrouterKey = (process.env.OPENROUTER_API_KEY || "").trim();
+const _openrouterKeyPresent = !!(_openrouterKey && _openrouterKey !== "placeholder" && _openrouterKey.length > 10);
+
+// Two immutable client instances — one per provider. Never mutated after init.
 const minimaxClient = new OpenAI({
   baseURL: "https://api.minimax.chat/v1",
-  apiKey: _minimaxKeyValid ? _minimaxKeyRaw : "INVALID_KEY",
+  apiKey: _minimaxKeyPresent ? _minimaxKey : "NO_KEY",
   timeout: 5 * 60 * 1000,
 });
 
 const openrouterClient = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.OPENROUTER_API_KEY || "placeholder",
+  apiKey: _openrouterKeyPresent ? _openrouterKey : "NO_KEY",
   timeout: 5 * 60 * 1000,
 });
 
+// Probe result set once at startup by probeLLMProviders().
+// null = not probed yet (use circuit-breaker state as fallback).
+let _probeResult = null; // "minimax" | "openrouter" | "none"
+
 function getClient() {
-  // Use OpenRouter if MiniMax key is invalid or circuit is broken
-  if (!_minimaxKeyValid || getActiveProvider() === "openrouter") return openrouterClient;
+  // After probe: use confirmed provider
+  if (_probeResult === "minimax") return minimaxClient;
+  if (_probeResult === "openrouter") return openrouterClient;
+  // Before probe or probe not run: fall back to circuit-breaker state
+  if (!_minimaxKeyPresent || getActiveProvider() === "openrouter") return openrouterClient;
   return minimaxClient;
+}
+
+/**
+ * Probe both LLM providers at startup. Call once from index.js before cycles start.
+ * Sets _probeResult and logs clearly. Does NOT throw.
+ *
+ * @returns {{ provider: "minimax"|"openrouter"|"none", minimaxStatus: string, openrouterStatus: string }}
+ */
+export async function probeLLMProviders() {
+  const results = { minimax: "skip", openrouter: "skip" };
+
+  // ── Probe MiniMax ──────────────────────────────────────────────────────────
+  if (_minimaxKeyPresent) {
+    const keyHint = _minimaxKey.slice(0, 12) + "...";
+    log("startup", `LLM probe: MiniMax key=${keyHint} (len=${_minimaxKey.length}) — testing...`);
+    try {
+      const resp = await minimaxClient.chat.completions.create({
+        model: config.llm?.screeningModel || "minimax-2.7",
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1,
+      });
+      if (resp?.choices?.length) {
+        results.minimax = "ok";
+        log("startup", `LLM probe: MiniMax → OK ✓ (model=${config.llm?.screeningModel || "minimax-2.7"})`);
+      } else {
+        results.minimax = "bad_response";
+        log("startup", `LLM probe: MiniMax → unexpected response shape — treating as failure`);
+      }
+    } catch (e) {
+      const code = e.status || e.code || "unknown";
+      const msg = (e.message || "").slice(0, 120);
+      results.minimax = `error_${code}`;
+      if (code === 401) {
+        log("startup", `LLM probe: MiniMax → 401 UNAUTHORIZED — key is invalid or expired`);
+      } else {
+        log("startup", `LLM probe: MiniMax → FAIL (${code}) — ${msg}`);
+      }
+    }
+  } else {
+    results.minimax = "no_key";
+    log("startup", `LLM probe: MiniMax → SKIP (no key configured — set LLM_API_KEY in .env or minimaxApiKey in user-config.json)`);
+  }
+
+  // ── Probe OpenRouter ───────────────────────────────────────────────────────
+  if (_openrouterKeyPresent) {
+    const orKeyHint = _openrouterKey.slice(0, 12) + "...";
+    const orModel = config.llm?.openrouterModel || "anthropic/claude-sonnet-4";
+    log("startup", `LLM probe: OpenRouter key=${orKeyHint} (len=${_openrouterKey.length}) — testing...`);
+    try {
+      const resp = await openrouterClient.chat.completions.create({
+        model: orModel,
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1,
+      });
+      if (resp?.choices?.length) {
+        results.openrouter = "ok";
+        log("startup", `LLM probe: OpenRouter → OK ✓ (model=${orModel})`);
+      } else {
+        results.openrouter = "bad_response";
+        log("startup", `LLM probe: OpenRouter → unexpected response shape`);
+      }
+    } catch (e) {
+      const code = e.status || e.code || "unknown";
+      const msg = (e.message || "").slice(0, 120);
+      results.openrouter = `error_${code}`;
+      log("startup", `LLM probe: OpenRouter → FAIL (${code}) — ${msg}`);
+    }
+  } else {
+    results.openrouter = "no_key";
+    log("startup", `LLM probe: OpenRouter → SKIP (OPENROUTER_API_KEY not set)`);
+  }
+
+  // ── Decide active provider ─────────────────────────────────────────────────
+  if (results.minimax === "ok") {
+    _probeResult = "minimax";
+  } else if (results.openrouter === "ok") {
+    _probeResult = "openrouter";
+    // Trip circuit so runtime calls go to openrouter immediately
+    if (results.minimax !== "ok") {
+      log("startup", `LLM probe: MiniMax unavailable — circuit set to OpenRouter`);
+      recordFailure(new Error(`startup probe: ${results.minimax}`));
+      recordFailure(new Error(`startup probe: ${results.minimax}`));
+      recordFailure(new Error(`startup probe: ${results.minimax}`));
+    }
+  } else {
+    _probeResult = "none";
+    log("startup", `LLM probe: ⚠️ BOTH providers unavailable — agent will run but LLM calls will fail`);
+  }
+
+  log("startup", `LLM probe result: active=${_probeResult} | minimax=${results.minimax} | openrouter=${results.openrouter}`);
+  return { provider: _probeResult, minimaxStatus: results.minimax, openrouterStatus: results.openrouter };
 }
 
 const DEFAULT_MODEL = process.env.LLM_MODEL || config.llm?.generalModel || "minimax-2.7";
