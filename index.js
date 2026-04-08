@@ -112,6 +112,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   if (preCount === 0) {
     _m("management", "No open positions");
     logSkip("no_open_positions", {}, corrId);
+    if (telegramEnabled()) sendMessage(`Management [${corrId}] — No open positions`).catch(() => {});
     completeManagementLock();
     return null;
   }
@@ -243,9 +244,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
     if (cap.level === "hard_pause") {
       _exposureHardPausedUntil = cap.pauseUntil;
       _s("error", "HARD CAP TRIGGERED");
+      if (telegramEnabled()) sendMessage(`Screening [${corrId}] — HARD CAP TRIGGERED, pausing entries`).catch(() => {});
       _release(); return null;
     }
-  } catch (e) { _release(); return null; }
+  } catch (e) {
+    _s("error", `Screening error: ${e.message}`);
+    if (telegramEnabled()) sendMessage(`Screening [${corrId}] — Error: ${e.message}`).catch(() => {});
+    _release(); return null;
+  }
 
   timers.screeningLastRun = Date.now();
   _s("screening", `Starting cycle | deploy: ${deployAmount} SOL | wallet: ${preBalance.sol} SOL`);
@@ -254,7 +260,12 @@ export async function runScreeningCycle({ silent = false } = {}) {
   try {
     const topResult = await getTopCandidates({ limit: 20, correlationId: corrId }).catch(() => null);
     const candidates = topResult?.candidates || [];
-    if (candidates.length === 0) { screenReport = "No entry signals"; _release(); return screenReport; }
+    if (candidates.length === 0) {
+      screenReport = "No entry signals";
+      if (telegramEnabled()) sendMessage(`Screening [${corrId}] [${new Date().toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit",hour12:false})}] — No entry signals`).catch(() => {});
+      _release();
+      return screenReport;
+    }
 
     const PENDING_ATH_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "screening-pending.json");
     const activeBinResults = await Promise.allSettled(candidates.map(p => getActiveBin({ pool_address: p.pool })));
