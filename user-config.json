@@ -1,5 +1,5 @@
 {
-  "preset": "fibonacci",
+  "preset": "default",
   "rpcUrl": "",
   "rpcFallbacks": [
     "https://solana-mainnet.g.alchemy.com/v2/kSDAgZZ8_YaqIU5N0HHga",
