@@ -81,6 +81,17 @@ import { log } from "./logger.js";
 import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
+import {
+  getActiveProvider,
+  getProviderConfig,
+  isFallbackActive,
+  recordSuccess,
+  recordFailure,
+  getBackoffDelay,
+  circuitSleep,
+  getCircuitState,
+  setCorrelationId,
+} from "./tools/circuit-breaker.js";
 
 // Defer client creation — config.llm.minimaxApiKey baru available setelah user-config.json di-load
 let _client = null;
@@ -117,7 +128,8 @@ export async function agentLoop(
   sessionHistory = [],
   agentType = "GENERAL",
   model = null,
-  maxOutputTokens = null
+  maxOutputTokens = null,
+  correlationId = null
 ) {
   const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
   const stateSummary = getStateSummary();
@@ -139,48 +151,73 @@ export async function agentLoop(
     log("agent", `Step ${step + 1}/${maxSteps}`);
 
     try {
-      const activeModel = model || DEFAULT_MODEL;
-      const FALLBACK_CHAIN = [
-        "deepseek/deepseek-v3.2",
-        "stepfun/step-3.5-flash:free",
-      ];
-      let response;
-      let usedModel = activeModel;
-      let fallbackIndex = 0;
-
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap)\b/i;
       const toolChoice = (step === 0 && agentType === "GENERAL" && ACTION_INTENTS.test(goal)) ? "required" : "auto";
 
-      for (let attempt = 0; attempt < 3; attempt++) {
-        response = await getClient().chat.completions.create({
-          model: usedModel,
-          messages,
-          tools: getToolsForRole(agentType, goal),
-          tool_choice: toolChoice,
-          temperature: config.llm.temperature,
-          max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-        });
-        if (response.choices?.length) break;
-        const errCode = response.error?.code;
-        const isRetryable = errCode === 429 || errCode === 502 || errCode === 503 || errCode === 529;
-        const isMinimaxOverloaded = /overloaded|timeout|rate.?limit/i.test(response.error?.message || "");
-        if (isRetryable || isMinimaxOverloaded) {
-          const wait = (attempt + 1) * 5000;
-          if (fallbackIndex < FALLBACK_CHAIN.length) {
-            fallbackIndex++;
-            usedModel = FALLBACK_CHAIN[fallbackIndex - 1];
-            client.baseURL = "https://openrouter.ai/api/v1";
-            client.apiKey = process.env.OPENROUTER_API_KEY || "placeholder";
-            log("warn", `Minimax limit, fallback to OpenRouter`, { model: usedModel });
-          } else {
-            log("agent", `Provider error ${errCode}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
-            usedModel = activeModel; // reset to Minimax for retry
-            client.baseURL = "https://api.minimax.chat/v1";
-            client.apiKey = process.env.LLM_API_KEY || "placeholder";
-            await new Promise(r => setTimeout(r, wait));
-          }
-        } else {
+      let response;
+      const MAX_ATTEMPTS = 4; // circuit breaker max call attempts (includes backoff)
+
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        // Get provider config (respects circuit state — may be openrouter during fallback)
+        const { baseURL, apiKey, model: usedModel, provider } = getProviderConfig();
+        const client = getClient();
+
+        // Apply provider config to existing client instance
+        client.baseURL = baseURL;
+        client.apiKey = apiKey;
+
+        if (attempt > 0) {
+          log("agent", `Retry attempt ${attempt}/${MAX_ATTEMPTS} with ${provider} (${usedModel})`);
+        }
+
+        try {
+          response = await client.chat.completions.create({
+            model: usedModel,
+            messages,
+            tools: getToolsForRole(agentType, goal),
+            tool_choice: toolChoice,
+            temperature: config.llm.temperature,
+            max_tokens: maxOutputTokens ?? config.llm.maxTokens,
+          });
+
+          // Success
+          recordSuccess(correlationId);
           break;
+
+        } catch (apiError) {
+          const errCode  = apiError.status || apiError.code;
+          const errMsg   = apiError.message || "";
+          const isRetryable = [429, 502, 503, 529].includes(errCode)
+            || /overloaded|timeout|rate.?limit|connection|fetch/i.test(errMsg);
+
+          if (!isRetryable) {
+            // Non-retryable error (auth, invalid request, etc.) — record + propagate
+            recordFailure(apiError, correlationId);
+            throw apiError;
+          }
+
+          // Retryable: record failure, apply backoff, maybe trip circuit
+          const justTripped = recordFailure(apiError, correlationId);
+
+          if (attempt === MAX_ATTEMPTS - 1) {
+            // Last attempt failed — circuit is now open (if it wasn't already)
+            log("error", `All ${MAX_ATTEMPTS} attempts failed — circuit breaker may trip`, {
+              lastError: errMsg.slice(0, 200),
+              provider,
+              correlationId: correlationId,
+            });
+            throw apiError;
+          }
+
+          const delay = getBackoffDelay(attempt);
+          log("warn", `API error (${errCode}) — ${provider} retryable, backing off ${delay / 1000}s`, {
+            attempt: attempt + 1,
+            maxAttempts: MAX_ATTEMPTS,
+            provider,
+            correlationId: correlationId,
+          });
+
+          await circuitSleep(delay);
         }
       }
 

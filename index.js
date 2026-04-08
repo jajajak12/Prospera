@@ -28,10 +28,11 @@ import {
 
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
-import { logWithId, logSkip } from "./log-utils.js";
+import { logWithId, logSkip, shortId } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
+import { getCircuitState } from "./tools/circuit-breaker.js";
 import { config, reloadScreeningThresholds, computeDeployAmount, getPositionSizing, calculateCurrentExposure, canOpenNewPosition, checkExposureCap } from "./config.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
@@ -198,6 +199,7 @@ let _screeningBusy           = false; // in-process guard — synced with lock-m
 let _screeningLastTriggered  = 0;
 let _pollTriggeredAt         = 0;
 let _exposureHardPausedUntil = 0; // timestamp when hard cap pause expires (0 = not paused)
+let _lastCorrelationId      = null; // last active cycle correlation ID for graceful shutdown
 
 function stopCronJobs() {
   for (const task of _cronTasks) task?.stop?.();
@@ -212,6 +214,7 @@ function stopCronJobs() {
 export async function runManagementCycle({ silent = false } = {}) {
   // ── Correlation ID: one per cycle, propagated to all log lines ────────
   const corrId = logCycleStart("management");
+  _lastCorrelationId = corrId;
 
   const _m = (category, message, meta = {}) => logWithId(category, message, meta, corrId);
 
@@ -465,7 +468,7 @@ RULES:
 - When closing: call close_position only — it handles claiming and auto-swap internally
 
 After acting, write a brief one-line result per position.
-      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 512);
+      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 512, corrId);
 
       mgmtReport += `\n\n${content}`;
     }
@@ -514,6 +517,7 @@ After acting, write a brief one-line result per position.
 export async function runScreeningCycle({ silent = false, force = false } = {}) {
   // ── Correlation ID: one per cycle, propagated to all log lines ────────
   const corrId = logCycleStart("screening");
+  _lastCorrelationId = corrId;
 
   const _s = (category, message, meta = {}) => logWithId(category, message, meta, corrId);
 
@@ -774,7 +778,7 @@ Deployed: PAIR
 bin_step=X | binsBelow=X | confluenceScore=X | fee=X%
 fib618=X | fib236=X | poc=X
 reason: <one sentence why this over others>
-    `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048);
+    `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, corrId);
 
     screenReport = content;
 
@@ -1087,10 +1091,19 @@ export function startCronJobs() {
 //  GRACEFUL SHUTDOWN
 // ═══════════════════════════════════════════
 async function shutdown(signal) {
-  log("shutdown", `Received ${signal}. Shutting down...`);
+  const corrId  = _lastCorrelationId || "none";
+  const cb     = getCircuitState();
+  log("shutdown", `[${corrId}] Graceful shutdown initiated — ${signal}`, {
+    correlationId: corrId,
+    signal,
+    isCircuitBroken: cb.isCircuitBroken,
+    fallbackProvider: cb.isFallbackActive ? "openrouter" : "minimax",
+    cooldownRemainingSec: cb.cooldownRemainingSec,
+    failureCount: cb.failureCount,
+  });
   stopPolling();
-  const positions = await getMyPositions();
-  log("shutdown", `Open positions at shutdown: ${positions.total_positions}`);
+  const positions = await getMyPositions().catch(() => ({ total_positions: "unknown" }));
+  log("shutdown", `[${corrId}] Open positions at shutdown: ${positions.total_positions}`, { correlationId: corrId });
   process.exit(0);
 }
 
@@ -1360,7 +1373,8 @@ if (isTTY) {
       const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
       const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
       const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
-      const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, config.llm.generalModel);
+      const corrId = shortId();
+      const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, config.llm.generalModel, null, corrId);
       appendHistory(text, content);
       await sendMessage(stripThink(content));
     } catch (e) {
@@ -1402,13 +1416,17 @@ Commands:
         const bal  = await getWalletBalances();
         const amt  = getPositionSizing(bal.sol);
         console.log(`\nDeploying ${amt} SOL into ${pool.name} (bins_below=${bins})...\n`);
+        const corrId = shortId();
         const { content: reply } = await agentLoop(
           `Deploy ${amt} SOL into pool ${pool.pool} (${pool.name}). ` +
           `Use bins_below=${bins} (pre-calculated Fibonacci bins to fib_618 level), bins_above=0, strategy=bid_ask. ` +
           `Call deploy_position directly — active_bin is pre-fetched: use fib_signal data. Report result.`,
           config.llm.maxSteps,
           [],
-          "SCREENER"
+          "SCREENER",
+          null,
+          null,
+          corrId
         );
         console.log(`\n${reply}\n`);
         launchCron();
@@ -1422,11 +1440,15 @@ Commands:
         const bal = await getWalletBalances();
         const amt = getPositionSizing(bal.sol);
         console.log("\nAgent running Fibonacci screening and deploying...\n");
+        const corrId = shortId();
         const { content: reply } = await agentLoop(
           `Call get_chart_candidates, pick the best Fibonacci signal, deploy_position with ${amt} SOL. Execute now.`,
           config.llm.maxSteps,
           [],
-          "SCREENER"
+          "SCREENER",
+          null,
+          null,
+          corrId
         );
         console.log(`\n${reply}\n`);
         launchCron();
@@ -1516,7 +1538,8 @@ Commands:
     // ── Free-form chat ───────────────────────────────────────────────
     await runBusy(async () => {
       log("user", input);
-      const { content } = await agentLoop(input, config.llm.maxSteps, sessionHistory, "GENERAL", config.llm.generalModel);
+      const corrId = shortId();
+      const { content } = await agentLoop(input, config.llm.maxSteps, sessionHistory, "GENERAL", config.llm.generalModel, null, corrId);
       appendHistory(input, content);
       console.log(`\n${content}\n`);
     });
@@ -1603,7 +1626,8 @@ Commands:
       const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
       const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b/i.test(text);
       const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
-      const { content } = await agentLoop(text, config.llm.maxSteps, [], agentRole, config.llm.generalModel);
+      const corrId = shortId();
+      const { content } = await agentLoop(text, config.llm.maxSteps, [], agentRole, config.llm.generalModel, null, corrId);
       await sendMessage(stripThink(content));
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
