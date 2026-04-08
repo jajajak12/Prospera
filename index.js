@@ -599,6 +599,31 @@ async function handleTelegram(text) {
       await sendMessage(result.success ? `Closed ${pos.pair}` : `Close failed: ${JSON.stringify(result)}`);
       return;
     }
+    // ── Free-flow conversation with safety guard ──────────────────────────────
+    // Patterns that indicate user wants to CHANGE something (require explicit confirmation)
+    const changePatterns = [
+      /\bubah\b/i, /\bchange\b/i, /\bmodify\b/i, /\bupdate\b/i,
+      /\btukar\b/i, /\breplace\b/i, /\bswap\b/i,
+      /\bset\s+\w+\s+to\b/i, /\bset\b.*\bto\b/i,
+      /\b(min|rsi|fib|volume|exposure|max).*\b(jadi|to|=|:=\b)/i,
+      /^(RSI|FIB|MIN|VOLUME|EXPOSURE).*?(=|:=\s*)/i,
+    ];
+    const wantsChange = changePatterns.some(p => p.test(text));
+
+    if (wantsChange) {
+      await sendMessage(
+        `⚠️ Anda meminta perubahan parameter.\n` +
+        `Saya tidak akan langsung mengubah sebelum Anda konfirmasi.\n` +
+        `Kirim "ya" atau "ubah" untuk melanjutkan, atau abaikan pesan ini.`
+      );
+      return;
+    }
+
+    // /hermes and /grok prefixes — route to agent as-is
+    if (text.startsWith("/hermes ") || text.startsWith("/grok ")) {
+      text = text.replace(/^\/(hermes|grok)\s*/i, "");
+    }
+
     const corrId = shortId();
     const hasClose = /\bclose\b|\bsell\b/i.test(text);
     const hasDeploy = /\bdeploy\b|\bopen\b|\blp into\b/i.test(text);
