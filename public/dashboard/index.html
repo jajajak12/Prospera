@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prospera Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body{background:#0f1117;color:#e2e8f0}
+    .card{background:#1a1d27;border:1px solid #2d3142;border-radius:12px}
+    .badge{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+    .badge-green{background:#052e16;color:#4ade80;border:1px solid #14532d}
+    .badge-red{background:#2a0a0a;color:#f87171;border:1px solid #7f1d1d}
+    .badge-yellow{background:#1c1400;color:#fbbf24;border:1px solid #78350f}
+    .badge-blue{background:#0c1929;color:#60a5fa;border:1px solid #1e40af}
+    .tab-btn{padding:8px 20px;border-radius:8px 8px 0 0;font-weight:600;font-size:14px;cursor:pointer}
+    .tab-active{background:#1a1d27;border-bottom:2px solid #6366f1;color:#6366f1}
+    .tab-inactive{background:#111827;color:#64748b}
+    .log-line{font-size:12px;font-family:monospace;padding:2px 0;border-bottom:1px solid #1f2937}
+    .log-ts{color:#475569;margin-right:8px}
+    .log-info{color:#94a3b8}.log-warn{color:#fbbf24}.log-error{color:#f87171}
+    .log-mgmt{color:#38bdf8}.log-scr{color:#a78bfa}
+    .progress-bar{height:8px;border-radius:999px;background:#1f2937;overflow:hidden}
+    .progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#6366f1,#8b5cf6)}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th{text-align:left;padding:8px 12px;border-bottom:1px solid #2d3142;color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+    td{padding:10px 12px;border-bottom:1px solid #1f2937}
+    tr:hover td{background:#1f2937}
+    .pnl-pos{color:#4ade80}.pnl-neg{color:#f87171}
+    .fade-in{animation:fadeIn .3s ease}@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+    .err-box{background:#2a0a0a;border:1px solid #7f1d1d;border-radius:8px;padding:16px;color:#f87171;text-align:center}
+  </style>
+</head>
+<body class="min-h-screen">
+
+<nav class="flex items-center justify-between px-6 py-4 border-b border-[#2d3142]" style="background:#0f1117">
+  <div class="flex items-center gap-3">
+    <div class="w-2 h-2 rounded-full" id="agent-dot" style="background:#4ade80"></div>
+    <span class="text-lg font-bold text-white">Prospera</span>
+    <span class="text-sm text-slate-500">DLMM LP Agent</span>
+  </div>
+  <div class="flex items-center gap-4 text-sm">
+    <span id="uptime-label" class="text-slate-400"></span>
+    <span id="provider-badge" class="badge badge-blue">—</span>
+    <button onclick="init()" class="text-xs text-slate-500 hover:text-white border border-[#2d3142] px-3 py-1 rounded" style="background:#111827">Refresh</button>
+  </div>
+</nav>
+
+<div class="flex px-6 border-b border-[#2d3142]" style="background:#111827">
+  <div class="tab-btn tab-active" id="tab-overview"   onclick="switchTab('overview')">Overview</div>
+  <div class="tab-btn tab-inactive" id="tab-screening"  onclick="switchTab('screening')">Screening</div>
+  <div class="tab-btn tab-inactive" id="tab-positions"  onclick="switchTab('positions')">Positions</div>
+  <div class="tab-btn tab-inactive" id="tab-pnl"        onclick="switchTab('pnl')">PnL</div>
+</div>
+
+<div class="p-6 fade-in" id="tab-content">
+
+  <!-- ERROR -->
+  <div id="load-err" class="hidden err-box mb-6">
+    <div class="font-bold mb-1">Gagal fetch data</div>
+    <div id="load-err-msg" class="text-sm text-red-300"></div>
+    <div class="text-sm text-slate-400 mt-2">Cek <code>VITE_PROSPERA_API_URL</code> + <code>VITE_PROSPERA_API_KEY</code></div>
+  </div>
+
+  <!-- OVERVIEW -->
+  <div id="page-overview">
+    <div id="overview-grid" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Status</div>
+        <div class="text-xl font-bold" id="agent-status">—</div>
+        <div class="text-xs text-slate-500 mt-1" id="circuit-state"></div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Exposure</div>
+        <div class="text-xl font-bold" id="exposure-pct">—</div>
+        <div class="progress-bar mt-2"><div class="progress-fill" id="exposure-bar" style="width:0%"></div></div>
+        <div class="text-xs text-slate-500 mt-1" id="exposure-sol"></div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Today's PnL</div>
+        <div class="text-xl font-bold" id="pnl-today">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Positions</div>
+        <div class="text-xl font-bold" id="total-positions">—</div>
+        <div class="text-xs text-slate-500 mt-1" id="llm-zone-count"></div>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">SOL Balance</div>
+        <div class="text-lg font-bold" id="sol-balance">—</div>
+        <div class="text-xs text-slate-500 mt-1" id="sol-price"></div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Last Screening</div>
+        <div class="text-lg font-bold" id="last-screening">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Last Management</div>
+        <div class="text-lg font-bold" id="last-management">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Morning Briefing</div>
+        <div class="text-lg font-bold" id="last-briefing">—</div>
+        <div class="text-xs text-slate-500 mt-1" id="briefing-date"></div>
+      </div>
+    </div>
+    <div class="card p-4">
+      <div class="text-sm font-semibold text-slate-300 mb-3">Recent Logs</div>
+      <div id="recent-logs" class="max-h-64 overflow-y-auto"></div>
+    </div>
+  </div>
+
+  <!-- SCREENING -->
+  <div id="page-screening" class="hidden">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">Discovered</div><div class="text-xl font-bold" id="scr-discovered">—</div></div>
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">After Volume</div><div class="text-xl font-bold" id="scr-aftervol">—</div></div>
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">Meteora Pools</div><div class="text-xl font-bold" id="scr-pools">—</div></div>
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">Fib Passed</div><div class="text-xl font-bold" id="scr-fibpassed">—</div></div>
+    </div>
+    <div class="card p-4 mb-6">
+      <div class="text-sm font-semibold text-slate-300 mb-3">Last Screening Report</div>
+      <pre id="scr-report" class="text-xs text-slate-400 whitespace-pre-wrap" style="font-family:monospace;max-height:300px;overflow-y:auto"></pre>
+    </div>
+    <div class="card p-4">
+      <div class="text-sm font-semibold text-slate-300 mb-3">Top Candidates</div>
+      <div id="scr-candidates"></div>
+    </div>
+  </div>
+
+  <!-- POSITIONS -->
+  <div id="page-positions" class="hidden">
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">Open</div><div class="text-xl font-bold" id="pos-count">—</div></div>
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">LLM Zone</div><div class="text-xl font-bold text-indigo-400" id="pos-llmzone">—</div></div>
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">Deterministic</div><div class="text-xl font-bold text-amber-400" id="pos-deterministic">—</div></div>
+    </div>
+    <div class="card p-4 mb-6"><div class="text-sm font-semibold text-slate-300 mb-3">Open Positions</div><div id="pos-table"></div></div>
+    <div class="card p-4"><div class="text-sm font-semibold text-slate-300 mb-3">Closed History</div><div id="pos-history"></div></div>
+  </div>
+
+  <!-- PnL -->
+  <div id="page-pnl" class="hidden">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">Total PnL</div><div class="text-2xl font-bold" id="pnl-total">—</div></div>
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">Win Rate</div><div class="text-2xl font-bold" id="pnl-winrate">—</div></div>
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">Max Drawdown</div><div class="text-2xl font-bold text-red-400" id="pnl-drawdown">—</div></div>
+      <div class="card p-4"><div class="text-xs text-slate-500 mb-1">Closed</div><div class="text-2xl font-bold" id="pnl-closed">—</div></div>
+    </div>
+    <div class="card p-4"><div class="text-sm font-semibold text-slate-300 mb-4">PnL History</div><canvas id="pnl-chart" height="120"></canvas></div>
+  </div>
+
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

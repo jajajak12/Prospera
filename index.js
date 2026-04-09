@@ -21,6 +21,7 @@ import "./init.js"; // Load .env FIRST — before any other module
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import cron from "node-cron";
 
 // ── Imports ────────────────────────────────────────────────────────────────────
@@ -82,23 +83,14 @@ let _lastScreeningReport = null; // { discovered, afterVolume, meteoraPools, fib
 let _closedPoolsHistory = [];    // [{pair, pnl_pct, closedAt}]
 
 /**
- * Serve the dashboard HTML inline — no file system needed, loads from /dashboard/ folder on disk.
- * The actual HTML is served as a template; additional assets can reference the /dashboard/ path.
+ * Serve static files from public/ folder — used for /dashboard route.
+ * Serves index.html + app.js as-is (no injection needed, Vite env vars handle config).
  */
 function SERVE_DASHBOARD_HTML() {
   try {
-    let html = fs.readFileSync(path.join(__dirname, "dashboard", "index.html"), "utf8");
-    const baseUrl = config.dashboard.baseUrl || `http://localhost:${_healthPort || 3000}`;
-    const apiKey  = config.dashboard.apiKey || '';
-    // Inject API config into the HTML so the static page knows where to call
-    const metaTag = `<meta name="prospera-api-base" content="${escHtml(baseUrl)}">`;
-    const keyTag  = apiKey ? `<meta name="prospera-api-key" content="${escHtml(apiKey)}">` : '';
-    const script  = `<script>window.PROSPERA_API_URL = "${escHtml(baseUrl)}";</script>`;
-    // Inject before </head>
-    html = html.replace("</head>", `${metaTag}${keyTag}${script}</head>`);
-    return html;
+    return fs.readFileSync(path.join(__dirname, "public", "dashboard", "index.html"), "utf8");
   } catch {
-    return "<html><body style='background:#0f1117;color:#e2e8f0;font-family:system-ui;padding:40px'><h1>Prospera Dashboard</h1><p>dashboard/index.html not found. Run: cp dashboard/index.html .</p></body></html>";
+    return "<html><body style='background:#0f1117;color:#e2e8f0;font-family:system-ui;padding:40px'><h1>Dashboard not found</h1><p>public/dashboard/index.html missing.</p></body></html>";
   }
 }
 
@@ -273,6 +265,18 @@ function startHealthServer(port = 3000) {
     if (req.url === "/" || req.url === "/dashboard") {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(SERVE_DASHBOARD_HTML());
+      return;
+    }
+
+    // Serve app.js from public/dashboard/
+    if (req.url === "/dashboard/app.js") {
+      try {
+        const js = fs.readFileSync(path.join(__dirname, "public", "dashboard", "app.js"), "utf8");
+        res.writeHead(200, { "Content-Type": "application/javascript" });
+        res.end(js);
+      } catch {
+        res.writeHead(404); res.end();
+      }
       return;
     }
 
