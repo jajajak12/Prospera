@@ -376,12 +376,12 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (exit) exitMap.set(p.position, exit.reason);
     }
 
-    // positionMeta.json is written by executor.js after deploy (ATH bin tracking)
-    // Currently not read back during management — reserved for future OOR/ATH logic
+    // positionMeta.json written by executor.js after deploy (ATH bin tracking)
+    // Not currently read back in management — reserved for future OOR/ATH recovery logic
     let positionMeta = {};
     try { if (fs.existsSync(POSITION_META_PATH)) positionMeta = JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")); } catch { /**/ }
     if (Object.keys(positionMeta).length > 0) {
-      _m("management", `positionMeta loaded: ${Object.keys(positionMeta).length} entries (not currently used in management)`);
+      _m("management", `positionMeta loaded: ${Object.keys(positionMeta).length} entries (reserved for future ATH recovery logic)`);
     }
 
     const actionMap = new Map();
