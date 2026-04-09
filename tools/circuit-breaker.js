@@ -27,9 +27,9 @@ const BACKOFF_DELAYS  = [1_000, 2_000, 4_000, 8_000]; // ms per attempt
 // ── Provider configs ────────────────────────────────────────────────────────
 const PROVIDERS = {
   minimax: {
-    baseURL: "https://api.minimax.chat/v1",
+    baseURL: "https://api.minimax.io/v1",
     apiKeyEnv: "LLM_API_KEY",
-    model: "minimax-2.7", // resolved from config at runtime via getProviderConfig
+    model: "MiniMax-M2.7", // resolved from config at runtime via getProviderConfig
   },
   openrouter: {
     baseURL: "https://openrouter.ai/api/v1",

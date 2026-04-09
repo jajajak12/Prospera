@@ -103,7 +103,7 @@ const _openrouterKeyPresent = !!(_openrouterKey && _openrouterKey !== "placehold
 
 // Two immutable client instances — one per provider. Never mutated after init.
 const minimaxClient = new OpenAI({
-  baseURL: "https://api.minimax.chat/v1",
+  baseURL: "https://api.minimax.io/v1",
   apiKey: _minimaxKeyPresent ? _minimaxKey : "NO_KEY",
   timeout: 5 * 60 * 1000,
 });
