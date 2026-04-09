@@ -899,6 +899,16 @@ async function handleTelegram(text) {
       await runMorningBriefing({ force: true }).catch(e => sendMessage(`Briefing error: ${e.message}`));
       return;
     }
+    if (text === "/screening") {
+      await sendMessage("Running screening cycle...");
+      await runScreeningCycle({ silent: false }).catch(e => sendMessage(`Screening error: ${e.message}`));
+      return;
+    }
+    if (text === "/management") {
+      await sendMessage("Running management cycle...");
+      await runManagementCycle({ silent: false }).catch(e => sendMessage(`Management error: ${e.message}`));
+      return;
+    }
     if (text.startsWith("/backtest")) {
       const label = text.includes("14d") ? "14d" : "7d";
       await sendMessage(`Running ${label} backtest...`);
@@ -915,7 +925,9 @@ async function handleTelegram(text) {
       return;
     }
     if (text === "/help") {
-      await sendMessage(`Prospera Commands:\n/positions — list open positions\n/status — agent status overview\n/briefing — trigger morning briefing\n/backtest — run 7d backtest\n/backtest 14d — run 14d backtest\n/close <N> — close position N\n/help — show this message`);
+      await sendMessage(`Prospera Commands:\n/positions — list open positions\n/status — agent status overview\n/briefing — trigger morning briefing\n/backtest — run 7d backtest\n/backtest 14d — run 14d backtest\n/close <N> — close position N\n/screening — trigger screening cycle
+/management — trigger management cycle
+/help — show this message`);
       return;
     }
     if (text === "/status") {
