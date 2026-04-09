@@ -65,6 +65,7 @@ export async function getJupiterTokenInfo(mint) {
     const res = await fetch(`${JUPITER_BASE}/tokens/${mint}`, {
       signal: AbortSignal.timeout(8000),
     });
+    if (res.status === 404) return { notFound: true };
     if (!res.ok) return null;
     const d = await res.json();
 

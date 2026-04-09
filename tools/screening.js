@@ -596,7 +596,11 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     const before = eligible.length;
     eligible = eligible.filter((t, i) => {
       const jup = jupResults[i];
-      if (!jup) { log("screening", `  ${t.symbol}: OK (no Jupiter data)`); return true; } // API miss → keep
+      if (!jup) { log("screening", `  ${t.symbol}: OK (no Jupiter data — API error)`); return true; }
+      if (jup.notFound) {
+        log("screening", `  ${t.symbol}: SKIP — not indexed by Jupiter (feesSOL unknown, treated as 0 < min ${s.minTokenFeesSol ?? 25})`);
+        return false;
+      }
       if (jup.top10Pct != null && jup.top10Pct > (s.maxTop10Pct ?? 20)) {
         log("screening", `  ${t.symbol}: SKIP — top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 20}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
