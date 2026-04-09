@@ -270,7 +270,7 @@ export async function agentLoop(
         // Get provider config (respects circuit state — may be openrouter during fallback)
         const { model: usedModel, provider } = getProviderConfig();
         const client = getClient();
-        const _keyHint = provider === "minimax" && _minimaxKeyValid ? _minimaxKeyRaw.slice(0, 10) + "..." : "N/A";
+        const _keyHint = provider === "minimax" && _minimaxKeyPresent ? _minimaxKey.slice(0, 10) + "..." : "N/A";
 
         if (attempt > 0) {
           log("agent", `Retry ${attempt}/${MAX_ATTEMPTS} with ${provider} (${usedModel})`);
