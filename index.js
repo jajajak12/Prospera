@@ -132,7 +132,25 @@ function startREPL() {
       rl.prompt(); return;
     }
     if (cmd === "help") {
-      console.log("Commands: status, positions, close <N>, exposure, help, exit");
+      console.log("Commands: status, positions, close <N>, briefing, backtest, exposure, help, exit");
+      rl.prompt(); return;
+    }
+    if (cmd === "briefing") {
+      console.log("Running morning briefing...");
+      await runMorningBriefing().catch(e => console.log(`Briefing error: ${e.message}`));
+      rl.prompt(); return;
+    }
+    const backtestMatch = cmd.match(/^backtest(\s+14d)?$/i);
+    if (backtestMatch) {
+      const label = backtestMatch[1] ? "14d" : "7d";
+      console.log(`Running ${label} backtest...`);
+      const corrId = shortId();
+      const result = await runDailyBacktest({ correlationId: corrId, hours: label === "14d" ? 336 : 168 }).catch(() => null);
+      if (result && !result.skipped) {
+        console.log(`${label} backtest: ${result.summary7d?.totalPools ?? 0} pools, WR: ${result.summary7d?.winRate ?? "N/A"}%`);
+      } else {
+        console.log(`No ${label} backtest data available.`);
+      }
       rl.prompt(); return;
     }
     const closeMatch = cmd.match(/^close\s+(\d+)$/i);
@@ -580,19 +598,40 @@ async function handleTelegram(text) {
       await sendMessage(`Open Positions (${total_positions}):\n${lines.join("\n")}`);
       return;
     }
+    if (text === "/briefing") {
+      await sendMessage("Running morning briefing...");
+      await runMorningBriefing().catch(e => sendMessage(`Briefing error: ${e.message}`));
+      return;
+    }
+    if (text.startsWith("/backtest")) {
+      const label = text.includes("14d") ? "14d" : "7d";
+      await sendMessage(`Running ${label} backtest...`);
+      const corrId = shortId();
+      const result = await runDailyBacktest({ correlationId: corrId, hours: label === "14d" ? 336 : 168 }).catch(e => null);
+      if (result && !result.skipped) {
+        const wr = result.summary7d?.winRate ?? "N/A";
+        await sendMessage(`${label} backtest: ${result.summary7d?.totalPools ?? 0} pools, WR: ${wr}%`);
+      } else {
+        await sendMessage(`No ${label} backtest data available.`);
+      }
+      return;
+    }
     if (text === "/help") {
-      await sendMessage(`Prospera Commands:\n/positions — list open positions\n/status — agent status overview\n/close <N> — close position N\n/help — show this message`);
+      await sendMessage(`Prospera Commands:\n/positions — list open positions\n/status — agent status overview\n/briefing — trigger morning briefing\n/backtest — run 7d backtest\n/backtest 14d — run 14d backtest\n/close <N> — close position N\n/help — show this message`);
       return;
     }
     if (text === "/status") {
       const cb = getCircuitState();
+      const { getActiveProvider } = await import("./tools/circuit-breaker.js");
+      const activeProvider = getActiveProvider();
       const positions = await getMyPositions({ force: true }).catch(() => null);
       const balance = await getWalletBalances().catch(() => null);
       const deployedSol = (positions?.positions?.length ?? 0) > 0 ? calculateCurrentExposure(positions.positions) : 0;
       const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
       const lastScreen = timers.screeningLastRun ? new Date(timers.screeningLastRun).toLocaleString("id-ID") : "never";
       const lastMgmt = timers.managementLastRun ? new Date(timers.managementLastRun).toLocaleString("id-ID") : "never";
-      await sendMessage(`Prospera Status\n\nMode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}\nCircuit: ${cb?.isCircuitBroken ? "OPEN (fallback)" : "OK (Minimax)"}\nLast Screening: ${lastScreen}\nLast Management: ${lastMgmt}\nOpen Positions: ${positions?.total_positions ?? 0}/${config.risk.maxPositions}\nExposure: ${exposurePct}%\nSOL Balance: ${balance?.sol?.toFixed(3) ?? "?"}`);
+      const uptime = Math.round(process.uptime() / 60);
+      await sendMessage(`Prospera Status\n\nMode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}\nUptime: ${uptime}m\nProvider: ${activeProvider}\nCircuit: ${cb?.isCircuitBroken ? "OPEN (fallback)" : "OK (primary)"}\nLast Screening: ${lastScreen}\nLast Management: ${lastMgmt}\nOpen Positions: ${positions?.total_positions ?? 0}/${config.risk.maxPositions}\nExposure: ${exposurePct}%\nSOL Balance: ${balance?.sol?.toFixed(3) ?? "?"}`);
       return;
     }
     const closeMatch = text.match(/^\/close\s+(\d+)$/i);
