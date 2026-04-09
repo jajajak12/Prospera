@@ -508,7 +508,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       const volH1 = t._volH1 ?? volMap.get(t.mint);
       if (volH1 == null) return true; // API miss → keep
       if (volH1 < s.minVolume) {
-        log("screening", `  ${t.symbol}: SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
         return false;
       }
       t._volH1 = Math.round(volH1);
@@ -529,11 +529,11 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     const afterMcapFilter = eligible.filter(t => {
       if (t.mcap == null) return true; // no GT data → defer to Meteora query
       if (t.mcap < s.minMcap) {
-        log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} < min $${s.minMcap} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — mcap $${Math.round(t.mcap)} < min $${s.minMcap} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (t.mcap > s.maxMcap) {
-        log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} > max $${s.maxMcap} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — mcap $${Math.round(t.mcap)} > max $${s.maxMcap} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       return true;
@@ -574,7 +574,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
         return false;
       }
       if (isDevBlocked(okx.creator)) {
-        log("screening", `  ${t.symbol}: SKIP — creator blocked | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — creator blocked | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       t._okx = okx;
