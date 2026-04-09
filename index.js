@@ -355,6 +355,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         _m("management", "No positions — triggering screening");
         runScreeningCycle().catch(e => _m("error", `Screening failed: ${e.message}`));
       }
+      mgmtReport = "No open positions — cycle skipped";
       return null;
     }
 
@@ -396,13 +397,28 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
-    // ── LLM Zone: positions needing judgment (PnL between 5%–25%, in range, no deterministic exit) ─
+    // ── LLM Zone: positions needing judgment ───────────────────────────────────
+    // Includes:
+    //   - PnL 5%–25%, in range, no deterministic exit (core judgment zone)
+    //   - PnL null/0–5% AND OOR (blind spot — needs monitoring, no automatic close)
+    //   - PnL null/0–5% AND in-range but close to stop loss boundary (risk judgment)
     const llmZone = positionData.filter(p => {
       const act = actionMap.get(p.position);
       if (act.action !== "STAY") return false;
       const pnl = p.pnl_pct ?? 0;
-      if (pnl < 5 || pnl > 25) return false;
-      return p.in_range;
+      // Core LLM zone: PnL 5%–25% and in range
+      if (pnl >= 5 && pnl <= 25 && p.in_range) return true;
+      // Expanded zone: PnL null/0–5% and OOR — needs monitoring, not auto-close
+      if (pnl < 5 && !p.in_range) {
+        _m("management", `LLM blind-spot: ${p.pair} PnL ${pnl.toFixed(2)}% OOR ${p.minutes_out_of_range ?? 0}m — added to LLM zone`);
+        return true;
+      }
+      // Expanded zone: PnL null/0–5% and near stop loss boundary
+      if (pnl < 5 && p.in_range && p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct + 3) {
+        _m("management", `LLM blind-spot: ${p.pair} PnL ${pnl.toFixed(2)}% near stop loss boundary — added to LLM zone`);
+        return true;
+      }
+      return false;
     });
 
     if (llmZone.length > 0) {
@@ -482,8 +498,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
   _screeningBusy = true;
   _screeningLastTriggered = Date.now();
+  timers.screeningLastRun = Date.now();
 
-  const _release = () => { completeScreeningLock(); _screeningBusy = false; };
+  // _release defined at function scope so both pre-check and main body share it
+  const _release = () => {
+    completeScreeningLock();
+    _screeningBusy = false;
+    _s("screening", "Screening lock released");
+  };
 
   let prePositions, preBalance, deployAmount;
   try {
@@ -512,12 +534,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       if (telegramEnabled()) sendMessage(`⚠️ Exposure warning: ${cap.exposurePct.toFixed(1)}% (max ${cap.hardCapPct.toFixed(1)}%)`).catch(() => {});
     }
   } catch (e) {
-    _s("error", `Screening error: ${e.message}`);
-    if (telegramEnabled()) sendMessage(`Screening [${corrId}] — Error: ${e.message}`).catch(() => {});
+    _s("error", `Screening pre-check error: ${e.message}`);
+    if (telegramEnabled()) sendMessage(`Screening [${corrId}] — Pre-check error: ${e.message}`).catch(() => {});
     _release(); return null;
   }
 
-  timers.screeningLastRun = Date.now();
   _s("screening", `Starting cycle | deploy: ${deployAmount} SOL | wallet: ${preBalance.sol} SOL`);
 
   let screenReport = null;
@@ -538,60 +559,58 @@ export async function runScreeningCycle({ silent = false } = {}) {
         stats.fibPassed === 0 ? "failed Fib 0.500" :
         "failed EMA/RSI confluence";
       screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\nNo entry signals (${reason})`;
-      return screenReport; // finally block handles Telegram send + lock release
-    }
+      // fall through to finally → _release() + Telegram send
+    } else {
+      const PENDING_ATH_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "screening-pending.json");
+      const activeBinResults = await Promise.allSettled(candidates.map(p => getActiveBin({ pool_address: p.pool })));
 
-    const PENDING_ATH_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "screening-pending.json");
-    const activeBinResults = await Promise.allSettled(candidates.map(p => getActiveBin({ pool_address: p.pool })));
-
-    // ── Freshness check: drop candidates where price crashed >50% since pool discovery ──
-    // activeBin.price and pool.price are both SOL-denominated (Meteora pool_price)
-    const freshCandidates = [];
-    const freshActiveBinResults = [];
-    for (let i = 0; i < candidates.length; i++) {
-      const c = candidates[i];
-      const activeBinData = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value : null;
-      const poolPriceAtDiscovery = c.price ?? null;
-      const activeBinPrice = activeBinData?.price ?? null;
-      if (poolPriceAtDiscovery && activeBinPrice && activeBinPrice < poolPriceAtDiscovery * 0.5) {
-        const dropPct = ((1 - activeBinPrice / poolPriceAtDiscovery) * 100).toFixed(0);
-        _s("screening", `  ${c.name}: STALE — price dropped ${dropPct}% since pool discovery, skipping`);
-        continue;
-      }
-      freshCandidates.push(c);
-      freshActiveBinResults.push(activeBinResults[i]);
-    }
-
-    if (freshCandidates.length === 0 && candidates.length > 0) {
-      screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${candidates.length} candidate(s) passed Fib but all STALE (price crashed since screening)`;
-      return screenReport;
-    }
-
-    try {
-      const pending = {};
-      for (let i = 0; i < freshCandidates.length; i++) {
-        const c = freshCandidates[i];
-        const fib = c.fib_signal;
-        const ath = fib?.ath ?? fib?.fibLevels?.swingHigh ?? null;
-        const entryPrice = fib?.currentPrice ?? c.price ?? null;
-        const activeBin = freshActiveBinResults[i]?.status === "fulfilled" ? freshActiveBinResults[i].value?.binId : null;
-        if (c.pool && ath && entryPrice && activeBin != null) {
-          pending[c.pool] = { ath, entryPrice, binStep: c.bin_step ?? null, activeBinAtScreening: activeBin, fib500: fib?.fibLevels?.fib500 ?? null };
+      // ── Freshness check: drop candidates where price crashed >50% since pool discovery ──
+      // activeBin.price and pool.price are both SOL-denominated (Meteora pool_price)
+      const freshCandidates = [];
+      const freshActiveBinResults = [];
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[i];
+        const activeBinData = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value : null;
+        const poolPriceAtDiscovery = c.price ?? null;
+        const activeBinPrice = activeBinData?.price ?? null;
+        if (poolPriceAtDiscovery && activeBinPrice && activeBinPrice < poolPriceAtDiscovery * 0.5) {
+          const dropPct = ((1 - activeBinPrice / poolPriceAtDiscovery) * 100).toFixed(0);
+          _s("screening", `  ${c.name}: STALE — price dropped ${dropPct}% since pool discovery, skipping`);
+          continue;
         }
+        freshCandidates.push(c);
+        freshActiveBinResults.push(activeBinResults[i]);
       }
-      fs.writeFileSync(PENDING_ATH_PATH, JSON.stringify(pending));
-    } catch { /**/ }
 
-    const candidateBlocks = freshCandidates.map((pool, i) => {
-      const fib = pool.fib_signal;
-      const activeBin = freshActiveBinResults[i]?.status === "fulfilled" ? freshActiveBinResults[i].value?.binId : null;
-      const fib500 = fib?.fibLevels?.fib500 != null ? `$${fib.fibLevels.fib500.toPrecision(4)}` : "n/a";
-      const fib382 = fib?.fibLevels?.fib382 != null ? `$${fib.fibLevels.fib382.toPrecision(4)}` : "n/a";
-      const screenPrice = fib?.currentPrice != null ? `$${fib.currentPrice.toPrecision(4)}` : "n/a";
-      return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${fib?.confluenceScore?.toFixed(2)} binsBelow=${fib?.binsBelow}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  active_bin: ${activeBin}`;
-    }).join("\n\n");
+      if (freshCandidates.length === 0 && candidates.length > 0) {
+        screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${candidates.length} candidate(s) passed Fib but all STALE (price crashed since screening)`;
+        // fall through to finally → _release() + Telegram send
+      } else {
+        try {
+          const pending = {};
+          for (let i = 0; i < freshCandidates.length; i++) {
+            const c = freshCandidates[i];
+            const fib = c.fib_signal;
+            const ath = fib?.ath ?? fib?.fibLevels?.swingHigh ?? null;
+            const entryPrice = fib?.currentPrice ?? c.price ?? null;
+            const activeBin = freshActiveBinResults[i]?.status === "fulfilled" ? freshActiveBinResults[i].value?.binId : null;
+            if (c.pool && ath && entryPrice && activeBin != null) {
+              pending[c.pool] = { ath, entryPrice, binStep: c.bin_step ?? null, activeBinAtScreening: activeBin, fib500: fib?.fibLevels?.fib500 ?? null };
+            }
+          }
+          fs.writeFileSync(PENDING_ATH_PATH, JSON.stringify(pending));
+        } catch { /**/ }
 
-    const { content } = await agentLoop(`
+        const candidateBlocks = freshCandidates.map((pool, i) => {
+          const fib = pool.fib_signal;
+          const activeBin = freshActiveBinResults[i]?.status === "fulfilled" ? freshActiveBinResults[i].value?.binId : null;
+          const fib500 = fib?.fibLevels?.fib500 != null ? `$${fib.fibLevels.fib500.toPrecision(4)}` : "n/a";
+          const fib382 = fib?.fibLevels?.fib382 != null ? `$${fib.fibLevels.fib382.toPrecision(4)}` : "n/a";
+          const screenPrice = fib?.currentPrice != null ? `$${fib.currentPrice.toPrecision(4)}` : "n/a";
+          return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${fib?.confluenceScore?.toFixed(2)} binsBelow=${fib?.binsBelow}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  active_bin: ${activeBin}`;
+        }).join("\n\n");
+
+        const { content } = await agentLoop(`
 FIBONACCI SCREENING CYCLE
 Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${preBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
 
@@ -604,10 +623,11 @@ RULES:
 3. strategy=bid_ask. amount_y=${deployAmount} SOL.
     `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, corrId);
 
-    screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${freshCandidates.length} candidate(s) passed Fib + RSI + EMA\n\n${content}`;
-
+        screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${freshCandidates.length} candidate(s) passed Fib + RSI + EMA\n\n${content}`;
+      }
+    }
   } catch (error) {
-    _s("error", `Screening failed: ${error.message}`);
+    _s("error", `Screening main loop failed: ${error.message}`);
     screenReport = `Failed: ${error.message}`;
   } finally {
     _release();
