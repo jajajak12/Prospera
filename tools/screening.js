@@ -229,10 +229,16 @@ async function fetchRocketScanFallback(tokens, s) {
         `${ROCKETSCAN_API}?tokenBMint=${token.mint}&poolType=DLMM`,
         { signal: AbortSignal.timeout(8_000) }
       );
-      if (!rsRes.ok) return null;
+      if (!rsRes.ok) {
+        log("screening", `  ${token.symbol}: RocketScan HTTP ${rsRes.status} for ${token.mint.slice(0, 8)}...`);
+        return null;
+      }
       const rsData = await rsRes.json();
       const rsPools = (rsData.data ?? []).filter(p => p.poolType === "DLMM");
-      if (rsPools.length === 0) return null;
+      if (rsPools.length === 0) {
+        log("screening", `  ${token.symbol}: RocketScan — no DLMM pool found for ${token.mint.slice(0, 8)}...`);
+        return null;
+      }
 
       // Ambil pool pertama (paling baru per default sort RocketScan)
       const rsPool = rsPools[0];
@@ -335,6 +341,7 @@ async function fetchRocketScanFallback(tokens, s) {
       return { token, pool };
     } catch (e) {
       // Fallback failure tidak boleh crash screening
+      log("screening", `  ${token.symbol}: RocketScan exception: ${e.message?.slice(0, 80) ?? e}`);
       return null;
     }
   }));
@@ -384,11 +391,18 @@ async function fetchMeteoraDlmmPoolMap() {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
-      log("screening", `Meteora API error: ${res.status}`);
+      log("screening", `Meteora API error: HTTP ${res.status} — will rely on RocketScan fallback for pool discovery`);
       return new Map();
     }
     const data = await res.json();
-    let pools = (data.data ?? []).map(condensePool);
+    let pools = (data.data ?? []);
+
+    if (!Array.isArray(pools) || pools.length === 0) {
+      log("screening", `Meteora API returned 0 pools (or unexpected format) — RocketScan will handle all pool discovery`);
+      return new Map();
+    }
+
+    pools = pools.map(condensePool);
 
     // Client-side age filter (API doesn't support base_token_age_hours)
     if (s.minTokenAgeHours != null || s.maxTokenAgeHours != null) {
@@ -630,13 +644,18 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   // pool-discovery-api butuh waktu untuk mengindex pool baru.
   // RocketScan mendeteksi pool on-chain, lebih cepat untuk pool baru.
   const missingTokens = eligibleForPoolMatch.filter(t => !meteoraPoolMap.has(t.mint));
+  log("screening", `Pool match: ${eligibleForPoolMatch.length - missingTokens.length}/${eligibleForPoolMatch.length} found in Meteora → ${missingTokens.length} checking RocketScan...`);
   if (missingTokens.length > 0) {
+    log("screening", `Pool not found in Meteora → checking RocketScan for ${missingTokens.length} token(s)...`);
     const fallbacks = await fetchRocketScanFallback(missingTokens, s);
     for (const { token, pool } of fallbacks) {
       meteoraPoolMap.set(token.mint, pool);
+      log("screening", `Found pool in RocketScan: ${token.symbol} → ${pool.pool.slice(0, 8)}... (bin_step=${pool.bin_step})`);
     }
     if (fallbacks.length > 0) {
-      _s("screening", `RocketScan fallback: ${fallbacks.length}/${missingTokens.length} token mendapat pool`);
+      log("screening", `RocketScan fallback: ${fallbacks.length}/${missingTokens.length} token(s) received pool`);
+    } else if (missingTokens.length > 0) {
+      log("screening", `RocketScan fallback: no pools found for ${missingTokens.length} token(s) — skipping`);
     }
   }
 
@@ -644,7 +663,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     .map(t => ({ token: t, pool: meteoraPoolMap.get(t.mint) ?? null }))
     .filter(({ token, pool }) => {
       if (!pool) {
-        log("screening", `  ${token.symbol}: NO POOL — not in Meteora qualifying pool list`);
+        log("screening", `  ${token.symbol}: NO POOL — not found in Meteora or RocketScan`);
         return false;
       }
       return true;
