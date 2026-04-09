@@ -23,7 +23,7 @@ import { log } from "../logger.js";
  * Primary: Birdeye token endpoint. Fallback to Dexscreener/GeckoTerminal if poolAddress provided.
  */
 export async function fetchOHLCV(tokenMint, limit = 50, poolAddress = null) {
-  return hybridDataProvider.getOHLCV(poolAddress, "1m", limit, "solana", tokenMint);
+  return hybridDataProvider.getOHLCV(poolAddress, "5m", limit, "solana", tokenMint);
 }
 
 /**
