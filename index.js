@@ -377,12 +377,12 @@ export async function runManagementCycle({ silent = false } = {}) {
     }
 
     // positionMeta.json written by executor.js after deploy (ATH bin tracking)
-    // Not currently read back in management — reserved for future OOR/ATH recovery logic
-    let positionMeta = {};
-    try { if (fs.existsSync(POSITION_META_PATH)) positionMeta = JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")); } catch { /**/ }
-    if (Object.keys(positionMeta).length > 0) {
-      _m("management", `positionMeta loaded: ${Object.keys(positionMeta).length} entries (reserved for future ATH recovery logic)`);
-    }
+    // RESERVED for future OOR/ATH recovery logic — loaded only when needed, not every cycle
+    // let positionMeta = {};
+    // try { if (fs.existsSync(POSITION_META_PATH)) positionMeta = JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")); } catch { /**/ }
+    // if (Object.keys(positionMeta).length > 0) {
+    //   _m("management", `positionMeta loaded: ${Object.keys(positionMeta).length} entries (reserved for future ATH recovery logic)`);
+    // }
 
     const actionMap = new Map();
     for (const p of positionData) {
@@ -521,36 +521,38 @@ export async function runScreeningCycle({ silent = false } = {}) {
     _s("screening", "Screening lock released");
   };
 
-  let prePositions, preBalance, deployAmount;
+  let prePositions = null, preBalance = null, deployAmount;
+
+  // Separate try/catch per call — getMyPositions error = skip cycle, getWalletBalances error = continue
   try {
-    [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
-
-    if (!prePositions || prePositions.error) {
-      _s("error", `LPAgent unavailable: ${prePositions?.error ?? "network error"}`);
-      _release();
-      return null;
-    }
-
-    if (prePositions.total_positions >= config.risk.maxPositions) { logSkip("max_positions", {}, corrId); _release(); return null; }
-    deployAmount = getPositionSizing(preBalance.sol);
-    if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
-
-    const currentExposure = calculateCurrentExposure(prePositions.positions);
-    const cap = checkExposureCap(currentExposure, preBalance.sol, deployAmount);
-    if (cap.level === "hard_pause") {
-      _exposureHardPausedUntil = cap.pauseUntil;
-      _s("error", "HARD CAP TRIGGERED");
-      if (telegramEnabled()) sendMessage(`🔍 Fibonacci Screening — HARD CAP ${cap.exposurePct.toFixed(1)}% TRIGGERED`).catch(() => {});
-      _release(); return null;
-    }
-    if (cap.level === "warning") {
-      _s("warn", `Exposure warning: ${cap.exposurePct.toFixed(1)}%`);
-      if (telegramEnabled()) sendMessage(`⚠️ Exposure warning: ${cap.exposurePct.toFixed(1)}% (max ${cap.hardCapPct.toFixed(1)}%)`).catch(() => {});
-    }
+    prePositions = await getMyPositions({ force: true });
   } catch (e) {
-    _s("error", `Screening pre-check error: ${e.message}`);
-    if (telegramEnabled()) sendMessage(`Screening [${corrId}] — Pre-check error: ${e.message}`).catch(() => {});
+    _s("error", `getMyPositions failed — ${e.message} — skipping cycle`);
+    if (telegramEnabled()) sendMessage(`Screening [${corrId}] — LPAgent error: ${e.message}, skipping cycle`).catch(() => {});
     _release(); return null;
+  }
+  try {
+    preBalance = await getWalletBalances();
+  } catch (e) {
+    _s("warn", `getWalletBalances failed — ${e.message} — continuing with preBalance=null`);
+    preBalance = preBalance ?? { sol: 0, sol_price: 0 };
+  }
+
+  if (prePositions.total_positions >= config.risk.maxPositions) { logSkip("max_positions", {}, corrId); _release(); return null; }
+  deployAmount = getPositionSizing(preBalance.sol);
+  if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
+
+  const currentExposure = calculateCurrentExposure(prePositions.positions, preBalance.sol_price);
+  const cap = checkExposureCap(currentExposure, preBalance.sol, deployAmount);
+  if (cap.level === "hard_pause") {
+    _exposureHardPausedUntil = cap.pauseUntil;
+    _s("error", "HARD CAP TRIGGERED");
+    if (telegramEnabled()) sendMessage(`🔍 Fibonacci Screening — HARD CAP ${cap.exposurePct.toFixed(1)}% TRIGGERED`).catch(() => {});
+    _release(); return null;
+  }
+  if (cap.level === "warning") {
+    _s("warn", `Exposure warning: ${cap.exposurePct.toFixed(1)}%`);
+    if (telegramEnabled()) sendMessage(`⚠️ Exposure warning: ${cap.exposurePct.toFixed(1)}% (max ${cap.hardCapPct.toFixed(1)}%)`).catch(() => {});
   }
 
   _s("screening", `Starting cycle | deploy: ${deployAmount} SOL | wallet: ${preBalance.sol} SOL`);
