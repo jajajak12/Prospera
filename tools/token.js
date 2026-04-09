@@ -59,21 +59,25 @@ const JUPITER_BASE = "https://datapi.jup.ag/v1";
 /**
  * Fetch bot holder %, top 10 concentration, total fees SOL,
  * funding address, and mint/freeze authority status from Jupiter.
+ * Uses /assets/search endpoint which returns fees even for pumpswap/raydium
+ * tokens not indexed by the older /tokens/{mint} endpoint.
  */
 export async function getJupiterTokenInfo(mint) {
   try {
-    const res = await fetch(`${JUPITER_BASE}/tokens/${mint}`, {
+    const res = await fetch(`${JUPITER_BASE}/assets/search?query=${mint}`, {
       signal: AbortSignal.timeout(8000),
     });
-    if (res.status === 404) return { notFound: true };
     if (!res.ok) return null;
-    const d = await res.json();
+    const data = await res.json();
+    // /assets/search returns an array; find exact mint match
+    const d = Array.isArray(data) ? data.find(t => t.id === mint) : data;
+    if (!d) return { notFound: true };
 
     return {
-      botHoldersPct:  d?.audit?.botHoldersPercentage   ?? null,
-      top10Pct:       d?.audit?.topHoldersPercentage    ?? null,
-      feesSOL:        d?.fees                           ?? null,
-      fundingAddress: d?.addressInfo?.fundingAddress    ?? null,
+      botHoldersPct:  d?.audit?.botHoldersPercentage  ?? null,
+      top10Pct:       d?.audit?.topHoldersPercentage   ?? null,
+      feesSOL:        d?.fees                          ?? null,
+      fundingAddress: d?.dev                           ?? null,
       mintDisabled:   d?.audit?.mintAuthorityDisabled   ?? null,
       freezeDisabled: d?.audit?.freezeAuthorityDisabled ?? null,
     };
