@@ -330,7 +330,7 @@ async function runMorningBriefing({ force = false } = {}) {
   if (!force && getLastBriefingDate() === today) return; // already briefed today
 
   const corrId = shortId();
-  const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
 
   // Positions + PnL
   const positions = await getMyPositions({ force: true }).catch(() => null);
@@ -422,7 +422,7 @@ async function runPnLPoll() {
   ];
   if (posList.length > 0) lines.push(`💵 TVL: $${totalValue.toFixed(0)}`);
 
-  const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
   if (telegramEnabled()) sendMessage(`📈 PnL Poll [${ts}] ID: ${corrId}\n\n${lines.join("\n")}`).catch(() => {});
   log("pnl_poll", `PnL poll — positions: ${positions?.total_positions ?? 0}, exposure: ${exposurePct}%, pnl: ${totalPnl.toFixed(2)}%`);
 
@@ -630,7 +630,7 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
     _lastLlmZoneCount = llmZone.length;
     if (lockAcquired) completeManagementLock();
     if (!silent && telegramEnabled() && mgmtReport) {
-      const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+      const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
       sendMessage(`🔄 Management Cycle [${ts}] ID: ${corrId}\n${stripThink(mgmtReport)}`).catch(() => {});
     }
   }
@@ -817,7 +817,7 @@ RULES:
       content: screenReport,
     };
     if (!silent && telegramEnabled() && screenReport) {
-      const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+      const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
       sendMessage(`🔍 Fibonacci Screening [${ts}] ID: ${corrId}\n${stripThink(screenReport)}`).catch(() => {});
     }
   }

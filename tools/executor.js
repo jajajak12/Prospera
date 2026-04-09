@@ -570,11 +570,16 @@ async function runSafetyChecks(name, args) {
         const meta = pending[args.pool_address];
         if (meta?.fib500 != null) {
           const poolDetail = await getPoolDetail({ pool_address: args.pool_address }).catch(() => null);
-          const livePrice  = poolDetail?.pool_price ?? poolDetail?.price ?? null;
-          if (livePrice != null && livePrice < meta.fib500) {
+          const poolPriceSol = poolDetail?.pool_price ?? poolDetail?.price ?? null;
+          // pool_price is SOL-denominated; fib500 is USD-denominated — must convert
+          const solPrice = balance?.sol_price ?? null;
+          const livePriceUsd = (poolPriceSol != null && solPrice > 0)
+            ? poolPriceSol * solPrice
+            : null;
+          if (livePriceUsd != null && livePriceUsd < meta.fib500) {
             return {
               pass: false,
-              reason: `Deploy blocked — live price $${livePrice} is below Fib 0.500 ($${meta.fib500.toPrecision(4)}). Price dropped since screening.`,
+              reason: `Deploy blocked — live price $${livePriceUsd.toPrecision(4)} is below Fib 0.500 ($${meta.fib500.toPrecision(4)}). Price dropped since screening.`,
             };
           }
         }
