@@ -467,7 +467,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   }
 
   // ── Check 3: RSI Momentum ─────────────────────────────────────────────────
-  const rsiMin = opts.rsiMin ?? 45; // RSI min 45, slope >= -2.0
+  const rsiMin = opts.rsiMin ?? (inAthZone ? 40 : 45); // ATH zone: leniency 40, otherwise 45
   if (rsi != null) {
     if (rsi < rsiMin) {
       return skip(
