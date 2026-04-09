@@ -138,6 +138,74 @@ function fix(n, d) { return n != null ? Number(n.toFixed(d)) : null; }
 // ─────────────────────────────────────────────────────────────────────────────
 //  Discovery: Dexscreener trending Solana tokens (boosts + latest profiles)
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Discover pump.fun graduated tokens via RocketScan DLMM pool scan.
+ * Graduated tokens (pumpswap/raydium) often miss Dexscreener boosts/profiles.
+ *
+ * Strategy:
+ * 1. Query RocketScan for recent DLMM pools with SOL quote, sorted by volume
+ * 2. RocketScan gives: mcap, buyVolume (SOL), fees, top10%, bot%, organic score
+ * 3. Apply screening filters (minVolume, minMcap)
+ * 4. Deduplicate by mint
+ *
+ * Returns tokens: { mint, symbol, price=null, mcap, _volH1, _source }
+ */
+async function discoverTokensFromRocketScan(s) {
+  const ROCKETSCAN = "https://rocketscan.fun/api/pools";
+
+  try {
+    const res = await fetch(
+      `${ROCKETSCAN}?poolType=DLMM&sort=volume&limit=50`,
+      { signal: AbortSignal.timeout(8_000) }
+    );
+    if (!res.ok) {
+      log("screening", `Jupiter discovery: RocketScan HTTP ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    const pools = data.data ?? [];
+
+    // Only SOL pairs (tokenA = SOL), graduated pump.fun tokens
+    const SOL_MINT = "So11111111111111111111111111111111111111112";
+    const byMint  = new Map();
+
+    for (const p of pools) {
+      const tokenA = p.tokenA ?? {};
+      const tokenB = p.tokenB ?? {};
+      if (tokenA.mint !== SOL_MINT) continue;
+
+      const mint = tokenB.mint;
+      if (!mint) continue;
+
+      // Apply mcap filter
+      const mcap = parseFloat(tokenB.mcap ?? 0) || 0;
+      if (mcap < 150_000) continue; // min mcap $150K
+
+      // Deduplicate: keep highest mcap per mint
+      const existing = byMint.get(mint);
+      if (existing && existing.mcap >= mcap) continue;
+
+      byMint.set(mint, {
+        mint,
+        symbol:  tokenB.symbol ?? "UNKNOWN",
+        price:   null,
+        mcap:    Math.round(mcap),
+        _volH1:  null,  // Step 2 fetches USD volume via Dexscreener batch
+        _source: "rocketscan",
+      });
+    }
+
+    const tokens = [...byMint.values()];
+
+    if (tokens.length > 0) {
+      log("screening", `RocketScan discovery: ${tokens.length} SOL-pair DLMM pools (min mcap $150K)`);
+    }
+    return tokens;
+  } catch (e) {
+    log("screening", `RocketScan discovery error: ${e.message?.slice(0, 80)}`);
+    return [];
+  }
+}
 
 /**
  * Discover trending tokens on Solana from Dexscreener.
@@ -467,15 +535,28 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     return log(category, message, meta);
   };
 
-  // ── Step 1: Discover tokens ──────────────────────────────────────────────
-  const dexTokens = await discoverTokensFromDexscreener();
+  // ── Step 1: Discover tokens (Dexscreener + Jupiter) ──────────────────────
+  // Dexscreener: boosts + latest profiles (covers paid-promoted tokens)
+  // RocketScan: additional DLMM pools not in Dexscreener
+  const [dexTokens, rocketTokens] = await Promise.all([
+    discoverTokensFromDexscreener(),
+    discoverTokensFromRocketScan(s),
+  ]);
+
+  // Merge: dedup by mint, Dexscreener tokens preferred (already have _volH1)
+  const allTokens = [...dexTokens];
+  const dexMintSet = new Set(dexTokens.map(t => t.mint));
+  for (const t of rocketTokens) {
+    if (!dexMintSet.has(t.mint)) allTokens.push(t);
+  }
+  log("screening", `Discovery: ${allTokens.length} tokens total (dex=${dexTokens.length}, rocket=${rocketTokens.length} new)`);
 
   // Exclude pools/mints where wallet already has an open position
   const { getMyPositions } = await import("./dlmm.js");
   const { positions } = await getMyPositions();
   const occupiedMints = new Set(positions.map(p => p.base_mint).filter(Boolean));
 
-  let eligible = dexTokens.filter(t => {
+  let eligible = allTokens.filter(t => {
     if (occupiedMints.has(t.mint)) {
       log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — already has open position (${t.mint.slice(0, 8)}...)`);
       return false;
@@ -490,7 +571,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   });
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, after_volume_count: 0, withPool_count: 0, fib_analyzed: 0 };
+    return { candidates: [], total_screened: allTokens.length, after_volume_count: 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   log.screening(`Step 1 — Discovery: ${eligible.length} tokens (raw: ${dexTokens.length}, excl blacklist/occupied)`);
@@ -518,7 +599,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, after_volume_count: 0, withPool_count: 0, fib_analyzed: 0 };
+    return { candidates: [], total_screened: allTokens.length, after_volume_count: 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   const afterVolumeCount = eligible.length;
@@ -553,7 +634,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
+    return { candidates: [], total_screened: allTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 4: RugCheck bundle / honeypot / dev filter ──────────────────────
@@ -585,7 +666,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
+    return { candidates: [], total_screened: allTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 5: Jupiter token safety filter (top10, bot holders, fees SOL) ───
@@ -614,14 +695,14 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
         return false;
       }
       t._jup = jup;
-      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): OK — top10=${jup.top10Pct ?? "?"}%, bots=${jup.botHoldersPct ?? "?"}%, fees=${jup.feesSOL ?? "?"} SOL`);
+      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): OK — top10=${jup.top10Pct ?? "?"}%, bots=${jup.botHoldersPct ?? "?"}%, fees=${jup.feesSOL ?? "?"} SOL${t._source === "jupiter" ? " [rocket-scan]" : ""}`);
       return true;
     });
     _s("screening", `Jupiter filter: ${eligible.length}/${before} passed`);
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
+    return { candidates: [], total_screened: allTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 6: ATH proximity filter (optional) ──────────────────────────────
@@ -645,7 +726,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
+    return { candidates: [], total_screened: allTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 6b: Pre-pool cap & ranking ─────────────────────────────────────
@@ -704,7 +785,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   _s("screening", `Step 7 — Meteora pool match: ${withPool.length}/${eligibleForPoolMatch.length} top candidates have pools`);
 
   if (withPool.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount, withPool_count: 0, fib_analyzed: 0 };
+    return { candidates: [], total_screened: allTokens.length, after_volume_count: afterVolumeCount, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 8: Fibonacci analysis ──────────────────────────────────────────
@@ -858,11 +939,11 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   filtered.sort((a, b) => (b.fib_signal.confluenceScore ?? 0) - (a.fib_signal.confluenceScore ?? 0));
 
   _s("screening", `Step 8 — Fibonacci: ${filtered.length}/${withPool.length} passed broken-support → ${candidates.length} ENTRY`);
-  _s("screening", `Summary: discovered=${dexTokens.length} → volume=${afterVolumeCount} → eligible=${eligible.length} → prePoolCap=${maxTechAnalysis} → pools=${withPool.length} → fib_entry=${filtered.length}`);
+  _s("screening", `Summary: discovered=${allTokens.length} (dex=${dexTokens.length}+rocket=${rocketTokens.length}) → volume=${afterVolumeCount} → eligible=${eligible.length} → prePoolCap=${maxTechAnalysis} → pools=${withPool.length} → fib_entry=${filtered.length}`);
 
   return {
     candidates:        filtered,
-    total_screened:    dexTokens.length,
+    total_screened:    allTokens.length,
     after_volume_count: afterVolumeCount,
     withPool_count:    withPool.length,
     fib_analyzed:      toAnalyze.length,
