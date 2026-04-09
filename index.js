@@ -147,7 +147,8 @@ function startREPL() {
       const corrId = shortId();
       const result = await runDailyBacktest({ correlationId: corrId, hours: label === "14d" ? 336 : 168 }).catch(() => null);
       if (result && !result.skipped) {
-        console.log(`${label} backtest: ${result.summary7d?.totalPools ?? 0} pools, WR: ${result.summary7d?.winRate ?? "N/A"}%`);
+        const sum = label === "14d" ? result.s14 : result.s7;
+        console.log(`${label} backtest: ${sum?.poolsAnalyzed ?? 0} pools, WR: ${sum?.avgBacktestWinRate != null ? sum.avgBacktestWinRate + "%" : "N/A"}`);
       } else {
         console.log(`No ${label} backtest data available.`);
       }
@@ -189,6 +190,7 @@ function stopCronJobs() {
 
 // ── Morning Briefing ─────────────────────────────────────────────────────────
 async function runMorningBriefing() {
+  log("briefing", "Morning Briefing triggered");
   const today = new Date().toISOString().slice(0, 10);
   if (getLastBriefingDate() === today) return; // already briefed today
 
@@ -563,7 +565,7 @@ export function startCronJobs() {
   });
 
   _cronTasks = [mgmtTask, screenTask, backtestTask, briefingTask, pollTask];
-  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
+  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, Morning Briefing 09:00, Daily Backtest 00:00`);
 }
 
 // ── Graceful Shutdown ─────────────────────────────────────────────────────────
@@ -609,8 +611,10 @@ async function handleTelegram(text) {
       const corrId = shortId();
       const result = await runDailyBacktest({ correlationId: corrId, hours: label === "14d" ? 336 : 168 }).catch(e => null);
       if (result && !result.skipped) {
-        const wr = result.summary7d?.winRate ?? "N/A";
-        await sendMessage(`${label} backtest: ${result.summary7d?.totalPools ?? 0} pools, WR: ${wr}%`);
+        const sum = label === "14d" ? result.s14 : result.s7;
+        const wr = sum?.avgBacktestWinRate != null ? `${sum.avgBacktestWinRate}%` : "N/A";
+        const pools = sum?.poolsAnalyzed ?? 0;
+        await sendMessage(`${label} backtest: ${pools} pools | WR: ${wr}`);
       } else {
         await sendMessage(`No ${label} backtest data available.`);
       }
