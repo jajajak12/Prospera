@@ -1101,13 +1101,13 @@ probeLLMProviders().catch(e => log("startup", `LLM probe error: ${e.message}`)).
     // REPL mode — start cron + Telegram polling + REPL interface
     startCronJobs();
     startHealthServer();
-    log("startup", `Dashboard: http://localhost:${_healthPort}/dashboard | API: http://localhost:${_healthPort}/api/dashboard`);
-    log("startup", "Vercel deploy: cp public/dashboard/* ke repo terpisah + vercel.json. Docs: PROSPERA.md § Vercel Deploy.");
+    log("startup", `Dashboard local: http://localhost:${_healthPort}/dashboard`);
+    log("startup", `Vercel deploy: git clone repo, cp public/dashboard/*, vercel.json + env VITE_PROSPERA_API_URL. Docs: PROSPERA.md § Vercel.`);
     startREPL(); // does not return — blocks on readline
   } else {
     // PM2 / non-TTY mode
-    log("startup", `Non-TTY mode — Dashboard: http://localhost:${_healthPort}/dashboard | API: http://localhost:${_healthPort}/api/dashboard`);
-    log("startup", "Vercel deploy: cp public/dashboard/* ke repo terpisah + vercel.json. Docs: PROSPERA.md § Vercel Deploy.");
+    log("startup", `Dashboard local: http://localhost:${_healthPort}/dashboard`);
+    log("startup", `Vercel deploy: git clone repo, cp public/dashboard/*, vercel.json + env VITE_PROSPERA_API_URL. Docs: PROSPERA.md § Vercel.`);
     startCronJobs();
     startHealthServer();
     _screeningLastTriggered = 0;
