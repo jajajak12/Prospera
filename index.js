@@ -832,7 +832,7 @@ export function startCronJobs() {
     if (_managementBusy || _screeningBusy) return;
     const lockAge = Date.now() - _managementLastCompleted;
     if (lockAge < 45_000) return;
-    await runManagementCycle();
+    await runManagementCycle({ silent: true });
   });
 
   const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, () => {

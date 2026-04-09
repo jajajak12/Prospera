@@ -117,7 +117,7 @@ export const config = {
     maxSteps:        u.maxSteps        ?? 12,
     screeningModel:  u.screeningModel  ?? "MiniMax-M2.7",
     managementModel: u.managementModel ?? "MiniMax-M2.7",
-    generalModel:    u.generalModel    ?? "openai/gpt-4o",
+    generalModel:    u.generalModel    ?? "MiniMax-M2.7",
     minimaxApiKey:   u.minimaxApiKey   ?? null,
   },
 
