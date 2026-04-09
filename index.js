@@ -120,7 +120,7 @@ function startREPL() {
       const cb = getCircuitState();
       const positions = await getMyPositions({ force: true }).catch(() => null);
       const balance = await getWalletBalances().catch(() => null);
-      const deployedSol = (positions?.positions?.length ?? 0) > 0 ? calculateCurrentExposure(positions.positions) : 0;
+      const deployedSol = (positions?.positions?.length ?? 0) > 0 ? calculateCurrentExposure(positions.positions, balance?.sol_price) : 0;
       const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
       console.log(`Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"} | Circuit: ${cb?.isCircuitBroken ? "OPEN" : "OK"} | Positions: ${positions?.total_positions ?? 0}/${config.risk.maxPositions} | Exposure: ${exposurePct}% | SOL: ${balance?.sol?.toFixed(3) ?? "?"}`);
       rl.prompt(); return;
@@ -204,7 +204,7 @@ async function runMorningBriefing() {
 
   // Balance + exposure
   const balance = await getWalletBalances().catch(() => null);
-  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList) : 0;
+  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList, balance?.sol_price) : 0;
   const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
 
   // Circuit state
@@ -244,6 +244,15 @@ async function runMorningBriefing() {
   if (posList.length > 0) {
     const totalPnl = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
     lines.push(`📉 Total PnL: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}%`);
+
+    // Per-position breakdown
+    const posLines = posList.map(p => {
+      const pnl = p.pnl_pct ?? 0;
+      const sign = pnl >= 0 ? "+" : "";
+      const status = p.in_range ? "IN" : `OOR ${p.minutes_out_of_range ?? 0}m`;
+      return `${p.pair} ${sign}${pnl.toFixed(1)}% (${status})`;
+    });
+    lines.push(`📋 ${posLines.join(" | ")}`);
   }
 
   const msg = `🌅 Morning Briefing [${ts}]\n\n${lines.join("\n")}`;
@@ -266,7 +275,7 @@ async function runPnLPoll() {
   }
 
   const balance = await getWalletBalances().catch(() => null);
-  const deployedSol = calculateCurrentExposure(posList);
+  const deployedSol = calculateCurrentExposure(posList, balance?.sol_price);
   const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
   const totalPnl = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
   const totalValue = posList.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
@@ -367,8 +376,13 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (exit) exitMap.set(p.position, exit.reason);
     }
 
+    // positionMeta.json is written by executor.js after deploy (ATH bin tracking)
+    // Currently not read back during management — reserved for future OOR/ATH logic
     let positionMeta = {};
     try { if (fs.existsSync(POSITION_META_PATH)) positionMeta = JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")); } catch { /**/ }
+    if (Object.keys(positionMeta).length > 0) {
+      _m("management", `positionMeta loaded: ${Object.keys(positionMeta).length} entries (not currently used in management)`);
+    }
 
     const actionMap = new Map();
     for (const p of positionData) {
@@ -434,7 +448,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     });
 
     // Compute total exposure percentage
-    const deployedSol = calculateCurrentExposure(positions);
+    const deployedSol = calculateCurrentExposure(positions, preBalance?.sol_price);
     const exposurePct = preBalance?.sol > 0 ? +((deployedSol / preBalance.sol) * 100).toFixed(1) : 0;
 
     mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}% | LLM zone: ${llmZone.length}\n\n${reportLines.join("\n")}`;

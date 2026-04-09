@@ -158,15 +158,21 @@ export function getPositionSizing(totalSol) {
 
 /**
  * Hitung total SOL yang sedang di-deploy di semua posisi aktif.
- * Gunakan total_value_usd (= valueNative SOL dari LPAgent) sebagai current exposure.
+ * total_value_usd adalah USD, bukan SOL. Bagi dengan SOL/USD untuk dapat SOL.
  * Fallback ke 0 jika data tidak tersedia.
  *
  * @param {Array} positions - array dari getMyPositions().positions
+ * @param {number} [solPrice] - harga SOL saat ini (USD). Jika tidak diberikan, tidak bisa konversi USD→SOL.
  */
-export function calculateCurrentExposure(positions) {
+export function calculateCurrentExposure(positions, solPrice) {
   if (!Array.isArray(positions) || positions.length === 0) return 0;
-  const total = positions.reduce((sum, p) => sum + (p.total_value_usd ?? 0), 0);
-  return parseFloat(total.toFixed(4));
+  const totalUsd = positions.reduce((sum, p) => sum + (p.total_value_usd ?? 0), 0);
+  if (solPrice && solPrice > 0) {
+    return parseFloat((totalUsd / solPrice).toFixed(4));
+  }
+  // Jika solPrice tidak tersedia, kembalikan 0 — jangan salah hitung exposure
+  log("config", `calculateCurrentExposure: solPrice unavailable, returning 0 (totalUsd=${totalUsd})`);
+  return 0;
 }
 
 /**
