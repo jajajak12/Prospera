@@ -324,10 +324,10 @@ function stopCronJobs() {
 }
 
 // ── Morning Briefing ─────────────────────────────────────────────────────────
-async function runMorningBriefing() {
+async function runMorningBriefing({ force = false } = {}) {
   log("briefing", "Morning Briefing triggered");
   const today = new Date().toISOString().slice(0, 10);
-  if (getLastBriefingDate() === today) return; // already briefed today
+  if (!force && getLastBriefingDate() === today) return; // already briefed today
 
   const corrId = shortId();
   const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -896,7 +896,7 @@ async function handleTelegram(text) {
     }
     if (text === "/briefing") {
       await sendMessage("Running morning briefing...");
-      await runMorningBriefing().catch(e => sendMessage(`Briefing error: ${e.message}`));
+      await runMorningBriefing({ force: true }).catch(e => sendMessage(`Briefing error: ${e.message}`));
       return;
     }
     if (text.startsWith("/backtest")) {
