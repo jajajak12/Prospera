@@ -270,22 +270,16 @@ export class HybridDataProvider {
       }
     }
 
-    // Pool-address path: Dexscreener → Birdeye pair → GeckoTerminal
+    // Pool-address path: Dexscreener → GeckoTerminal
+    // NOTE: birdeyeOHLCVByPair is intentionally excluded — it returns SOL-denominated prices
+    // for TOKEN/SOL pairs, causing unit mismatch against USD currentPrice in Fib analysis.
     if (poolAddress) {
       try {
         const candles = await dexscreenerOHLCV(poolAddress, chain, timeframe, limit);
         log.debug("screening", `getOHLCV: Dexscreener OK`, { pool: poolAddress });
         return candles;
       } catch (err) {
-        log.warn("screening", `getOHLCV: Dexscreener failed → Birdeye pair (${err.message})`, { pool: poolAddress });
-      }
-
-      try {
-        const candles = await birdeyeOHLCVByPair(poolAddress, timeframe, limit, chain);
-        log.debug("screening", `getOHLCV: Birdeye pair OK`, { pool: poolAddress });
-        return candles;
-      } catch (err) {
-        log.warn("screening", `getOHLCV: Birdeye pair failed → GeckoTerminal (${err.message})`, { pool: poolAddress });
+        log.warn("screening", `getOHLCV: Dexscreener failed → GeckoTerminal (${err.message})`, { pool: poolAddress });
       }
 
       const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);

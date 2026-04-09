@@ -305,10 +305,24 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   // ── Fast path: cek posisi dulu sebelum acquire lock / busy flag ─────────────
   // Jika 0 posisi → skip secepat mungkin, tidak perlu lock, tidak perlu LPAgent call
-  const [prePositions, preBalance] = await Promise.all([
-    getMyPositions({ force: true }),
-    getWalletBalances(),
-  ]).catch(() => [null, null]);
+  // Pisahkan error handling per call — getMyPositions error = skip cycle,
+  // getWalletBalances error = lanjut dengan preBalance=null (exposure tampil "?")
+  let prePositions = null;
+  let preBalance = null;
+  try {
+    prePositions = await getMyPositions({ force: true });
+  } catch (e) {
+    _m("warn", `getMyPositions failed — ${e.message} — skipping cycle`, { correlationId: corrId });
+    logSkip("lpagent_error", { error: e.message }, corrId, "management");
+    if (!silent && telegramEnabled()) sendMessage(`Management [${corrId}] — LPAgent error: ${e.message}, skipping`).catch(() => {});
+    return null;
+  }
+  try {
+    preBalance = await getWalletBalances();
+  } catch (e) {
+    _m("warn", `getWalletBalances failed — ${e.message} — continuing with preBalance=null`);
+    // Non-fatal: cycle can still run, exposure will show "?" in report
+  }
 
   if (!prePositions || prePositions.error) {
     _m("warn", `LPAgent unavailable — ${prePositions?.error ?? "network error"} — skipping cycle`);
@@ -531,14 +545,38 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     const PENDING_ATH_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "screening-pending.json");
     const activeBinResults = await Promise.allSettled(candidates.map(p => getActiveBin({ pool_address: p.pool })));
+
+    // ── Freshness check: drop candidates where price crashed >50% since pool discovery ──
+    // activeBin.price and pool.price are both SOL-denominated (Meteora pool_price)
+    const freshCandidates = [];
+    const freshActiveBinResults = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      const activeBinData = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value : null;
+      const poolPriceAtDiscovery = c.price ?? null;
+      const activeBinPrice = activeBinData?.price ?? null;
+      if (poolPriceAtDiscovery && activeBinPrice && activeBinPrice < poolPriceAtDiscovery * 0.5) {
+        const dropPct = ((1 - activeBinPrice / poolPriceAtDiscovery) * 100).toFixed(0);
+        _s("screening", `  ${c.name}: STALE — price dropped ${dropPct}% since pool discovery, skipping`);
+        continue;
+      }
+      freshCandidates.push(c);
+      freshActiveBinResults.push(activeBinResults[i]);
+    }
+
+    if (freshCandidates.length === 0 && candidates.length > 0) {
+      screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${candidates.length} candidate(s) passed Fib but all STALE (price crashed since screening)`;
+      return screenReport;
+    }
+
     try {
       const pending = {};
-      for (let i = 0; i < candidates.length; i++) {
-        const c = candidates[i];
+      for (let i = 0; i < freshCandidates.length; i++) {
+        const c = freshCandidates[i];
         const fib = c.fib_signal;
         const ath = fib?.ath ?? fib?.fibLevels?.swingHigh ?? null;
         const entryPrice = fib?.currentPrice ?? c.price ?? null;
-        const activeBin = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
+        const activeBin = freshActiveBinResults[i]?.status === "fulfilled" ? freshActiveBinResults[i].value?.binId : null;
         if (c.pool && ath && entryPrice && activeBin != null) {
           pending[c.pool] = { ath, entryPrice, binStep: c.bin_step ?? null, activeBinAtScreening: activeBin, fib500: fib?.fibLevels?.fib500 ?? null };
         }
@@ -546,10 +584,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
       fs.writeFileSync(PENDING_ATH_PATH, JSON.stringify(pending));
     } catch { /**/ }
 
-    const candidateBlocks = candidates.map((pool, i) => {
+    const candidateBlocks = freshCandidates.map((pool, i) => {
       const fib = pool.fib_signal;
-      const activeBin = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
-      return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${fib?.confluenceScore?.toFixed(2)} binsBelow=${fib?.binsBelow}\n  active_bin: ${activeBin}`;
+      const activeBin = freshActiveBinResults[i]?.status === "fulfilled" ? freshActiveBinResults[i].value?.binId : null;
+      const fib500 = fib?.fibLevels?.fib500 != null ? `$${fib.fibLevels.fib500.toPrecision(4)}` : "n/a";
+      const fib382 = fib?.fibLevels?.fib382 != null ? `$${fib.fibLevels.fib382.toPrecision(4)}` : "n/a";
+      const screenPrice = fib?.currentPrice != null ? `$${fib.currentPrice.toPrecision(4)}` : "n/a";
+      return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${fib?.confluenceScore?.toFixed(2)} binsBelow=${fib?.binsBelow}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  active_bin: ${activeBin}`;
     }).join("\n\n");
 
     const { content } = await agentLoop(`
@@ -565,7 +606,7 @@ RULES:
 3. strategy=bid_ask. amount_y=${deployAmount} SOL.
     `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, corrId);
 
-    screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${candidates.length} candidate(s) passed Fib + RSI + EMA\n\n${content}`;
+    screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${freshCandidates.length} candidate(s) passed Fib + RSI + EMA\n\n${content}`;
 
   } catch (error) {
     _s("error", `Screening failed: ${error.message}`);
