@@ -463,7 +463,10 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   const occupiedMints = new Set(positions.map(p => p.base_mint).filter(Boolean));
 
   let eligible = dexTokens.filter(t => {
-    if (occupiedMints.has(t.mint)) return false;
+    if (occupiedMints.has(t.mint)) {
+      log("screening", `  ${t.symbol}: SKIP — already has open position (${t.mint.slice(0, 8)}...)`);
+      return false;
+    }
     if (isBlacklisted(t.mint)) {
       log("screening", `  ${t.symbol}: SKIP — token blacklisted`);
       return false;
@@ -476,7 +479,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   });
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: dexTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
+    return { candidates: [], total_screened: dexTokens.length, after_volume_count: 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   log.screening(`Step 1 — Discovery: ${eligible.length} tokens (raw: ${dexTokens.length}, excl blacklist/occupied)`);
@@ -494,7 +497,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       const volH1 = t._volH1 ?? volMap.get(t.mint);
       if (volH1 == null) return true; // API miss → keep
       if (volH1 < s.minVolume) {
-        log("screening", `  ${t.symbol}: SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume}`);
+        log("screening", `  ${t.symbol}: SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
         return false;
       }
       t._volH1 = Math.round(volH1);
@@ -512,19 +515,30 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   // ── Step 3: mcap pre-filter from Dexscreener discovery data (when available) ─
   {
     const before = eligible.length;
-    eligible = eligible.filter(t => {
+    const afterMcapFilter = eligible.filter(t => {
       if (t.mcap == null) return true; // no GT data → defer to Meteora query
       if (t.mcap < s.minMcap) {
-        log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} < min $${s.minMcap}`);
+        log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} < min $${s.minMcap} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (t.mcap > s.maxMcap) {
-        log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} > max $${s.maxMcap}`);
+        log("screening", `  ${t.symbol}: SKIP — mcap $${Math.round(t.mcap)} > max $${s.maxMcap} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       return true;
-    }).slice(0, limit * 3); // cap before expensive API calls
-    if (eligible.length < before) log.screening(`Step 3 — mcap filter: ${eligible.length}/${before} passed`);
+    });
+    // Pre-cap: only top N go to expensive API calls (RugCheck, Jupiter, pool lookup)
+    const preCapCount = afterMcapFilter.length;
+    if (preCapCount > limit * 3) {
+      const ranked = [...afterMcapFilter].sort((a, b) => (b._volH1 ?? 0) - (a._volH1 ?? 0));
+      for (const t of ranked.slice(limit * 3)) {
+        log("screening", `  ${t.symbol}: SKIP — pre-cap cull (rank ${ranked.indexOf(t) + 1} > ${limit * 3}) | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
+      }
+    }
+    eligible = afterMcapFilter.slice(0, limit * 3);
+    if (eligible.length < before) {
+      log.screening(`Step 3 — mcap filter: ${eligible.length}/${before} passed`);
+    }
   }
 
   if (eligible.length === 0) {
@@ -541,15 +555,15 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       const okx = rugResults[i];
       if (!okx) { log("screening", `  ${t.symbol}: OK (no RugCheck data)`); return true; } // API miss → keep
       if (okx.honeypot) {
-        log("screening", `  ${t.symbol}: SKIP — honeypot/rugged`);
+        log("screening", `  ${t.symbol}: SKIP — honeypot/rugged | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (s.maxBundlePct != null && okx.bundlePct > s.maxBundlePct) {
-        log("screening", `  ${t.symbol}: SKIP — bundle ${okx.bundlePct}% > max ${s.maxBundlePct}%`);
+        log("screening", `  ${t.symbol}: SKIP — bundle ${okx.bundlePct}% > max ${s.maxBundlePct}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (isDevBlocked(okx.creator)) {
-        log("screening", `  ${t.symbol}: SKIP — creator blocked`);
+        log("screening", `  ${t.symbol}: SKIP — creator blocked | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       t._okx = okx;
@@ -573,15 +587,15 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       const jup = jupResults[i];
       if (!jup) { log("screening", `  ${t.symbol}: OK (no Jupiter data)`); return true; } // API miss → keep
       if (jup.top10Pct != null && jup.top10Pct > (s.maxTop10Pct ?? 20)) {
-        log("screening", `  ${t.symbol}: SKIP — top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 20}%`);
+        log("screening", `  ${t.symbol}: SKIP — top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 20}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (jup.botHoldersPct != null && jup.botHoldersPct > (s.maxBotHoldersPct ?? 30)) {
-        log("screening", `  ${t.symbol}: SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}%`);
+        log("screening", `  ${t.symbol}: SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (jup.feesSOL != null && jup.feesSOL < (s.minTokenFeesSol ?? 25)) {
-        log("screening", `  ${t.symbol}: SKIP — fees ${jup.feesSOL} SOL < min ${s.minTokenFeesSol ?? 25}`);
+        log("screening", `  ${t.symbol}: SKIP — fees ${jup.feesSOL} SOL < min ${s.minTokenFeesSol ?? 25} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       t._jup = jup;
@@ -606,7 +620,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       if (!pr?.ath || !pr?.currentPrice) return true;
       const distFromAth = (pr.ath - pr.currentPrice) / pr.ath * 100;
       if (distFromAth < s.athFilterPct) {
-        log("screening", `  ${t.symbol}: SKIP — price ${distFromAth.toFixed(1)}% from ATH (min ${s.athFilterPct}%)`);
+        log("screening", `  ${t.symbol}: SKIP — price ${distFromAth.toFixed(1)}% from ATH < min ${s.athFilterPct}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       t._ath = pr.ath;
@@ -627,9 +641,13 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   // Pre-pool cap means we only fetch pools for the top N candidates.
   const maxTechAnalysis = s.maxTechnicalAnalysisCandidates ?? 10;
   const rankedEligible = [...eligible].sort((a, b) => (b._volH1 ?? 0) - (a._volH1 ?? 0));
+  const preCapCount = eligible.length;
   const topCandidates = rankedEligible.slice(0, maxTechAnalysis);
-  if (eligible.length > maxTechAnalysis) {
-    log.screening(`Pre-pool cap: top ${maxTechAnalysis} by volume selected from ${eligible.length} passing filters — Meteora/RocketScan calls now limited to ${maxTechAnalysis}, Birdeye = ${maxTechAnalysis * 2} RPM`);
+  if (preCapCount > maxTechAnalysis) {
+    for (const t of rankedEligible.slice(maxTechAnalysis)) {
+      log("screening", `  ${t.symbol}: SKIP — pre-pool cap rank ${rankedEligible.indexOf(t) + 1} > ${maxTechAnalysis} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
+    }
+    log.screening(`Pre-pool cap: top ${maxTechAnalysis} by volume selected from ${preCapCount} passing filters — Meteora/RocketScan calls now limited to ${maxTechAnalysis}, Birdeye = ${maxTechAnalysis * 2} RPM`);
   }
   const eligibleForPoolMatch = topCandidates; // rename for clarity in pool matching step
 
