@@ -694,6 +694,66 @@ async function handleTelegram(text) {
       return;
     }
     // ── Free-flow conversation with safety guard ──────────────────────────────
+
+    // ── Token-specific questions: answer from data, not LLM hallucination ─────
+    // Detect SOL mint addresses (base58, ~44 chars) or pump.fun-style (~9-12 chars)
+    const mintPattern = /([1-9A-HJ-NP-Za-kmnp-z]{32,46})/g;
+    const mints = (text.match(mintPattern) || []).filter(m => m.length > 20);
+
+    if (mints.length > 0 && /(\?)|(kenapa)|(status)|(Tidak)|(skip)|(gagal)|(masuk)|(screening)|(volume)|(mcap)|(price)/i.test(text)) {
+      // Fetch Dexscreener data for this token
+      const mint = mints[0];
+      try {
+        const s = config.screening;
+        const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${mint}`, { signal: AbortSignal.timeout(8_000) });
+        if (!res.ok) { await sendMessage(`Tidak bisa fetch data untuk token ini.`); return; }
+        const data = await res.json();
+        const pairs = (Array.isArray(data) ? data : []).filter(p => p.chainId === "solana" && (p.quoteToken?.address === "So11111111111111111111111111111111111111112" || p.quoteToken?.symbol === "SOL"));
+        if (pairs.length === 0) { await sendMessage(`Token tidak punya pool SOL — tidak masuk screening.`); return; }
+
+        // Best pair by 1h volume
+        const best = pairs.reduce((a, b) => (parseFloat(a.volume?.h1 ?? 0) > parseFloat(b.volume?.h1 ?? 0) ? a : b));
+        const volH1 = Math.round(parseFloat(best.volume?.h1 ?? 0) || 0);
+        const mcap = Math.round(parseFloat(best.fdv ?? best.marketCap) || 0);
+        const price = parseFloat(best.priceUsd) || null;
+
+        // Check volume filter
+        if (volH1 < s.minVolume) {
+          await sendMessage(
+            `Token itu volume 1h $${volH1.toLocaleString()} < min $${s.minVolume.toLocaleString()}, jadi tidak masuk pool checking.\n` +
+            `mcap: ${mcap > 0 ? "$" + mcap.toLocaleString() : "?"} | min mcap: $${s.minMcap.toLocaleString()}${price ? `\nprice: $${price < 0.001 ? price.toExponential(3) : price.toFixed(6)}` : ""}`
+          );
+          return;
+        }
+        if (mcap > 0 && mcap < s.minMcap) {
+          await sendMessage(
+            `Token itu mcap $${mcap.toLocaleString()} < min $${s.minMcap.toLocaleString()}, jadi tidak masuk pool checking.\n` +
+            `1h vol: $${volH1.toLocaleString()} | min vol: $${s.minVolume.toLocaleString()}${price ? `\nprice: $${price < 0.001 ? price.toExponential(3) : price.toFixed(6)}` : ""}`
+          );
+          return;
+        }
+        if (mcap > 0 && mcap > s.maxMcap) {
+          await sendMessage(
+            `Token itu mcap $${mcap.toLocaleString()} > max $${s.maxMcap.toLocaleString()}, jadi tidak masuk screening.\n` +
+            `1h vol: $${volH1.toLocaleString()} | mcap terlalu besar untuk strategi ini.`
+          );
+          return;
+        }
+        // Volume & mcap OK but might not be in Dexscreener boosts/profiles (not discovered)
+        await sendMessage(
+          `Token itu vol 1h $${volH1.toLocaleString()}, mcap $${mcap.toLocaleString()}.\n` +
+          `Volume & mcap lolos. Tapi tidak masuk screening mungkin karena:\n` +
+          `1) Tidak masuk Dexscreener boosts/profiles (screening hanya scan token trending)\n` +
+          `2) Gagal RugCheck / Jupiter safety check\n` +
+          `3) Rank di luar top 60 setelah filter (pre-pool cap)\n\nCek log screening untuk detail lengkap.`
+        );
+        return;
+      } catch (e) {
+        await sendMessage(`Error fetching token data: ${e.message}`);
+        return;
+      }
+    }
+
     // Patterns that indicate user wants to CHANGE something (require explicit confirmation)
     const changePatterns = [
       /\bubah\b/i, /\bchange\b/i, /\bmodify\b/i, /\bupdate\b/i,
