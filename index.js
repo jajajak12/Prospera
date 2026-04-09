@@ -190,13 +190,12 @@ async function runMorningBriefing() {
   // Circuit state
   const cb = getCircuitState();
 
-  // Backtest results from yesterday
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  // Backtest results from today
   let backtestSummary = null;
   try {
     const backtestDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "backtest");
     for (const label of ["7d", "14d"]) {
-      const file = path.join(backtestDir, `${yesterday}_${label}.json`);
+      const file = path.join(backtestDir, `${today}_${label}.json`);
       if (fs.existsSync(file)) {
         const data = JSON.parse(fs.readFileSync(file, "utf8"));
         const winRate = data.results?.length > 0
@@ -219,7 +218,7 @@ async function runMorningBriefing() {
   }
 
   if (backtestSummary) {
-    lines.push(`📈 Yesterday Backtest: ${backtestSummary}`);
+    lines.push(`📈 Backtest: ${backtestSummary}`);
   }
 
   if (posList.length > 0) {
@@ -238,9 +237,16 @@ async function runMorningBriefing() {
 async function runPnLPoll() {
   const corrId = shortId();
   const positions = await getMyPositions({ force: true }).catch(() => null);
-  const balance = await getWalletBalances().catch(() => null);
   const posList = positions?.positions ?? [];
-  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList) : 0;
+
+  // Guard: no positions → skip
+  if (posList.length === 0) {
+    log("pnl_poll", "No open positions — skipping poll");
+    return;
+  }
+
+  const balance = await getWalletBalances().catch(() => null);
+  const deployedSol = calculateCurrentExposure(posList);
   const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
   const totalPnl = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
   const totalValue = posList.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
@@ -273,7 +279,10 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   // ── Fast path: cek posisi dulu sebelum acquire lock / busy flag ─────────────
   // Jika 0 posisi → skip secepat mungkin, tidak perlu lock, tidak perlu LPAgent call
-  const prePositions = await getMyPositions({ force: true }).catch(() => null);
+  const [prePositions, preBalance] = await Promise.all([
+    getMyPositions({ force: true }),
+    getWalletBalances(),
+  ]).catch(() => [null, null]);
 
   if (!prePositions || prePositions.error) {
     _m("warn", `LPAgent unavailable — ${prePositions?.error ?? "network error"} — skipping cycle`);
@@ -290,10 +299,9 @@ export async function runManagementCycle({ silent = false } = {}) {
   }
 
   // ── Has positions → acquire lock and run full management ───────────────────
-  let lockAcquired = false;
   const lockResult = acquireManagementLock();
   if (!lockResult.acquired) { _m("management", "Lock not acquired"); return null; }
-  lockAcquired = true;
+  let lockAcquired = true;
 
   _managementBusy = true;
   timers.managementLastRun = Date.now();
