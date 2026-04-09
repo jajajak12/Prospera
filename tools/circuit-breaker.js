@@ -12,6 +12,7 @@
 
 import { log } from "../logger.js";
 import { config } from "../config.js"; // lazy access — ok as long as config.js doesn't import circuit-breaker
+import { sendMessage, isEnabled as telegramEnabled } from "../telegram.js";
 
 // ── Circuit state ───────────────────────────────────────────────────────────
 let failureCount     = 0;
@@ -157,6 +158,12 @@ export function recordFailure(error, corrId = null) {
       correlationId: corrId || lastCorrId,
     });
     failureCount = 0; // reset count once tripped
+
+    // Telegram alert — fire and forget
+    if (telegramEnabled()) {
+      sendMessage(`🔧 Circuit Breaker TRIPPED — 3 consecutive LLM failures\n⏭ Skip cycles for ${COOLDOWN_MS / 60_000} min (until ${new Date(skipUntil).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false })})\n📋 Last error: ${lastError?.slice(0, 120) ?? "unknown"}\n♻️ Auto-resumes when cooldown expires`).catch(() => {});
+    }
+
     return true;
   }
 

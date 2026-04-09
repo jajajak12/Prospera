@@ -730,7 +730,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       if (cached.athAtRejection != null && usdPrice > cached.athAtRejection) {
         _fibBrokenSupportCache.delete(pool.pool);
         _saveBrokenSupportCache(_fibBrokenSupportCache);
-        log("screening", `  ${pool.name}: cache invalidated — new ATH $${usdPrice.toPrecision(4)} > prev ATH $${cached.athAtRejection.toPrecision(4)}, re-analyzing`);
+        log("screening", `  ${pool.name}: broken support cache INVALIDATED — price $${usdPrice.toPrecision(4)} reclaimed above fib swing high $${cached.athAtRejection.toPrecision(4)}, re-analyzing`);
         return true;
       }
       const hrsLeft = (FIB_BROKEN_CACHE_MS - (now - cached.cachedAt)) / 3_600_000;
