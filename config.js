@@ -115,8 +115,8 @@ export const config = {
     temperature:     u.temperature     ?? 0.373,
     maxTokens:       u.maxTokens       ?? 4096,
     maxSteps:        u.maxSteps        ?? 12,
-    screeningModel:  u.screeningModel  ?? "minimax-2.7",
-    managementModel: u.managementModel ?? "minimax-2.7",
+    screeningModel:  u.screeningModel  ?? "MiniMax-M2.7",
+    managementModel: u.managementModel ?? "MiniMax-M2.7",
     generalModel:    u.generalModel    ?? "openai/gpt-4o",
     minimaxApiKey:   u.minimaxApiKey   ?? null,
   },
@@ -144,7 +144,7 @@ export const config = {
  */
 export function getPositionSizing(totalSol) {
   const gasReserve = config.risk.exposureGasReserve ?? 1.0;
-  const capPct     = config.risk.totalExposureCapPct ?? 0.50;
+  const capPct     = config.risk.totalExposureCapPct ?? 0.60;
 
   const exposurableBalance = Math.max(0, totalSol - gasReserve);
   if (exposurableBalance < 1.0) return 0;
@@ -156,7 +156,7 @@ export function getPositionSizing(totalSol) {
   else if (totalSol <= 40)  perPosition = 6.0;
   else                      perPosition = Math.min(totalSol * 0.18, 9.0);
 
-  // Hard cap: single position tidak boleh melebihi 50% exposurable balance
+  // Hard cap: single position tidak boleh melebihi totalExposureCapPct% exposurable balance
   const maxSinglePosition = exposurableBalance * capPct;
   perPosition = Math.min(perPosition, maxSinglePosition, config.risk.maxDeployAmount ?? 50);
 
@@ -193,7 +193,7 @@ export function calculateCurrentExposure(positions, solPrice) {
  */
 export function canOpenNewPosition(proposedAmountSol, currentExposureSol, walletSol) {
   const gasReserve = config.risk.exposureGasReserve ?? 1.0;
-  const capPct     = config.risk.totalExposureCapPct ?? 0.50;
+  const capPct     = config.risk.totalExposureCapPct ?? 0.60;
 
   const exposurableBalance  = Math.max(0, walletSol - gasReserve);
   const maxExposureSol      = parseFloat((exposurableBalance * capPct).toFixed(4));
@@ -321,7 +321,7 @@ export function reloadScreeningThresholds() {
     if (fresh.candleLimit           != null) s.candleLimit           = fresh.candleLimit;
     if (fresh.fibConfluenceRequired !== undefined) s.fibConfluenceRequired = fresh.fibConfluenceRequired;
     if (fresh.maxTechnicalAnalysisCandidates != null) s.maxTechnicalAnalysisCandidates = fresh.maxTechnicalAnalysisCandidates;
-    if (fresh.maxTop10HolderPct     != null) s.maxTop10HolderPct     = fresh.maxTop10HolderPct;
+    if (fresh.maxTop10Pct         != null) s.maxTop10Pct         = fresh.maxTop10Pct;
     if (fresh.minFeeActiveTvlRatio  != null) s.minFeeActiveTvlRatio  = fresh.minFeeActiveTvlRatio;
     if (fresh.minTokenAgeHours      !== undefined) s.minTokenAgeHours = fresh.minTokenAgeHours;
     if (fresh.maxTokenAgeHours      !== undefined) s.maxTokenAgeHours = fresh.maxTokenAgeHours;

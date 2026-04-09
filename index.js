@@ -481,7 +481,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   const preCount = prePositions?.positions?.length ?? 0;
   if (preCount === 0) {
     _m("management", "No open positions — skipping management cycle");
-    logSkip("no_open_positions", {}, corrId);
+    logSkip("no_open_positions", {}, corrId, "management");
     return null;
   }
 

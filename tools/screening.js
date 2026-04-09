@@ -484,10 +484,8 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       log("screening", `  ${t.symbol}: SKIP — token blacklisted`);
       return false;
     }
-    if (isDevBlocked(t.mint)) {
-      log("screening", `  ${t.symbol}: SKIP — dev blocked`);
-      return false;
-    }
+    // isDevBlocked already called correctly at line 578 (after okx.creator available)
+    // Note: isDevBlocked(t.mint) was removed — _devBlockCache stores dev wallet addresses, not token mints
     return true;
   });
 
@@ -677,7 +675,6 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   const missingTokens = eligibleForPoolMatch.filter(t => !meteoraPoolMap.has(t.mint));
   log("screening", `Pool match: ${eligibleForPoolMatch.length - missingTokens.length}/${eligibleForPoolMatch.length} found in Meteora → ${missingTokens.length} checking RocketScan...`);
   if (missingTokens.length > 0) {
-    log("screening", `Pool not found in Meteora → checking RocketScan for ${missingTokens.length} token(s)...`);
     const fallbacks = await fetchRocketScanFallback(missingTokens, s);
     for (const { token, pool } of fallbacks) {
       meteoraPoolMap.set(token.mint, pool);
