@@ -2,7 +2,8 @@
  * tools/circuit-breaker.js — Circuit breaker for LLM provider calls.
  *
  * Protects against MiniMax API failures (primary provider).
- * On 3 consecutive failures → circuit OPENS → fallback to OpenRouter for 10 min.
+ * On 3 consecutive failures → circuit OPENS → skip next cycle + Telegram alert.
+ * Does NOT fallback to OpenRouter for trade actions (avoids tool-calling incompatibility).
  * After cooldown → HALF-OPEN → probe MiniMax. Success → circuit CLOSES.
  *
  * State is module-level (survives PM2 restarts via in-memory + logs).
@@ -18,10 +19,11 @@ let isCircuitBroken  = false;
 let fallbackUntil    = 0;    // timestamp (ms) when fallback period ends
 let lastError        = null; // last error message for debugging
 let lastCorrId       = null; // last correlation ID for graceful shutdown logging
+let skipNextCycle    = false; // if true, next management/screening cycle is skipped on 3 failures
 
 // Config constants
 const TRIP_THRESHOLD  = 3;          // consecutive failures to trip circuit
-const COOLDOWN_MS     = 10 * 60 * 1000; // 10 minutes fallback to OpenRouter
+const COOLDOWN_MS     = 10 * 60 * 1000; // 10 minutes cooldown
 const BACKOFF_DELAYS  = [1_000, 2_000, 4_000, 8_000]; // ms per attempt
 
 // ── Provider configs ────────────────────────────────────────────────────────
@@ -86,6 +88,20 @@ export function isFallbackActive() {
 }
 
 /**
+ * Returns true if we should skip the next cycle (3 failures just tripped).
+ */
+export function shouldSkipNextCycle() {
+  return skipNextCycle;
+}
+
+/**
+ * Clear the skip flag once the skipped cycle runs.
+ */
+export function clearSkipNextCycle() {
+  skipNextCycle = false;
+}
+
+/**
  * Returns current circuit state for health checks / logging.
  */
 export function getCircuitState() {
@@ -97,6 +113,7 @@ export function getCircuitState() {
     lastCorrId,
     isFallbackActive: isFallbackActive(),
     cooldownRemainingSec: isCircuitBroken ? Math.max(0, Math.ceil((fallbackUntil - Date.now()) / 1000)) : 0,
+    skipNextCycle,
   };
 }
 
@@ -135,7 +152,8 @@ export function recordFailure(error, corrId = null) {
   if (failureCount >= TRIP_THRESHOLD) {
     isCircuitBroken = true;
     fallbackUntil   = Date.now() + COOLDOWN_MS;
-    log("error", `Circuit TRIPPED — 3 consecutive failures → fallback to OpenRouter for ${COOLDOWN_MS / 60_000} min`, {
+    skipNextCycle   = true;
+    log("error", `Circuit TRIPPED — 3 consecutive failures → skip next cycle + alert for ${COOLDOWN_MS / 60_000} min`, {
       lastError: lastError.slice(0, 200),
       fallbackUntil: new Date(fallbackUntil).toISOString(),
       correlationId: corrId || lastCorrId,

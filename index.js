@@ -33,7 +33,7 @@ import { logWithId, logSkip, shortId, logCycleStart } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { getCircuitState } from "./tools/circuit-breaker.js";
+import { getCircuitState, shouldSkipNextCycle, clearSkipNextCycle } from "./tools/circuit-breaker.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled } from "./telegram.js";
@@ -290,6 +290,12 @@ function stripThink(text) {
 
 // ── Management Cycle ───────────────────────────────────────────────────────────
 export async function runManagementCycle({ silent = false } = {}) {
+  if (shouldSkipNextCycle()) {
+    log("management", "Circuit breaker skip — next cycle skipped");
+    clearSkipNextCycle();
+    return null;
+  }
+
   const corrId = logCycleStart("management");
   _lastCorrelationId = corrId;
   const _m = (cat, msg, meta = {}) => logWithId(cat, msg, meta, corrId);
@@ -359,27 +365,59 @@ export async function runManagementCycle({ silent = false } = {}) {
       actionMap.set(p.position, { action: "STAY" });
     }
 
+    // ── Deterministic actions: execute immediately without LLM ──────────────────
+    const deterministic = positionData.filter(p => {
+      const act = actionMap.get(p.position);
+      return act.action === "CLOSE" || act.action === "CLAIM";
+    });
+    for (const p of deterministic) {
+      const act = actionMap.get(p.position);
+      _m("management", `EXEC deterministic ${act.action} ${p.pair} (${act.reason})`);
+      if (act.action === "CLOSE") {
+        const r = await closePosition({ position_address: p.position }).catch(e => ({ success: false, error: e.message }));
+        if (r.success) _m("management", `  → closed ${p.pair}`); else _m("error", `  → close failed: ${r.error}`);
+      } else if (act.action === "CLAIM") {
+        const { executeTool } = await import("./tools/executor.js");
+        const r = await executeTool("claim_fees", { position_address: p.position }).catch(e => ({ success: false, error: e.message }));
+        if (r?.success) _m("management", `  → fees claimed ${p.pair}`); else _m("error", `  → claim failed: ${r?.error}`);
+      }
+    }
+
+    // ── LLM Zone: positions needing judgment (PnL between 5%–25%, in range, no deterministic exit) ─
+    const llmZone = positionData.filter(p => {
+      const act = actionMap.get(p.position);
+      if (act.action !== "STAY") return false;
+      const pnl = p.pnl_pct ?? 0;
+      if (pnl < 5 || pnl > 25) return false;
+      return p.in_range;
+    });
+
+    if (llmZone.length > 0) {
+      _m("management", `LLM zone: ${llmZone.length} position(s) for judgment`);
+    }
+
     const reportLines = positionData.map(p => {
       const act = actionMap.get(p.position);
       const inRange = p.in_range ? "IN" : `OOR ${p.minutes_out_of_range ?? 0}m`;
       const pnl = p.pnl_pct != null ? `${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%` : "?%";
-      return `${p.pair} | PnL: ${pnl} | ${inRange} | ${act.action}`;
+      const deterministicTag = (act.action === "CLOSE" || act.action === "CLAIM") ? `[${act.action}:${act.reason}]` : "";
+      return `${p.pair} | PnL: ${pnl} | ${inRange} | ${act.action}${deterministicTag}`;
     });
 
     // Compute total exposure percentage
     const deployedSol = calculateCurrentExposure(positions);
     const exposurePct = preBalance?.sol > 0 ? +((deployedSol / preBalance.sol) * 100).toFixed(1) : 0;
 
-    mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}%\n\n${reportLines.join("\n")}`;
+    mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}% | LLM zone: ${llmZone.length}\n\n${reportLines.join("\n")}`;
 
-    if (positionData.length > 0) {
-      const allBlocks = positionData.map(p => {
+    if (llmZone.length > 0) {
+      const allBlocks = llmZone.map(p => {
         const act = actionMap.get(p.position);
-        return `POSITION: ${p.pair}\n  action: ${act.action} | pnl: ${p.pnl_pct}% | fees: $${p.unclaimed_fees_usd}`;
+        return `POSITION: ${p.pair}\n  pnl: ${p.pnl_pct}% | fees: $${p.unclaimed_fees_usd} | in_range: ${p.in_range}`;
       }).join("\n\n");
 
       const { content } = await agentLoop(`
-MANAGEMENT REVIEW — ${positionData.length} position(s)
+MANAGEMENT REVIEW — ${llmZone.length} position(s) need LLM judgment
 ${allBlocks}
 RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
       `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 512, corrId);
@@ -410,6 +448,12 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
 
 // ── Screening Cycle ────────────────────────────────────────────────────────────
 export async function runScreeningCycle({ silent = false } = {}) {
+  if (shouldSkipNextCycle()) {
+    log("screening", "Circuit breaker skip — next cycle skipped");
+    clearSkipNextCycle();
+    return null;
+  }
+
   const corrId = logCycleStart("screening");
   _lastCorrelationId = corrId;
   const _s = (cat, msg, meta = {}) => logWithId(cat, msg, meta, corrId);
