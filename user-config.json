@@ -59,5 +59,7 @@
   "backtestAggregate": 15,
   "_lastStrategyApplied": "2026-04-06T12:51:20.744Z",
   "_lastAgentTune": "2026-04-02T11:21:11.968Z",
-  "maxTvl": 250000
+  "maxTvl": 250000,
+  "dashboardBaseUrl": "https://hutlike-unexemplary-kyle.ngrok-free.dev",
+  "dashboardRefreshSec": 15
 }

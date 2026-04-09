@@ -34,7 +34,7 @@ import { logWithId, logSkip, shortId, logCycleStart } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { getCircuitState, shouldSkipNextCycle } from "./tools/circuit-breaker.js";
+import { getCircuitState, shouldSkipNextCycle, getActiveProvider } from "./tools/circuit-breaker.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled } from "./telegram.js";
@@ -127,7 +127,7 @@ async function getHealthDataForDashboard(cb) {
   return {
     status: "ok",
     uptime: Math.round(process.uptime()),
-    activeProvider: "minimax", // can swap to dynamic from agent.js if needed
+    activeProvider: getActiveProvider(), // dynamic from circuit-breaker
     totalPositions: positions?.total_positions ?? 0,
     maxPositions: config.risk.maxPositions,
     deployedSol: deployedSol > 0 ? deployedSol.toFixed(4) : 0,
@@ -581,6 +581,10 @@ export async function runManagementCycle({ silent = false } = {}) {
     //   _m("management", `positionMeta loaded: ${Object.keys(positionMeta).length} entries (reserved for future ATH recovery logic)`);
     // }
 
+    // ── LLM zone & report vars — init before try so finally always has defined value ──
+    let llmZone = [];
+    let mgmtReport = "";
+
     const actionMap = new Map();
     for (const p of positionData) {
       if (exitMap.has(p.position)) { actionMap.set(p.position, { action: "CLOSE", reason: exitMap.get(p.position) }); continue; }
@@ -617,7 +621,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     //   - PnL 5%–25%, in range, no deterministic exit (core judgment zone)
     //   - PnL null/0–5% AND OOR (blind spot — needs monitoring, no automatic close)
     //   - PnL null/0–5% AND in-range but close to stop loss boundary (risk judgment)
-    const llmZone = positionData.filter(p => {
+    llmZone = positionData.filter(p => {
       const act = actionMap.get(p.position);
       if (act.action !== "STAY") return false;
       const pnl = p.pnl_pct ?? 0;

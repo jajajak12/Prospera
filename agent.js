@@ -202,12 +202,9 @@ export async function probeLLMProviders() {
     _probeResult = "minimax";
   } else if (results.openrouter === "ok") {
     _probeResult = "openrouter";
-    // Trip circuit so runtime calls go to openrouter immediately
+    // Trip circuit so runtime calls go to openrouter immediately — log only, no recordFailure (probe ≠ real call)
     if (results.minimax !== "ok") {
-      log("startup", `LLM probe: MiniMax unavailable — circuit set to OpenRouter`);
-      recordFailure(new Error(`startup probe: ${results.minimax}`));
-      recordFailure(new Error(`startup probe: ${results.minimax}`));
-      recordFailure(new Error(`startup probe: ${results.minimax}`));
+      log("startup", `LLM probe: MiniMax unavailable — circuit set to OpenRouter (no failure recorded)`);
     }
   } else {
     _probeResult = "none";
