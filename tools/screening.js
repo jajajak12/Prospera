@@ -477,11 +477,11 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
 
   let eligible = dexTokens.filter(t => {
     if (occupiedMints.has(t.mint)) {
-      log("screening", `  ${t.symbol}: SKIP — already has open position (${t.mint.slice(0, 8)}...)`);
+      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — already has open position (${t.mint.slice(0, 8)}...)`);
       return false;
     }
     if (isBlacklisted(t.mint)) {
-      log("screening", `  ${t.symbol}: SKIP — token blacklisted`);
+      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — token blacklisted`);
       return false;
     }
     // isDevBlocked already called correctly at line 578 (after okx.creator available)
@@ -543,7 +543,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     if (preCapCount > limit * 3) {
       const ranked = [...afterMcapFilter].sort((a, b) => (b._volH1 ?? 0) - (a._volH1 ?? 0));
       for (const t of ranked.slice(limit * 3)) {
-        log("screening", `  ${t.symbol}: SKIP — pre-cap cull (rank ${ranked.indexOf(t) + 1} > ${limit * 3}) | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — pre-cap cull (rank ${ranked.indexOf(t) + 1} > ${limit * 3}) | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
       }
     }
     eligible = afterMcapFilter.slice(0, limit * 3);
@@ -564,13 +564,13 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     const before = eligible.length;
     eligible = eligible.filter((t, i) => {
       const okx = rugResults[i];
-      if (!okx) { log("screening", `  ${t.symbol}: OK (no RugCheck data)`); return true; } // API miss → keep
+      if (!okx) { log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): OK (no RugCheck data)`); return true; } // API miss → keep
       if (okx.honeypot) {
-        log("screening", `  ${t.symbol}: SKIP — honeypot/rugged | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — honeypot/rugged | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (s.maxBundlePct != null && okx.bundlePct > s.maxBundlePct) {
-        log("screening", `  ${t.symbol}: SKIP — bundle ${okx.bundlePct}% > max ${s.maxBundlePct}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — bundle ${okx.bundlePct}% > max ${s.maxBundlePct}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (isDevBlocked(okx.creator)) {
@@ -578,7 +578,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
         return false;
       }
       t._okx = okx;
-      log("screening", `  ${t.symbol}: OK — bundle=${okx.bundlePct ?? "?"}%, insiders=${okx.graphInsiders ?? "?"}`);
+      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): OK — bundle=${okx.bundlePct ?? "?"}%, insiders=${okx.graphInsiders ?? "?"}`);
       return true;
     });
     _s("screening", `RugCheck filter: ${eligible.length}/${before} passed`);
@@ -596,25 +596,25 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     const before = eligible.length;
     eligible = eligible.filter((t, i) => {
       const jup = jupResults[i];
-      if (!jup) { log("screening", `  ${t.symbol}: OK (no Jupiter data — API error)`); return true; }
+      if (!jup) { log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): OK (no Jupiter data — API error)`); return true; }
       if (jup.notFound) {
-        log("screening", `  ${t.symbol}: SKIP — not indexed by Jupiter (feesSOL unknown, treated as 0 < min ${s.minTokenFeesSol ?? 25})`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — not indexed by Jupiter (feesSOL unknown, treated as 0 < min ${s.minTokenFeesSol ?? 25})`);
         return false;
       }
       if (jup.top10Pct != null && jup.top10Pct > (s.maxTop10Pct ?? 20)) {
-        log("screening", `  ${t.symbol}: SKIP — top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 20}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 20}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (jup.botHoldersPct != null && jup.botHoldersPct > (s.maxBotHoldersPct ?? 30)) {
-        log("screening", `  ${t.symbol}: SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       if (jup.feesSOL != null && jup.feesSOL < (s.minTokenFeesSol ?? 25)) {
-        log("screening", `  ${t.symbol}: SKIP — fees ${jup.feesSOL} SOL < min ${s.minTokenFeesSol ?? 25} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL} SOL < min ${s.minTokenFeesSol ?? 25} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       t._jup = jup;
-      log("screening", `  ${t.symbol}: OK — top10=${jup.top10Pct ?? "?"}%, bots=${jup.botHoldersPct ?? "?"}%, fees=${jup.feesSOL ?? "?"} SOL`);
+      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): OK — top10=${jup.top10Pct ?? "?"}%, bots=${jup.botHoldersPct ?? "?"}%, fees=${jup.feesSOL ?? "?"} SOL`);
       return true;
     });
     _s("screening", `Jupiter filter: ${eligible.length}/${before} passed`);
@@ -635,7 +635,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       if (!pr?.ath || !pr?.currentPrice) return true;
       const distFromAth = (pr.ath - pr.currentPrice) / pr.ath * 100;
       if (distFromAth < s.athFilterPct) {
-        log("screening", `  ${t.symbol}: SKIP — price ${distFromAth.toFixed(1)}% from ATH < min ${s.athFilterPct}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — price ${distFromAth.toFixed(1)}% from ATH < min ${s.athFilterPct}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       t._ath = pr.ath;
@@ -660,7 +660,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   const topCandidates = rankedEligible.slice(0, maxTechAnalysis);
   if (preCapCount > maxTechAnalysis) {
     for (const t of rankedEligible.slice(maxTechAnalysis)) {
-      log("screening", `  ${t.symbol}: SKIP — pre-pool cap rank ${rankedEligible.indexOf(t) + 1} > ${maxTechAnalysis} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
+      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — pre-pool cap rank ${rankedEligible.indexOf(t) + 1} > ${maxTechAnalysis} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
     }
     log.screening(`Pre-pool cap: top ${maxTechAnalysis} by volume selected from ${preCapCount} passing filters — Meteora/RocketScan calls now limited to ${maxTechAnalysis}, Birdeye = ${maxTechAnalysis * 2} RPM`);
   }
