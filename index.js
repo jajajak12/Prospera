@@ -28,7 +28,6 @@ import cron from "node-cron";
 import { acquireScreeningLock, completeScreeningLock, acquireManagementLock, completeManagementLock } from "./tools/lock-manager.js";
 import { agentLoop, probeLLMProviders } from "./agent.js";
 import http from "http";
-import readline from "readline";
 import { log } from "./logger.js";
 import { logWithId, logSkip, shortId, logCycleStart } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
@@ -113,7 +112,9 @@ function escHtml(s) {
  * Build rich health data for dashboard /health-data endpoint.
  */
 async function getHealthDataForDashboard(cb) {
-  const positions = await getMyPositions({ force: true }).catch(() => null);
+  // Use force:false so dashboard polling respects the 5-min cache TTL.
+  // Dashboard refreshes every ~15s but gets cached data — zero LPAgent API calls.
+  const positions = await getMyPositions({ force: false }).catch(() => null);
   const balance   = await getWalletBalances().catch(() => null);
   const posList   = positions?.positions ?? [];
   const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList, balance?.sol_price) : 0;
@@ -229,7 +230,12 @@ function startHealthServer(port = 3000) {
       return;
     }
 
+    // Alias: /health-data → /health (same data, no duplication needed)
     if (req.url === "/health-data") {
+      req.url = "/health";
+    }
+
+    if (req.url === "/health") {
       getHealthDataForDashboard(cb).then(data => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(data));
@@ -302,77 +308,13 @@ function stopHealthServer() {
   if (_healthServer) { _healthServer.close(); _healthServer = null; }
 }
 
-// ── REPL Mode ─────────────────────────────────────────────────────────────────
+// ── REPL Mode — disabled in PM2 (always non-TTY), kept for potential future use ──
+// REPL consumed ~50KB of readline machinery for zero practical use in PM2 mode.
+// To re-enable: uncomment the block below and remove the stub.
+// function startREPL() { ... }
+// STUB: no REPL in PM2 — delete this stub if re-enabling.
 function startREPL() {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "prospera> " });
-  rl.on("line", async (line) => {
-    const cmd = line.trim();
-    if (!cmd) { rl.prompt(); return; }
-    if (cmd === "exit" || cmd === "quit") { rl.close(); process.exit(0); return; }
-    if (cmd === "status") {
-      const cb = getCircuitState();
-      const positions = await getMyPositions({ force: true }).catch(() => null);
-      const balance = await getWalletBalances().catch(() => null);
-      const deployedSol = (positions?.positions?.length ?? 0) > 0 ? calculateCurrentExposure(positions.positions, balance?.sol_price) : 0;
-      const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
-      console.log(`Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"} | Circuit: ${cb?.isCircuitBroken ? "OPEN" : "OK"} | Positions: ${positions?.total_positions ?? 0}/${config.risk.maxPositions} | Exposure: ${exposurePct}% | SOL: ${balance?.sol?.toFixed(3) ?? "?"}`);
-      rl.prompt(); return;
-    }
-    if (cmd === "positions") {
-      const { positions } = await getMyPositions({ force: true }).catch(() => ({ positions: [] }));
-      if (!positions.length) { console.log("No open positions."); rl.prompt(); return; }
-      positions.forEach((p, i) => console.log(`${i+1}. ${p.pair} | $${p.total_value_usd} | PnL: ${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct}%`));
-      rl.prompt(); return;
-    }
-    if (cmd === "help") {
-      console.log("Commands: status, positions, close <N>, briefing, backtest, exposure, help, exit");
-      rl.prompt(); return;
-    }
-    if (cmd === "briefing") {
-      console.log("Running morning briefing...");
-      await runMorningBriefing().catch(e => console.log(`Briefing error: ${e.message}`));
-      rl.prompt(); return;
-    }
-    const backtestMatch = cmd.match(/^backtest(\s+14d)?$/i);
-    if (backtestMatch) {
-      const label = backtestMatch[1] ? "14d" : "7d";
-      console.log(`Running ${label} backtest...`);
-      const corrId = shortId();
-      const result = await runDailyBacktest({ correlationId: corrId, hours: label === "14d" ? 336 : 168 }).catch(() => null);
-      if (result && !result.skipped) {
-        const sum = label === "14d" ? result.s14 : result.s7;
-        console.log(`${label} backtest: ${sum?.poolsAnalyzed ?? 0} pools, WR: ${sum?.avgBacktestWinRate != null ? sum.avgBacktestWinRate + "%" : "N/A"}`);
-      } else {
-        console.log(`No ${label} backtest data available.`);
-      }
-      rl.prompt(); return;
-    }
-    const closeMatch = cmd.match(/^close\s+(\d+)$/i);
-    if (closeMatch) {
-      const idx = parseInt(closeMatch[1]) - 1;
-      const { positions } = await getMyPositions({ force: true }).catch(() => ({ positions: [] }));
-      if (idx < 0 || idx >= positions.length) { console.log("Invalid position number."); rl.prompt(); return; }
-      console.log(`Closing ${positions[idx].pair}...`);
-      await closePosition({ position_address: positions[idx].position }).catch(e => console.log(`Error: ${e.message}`));
-      console.log("Done.");
-      rl.prompt(); return;
-    }
-    // Forward to agent loop
-    const corrId = shortId();
-    const hasClose = /\bclose\b|\bsell\b/i.test(cmd);
-    const hasDeploy = /\bdeploy\b|\bopen\b|\blp into\b/i.test(cmd);
-    const role = hasDeploy ? "SCREENER" : "GENERAL";
-    try {
-      const { content } = await agentLoop(cmd, config.llm.maxSteps, [], role, config.llm.generalModel, null, corrId);
-      console.log(stripThink(content));
-    } catch (e) {
-      console.log(`Error: ${e.message}`);
-    }
-    rl.prompt();
-  });
-  rl.on("close", () => { console.log("Goodbye."); process.exit(0); });
-  console.log("Prospera REPL — type 'help' for commands, 'exit' to quit.");
-  rl.prompt();
+  log("startup", "REPL disabled — PM2 always runs non-TTY. Run manually with: node --input-type=module");
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -896,6 +838,12 @@ export function startCronJobs() {
   });
 
   const backtestTask = cron.schedule("0 0 * * *", () => {
+    // Skip backtest if circuit is broken (LLM likely down) — backtest needs LLM to analyze pools
+    const cb = getCircuitState();
+    if (cb?.isCircuitBroken) {
+      log("cron", "Daily backtest SKIPPED — circuit broken (LLM likely unavailable)");
+      return;
+    }
     const corrId = shortId();
     runDailyBacktest({ correlationId: corrId, hours: 336 }).catch(e => log("cron_error", `Daily backtest failed: ${e.message}`));
   });
