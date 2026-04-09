@@ -103,6 +103,13 @@ export const config = {
     healthCheckIntervalMin: u.healthCheckIntervalMin ?? 60,
   },
 
+  // ─── Dashboard / Public API ─────────────────
+  dashboard: {
+    baseUrl:        u.dashboardBaseUrl        ?? "http://localhost:3000",
+    apiKey:         u.dashboardApiKey         ?? null,
+    refreshIntervalSec: u.dashboardRefreshSec ?? 30,
+  },
+
   // ─── LLM Settings ──────────────────────
   llm: {
     temperature:     u.temperature     ?? 0.373,

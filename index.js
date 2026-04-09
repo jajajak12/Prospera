@@ -77,29 +77,207 @@ let _exposureHardPausedUntil = 0;
 
 const timers = { managementLastRun: 0, screeningLastRun: 0 };
 
+// ── Shared state for dashboard ─────────────────────────────────────────────────
+let _lastScreeningReport = null; // { discovered, afterVolume, meteoraPools, fibPassed, candidates, content }
+let _closedPoolsHistory = [];    // [{pair, pnl_pct, closedAt}]
+
+/**
+ * Serve the dashboard HTML inline — no file system needed, loads from /dashboard/ folder on disk.
+ * The actual HTML is served as a template; additional assets can reference the /dashboard/ path.
+ */
+function SERVE_DASHBOARD_HTML() {
+  try {
+    let html = fs.readFileSync(path.join(__dirname, "dashboard", "index.html"), "utf8");
+    const baseUrl = config.dashboard.baseUrl || `http://localhost:${_healthPort || 3000}`;
+    const apiKey  = config.dashboard.apiKey || '';
+    // Inject API config into the HTML so the static page knows where to call
+    const metaTag = `<meta name="prospera-api-base" content="${escHtml(baseUrl)}">`;
+    const keyTag  = apiKey ? `<meta name="prospera-api-key" content="${escHtml(apiKey)}">` : '';
+    const script  = `<script>window.PROSPERA_API_URL = "${escHtml(baseUrl)}";</script>`;
+    // Inject before </head>
+    html = html.replace("</head>", `${metaTag}${keyTag}${script}</head>`);
+    return html;
+  } catch {
+    return "<html><body style='background:#0f1117;color:#e2e8f0;font-family:system-ui;padding:40px'><h1>Prospera Dashboard</h1><p>dashboard/index.html not found. Run: cp dashboard/index.html .</p></body></html>";
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+/**
+ * Build rich health data for dashboard /health-data endpoint.
+ */
+async function getHealthDataForDashboard(cb) {
+  const positions = await getMyPositions({ force: true }).catch(() => null);
+  const balance   = await getWalletBalances().catch(() => null);
+  const posList   = positions?.positions ?? [];
+  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList, balance?.sol_price) : 0;
+  const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
+  const pnlToday   = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
+
+  // Parse LLM zone count from last mgmt report
+  const state = getStateSummary ? getStateSummary() : {};
+  const lastBriefing = getLastBriefingDate ? getLastBriefingDate() : null;
+
+  return {
+    status: "ok",
+    uptime: Math.round(process.uptime()),
+    activeProvider: "minimax", // can swap to dynamic from agent.js if needed
+    totalPositions: positions?.total_positions ?? 0,
+    maxPositions: config.risk.maxPositions,
+    deployedSol: deployedSol > 0 ? deployedSol.toFixed(4) : 0,
+    exposurePct,
+    solBalance: balance?.sol ?? 0,
+    solPrice: balance?.sol_price ?? 0,
+    pnlToday,
+    llmZone: _lastLlmZoneCount ?? 0,
+    lastScreening: timers.screeningLastRun ? new Date(timers.screeningLastRun).toISOString() : null,
+    lastManagement: timers.managementLastRun ? new Date(timers.managementLastRun).toISOString() : null,
+    lastBriefing: lastBriefing || null,
+    briefingDate: lastBriefing || "",
+    circuitState: cb,
+    positions: posList.map(p => ({
+      pair: p.pair ?? p.name ?? "?",
+      pnl_pct: p.pnl_pct ?? 0,
+      in_range: p.in_range ?? false,
+      minutes_out_of_range: p.minutes_out_of_range ?? 0,
+      unclaimed_fees_usd: p.unclaimed_fees_usd ?? 0,
+      total_value_usd: p.total_value_usd ?? 0,
+      action: p.action ?? "STAY",
+    })),
+    lastScreeningReport: _lastScreeningReport || {},
+    closedHistory: _closedPoolsHistory.slice(-10),
+    deterministicCount: (() => {
+      const posList = positions?.positions ?? [];
+      return posList.filter(p => {
+        const act = p.action ?? "STAY";
+        return act === "CLOSE" || act === "CLAIM";
+      }).length;
+    })(),
+    pnlHistory: _pnlHistory.slice(),
+    pnlStats: (() => {
+      const wins = _closedPoolsHistory.filter(p => p.pnl_pct > 0).length;
+      const total = _closedPoolsHistory.length;
+      const winRate = total > 0 ? +((wins / total) * 100).toFixed(1) : null;
+      const totalPnl = _closedPoolsHistory.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
+      const allPnl = _closedPoolsHistory.map(p => p.pnl_pct ?? 0);
+      let maxDrawdown = 0;
+      let peak = 0;
+      for (const pnl of allPnl) {
+        peak = Math.max(peak, pnl);
+        maxDrawdown = Math.min(maxDrawdown, pnl - peak);
+      }
+      return { winRate, totalPnl: totalPnl.toFixed(2), maxDrawdown: maxDrawdown.toFixed(2), totalClosed: total };
+    })(),
+    dashboard: {
+      baseUrl: config.dashboard.baseUrl,
+      apiKey: config.dashboard.apiKey || null,
+      refreshIntervalSec: config.dashboard.refreshIntervalSec,
+    },
+  };
+}
+
+// Ring buffer of recent log lines (max 200) for dashboard
+const _logRing = [];
+const _maxLogRing = 200;
+
+// PnL history ring buffer for dashboard charts
+const _pnlHistory = [];
+const _maxPnlHistory = 100; // ~1 per hour for 4 days
+
+function _ringLog(category, message) {
+  _logRing.push({
+    ts: new Date().toISOString(),
+    cat: category,
+    msg: message,
+  });
+  if (_logRing.length > _maxLogRing) _logRing.shift();
+}
+
+function getRecentLogs(n = 50) {
+  return _logRing.slice(-n);
+}
+
+// Called by management cycle to update LLM zone count for dashboard
+let _lastLlmZoneCount = 0;
+
 const POSITION_META_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "position-meta.json");
 
 // ── Health Server ──────────────────────────────────────────────────────────────
 let _healthServer = null;
+let _healthPort = 3000;
 
 function startHealthServer(port = 3000) {
+  _healthPort = port;
   if (_healthServer) return;
   _healthServer = http.createServer((req, res) => {
+    const cb = getCircuitState();
+
     if (req.url === "/health") {
-      const cb = getCircuitState();
-      const body = JSON.stringify({
-        status: "ok",
-        uptime: Math.round(process.uptime()),
-        lastScreening: timers.screeningLastRun ? new Date(timers.screeningLastRun).toISOString() : null,
-        lastManagement: timers.managementLastRun ? new Date(timers.managementLastRun).toISOString() : null,
-        circuitState: cb,
+      getHealthDataForDashboard(cb).then(data => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(data));
+      }).catch(() => {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "failed" }));
       });
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(body);
-    } else {
-      res.writeHead(404);
-      res.end();
+      return;
     }
+
+    if (req.url === "/health-data") {
+      getHealthDataForDashboard(cb).then(data => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(data));
+      }).catch(() => {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "failed" }));
+      });
+      return;
+    }
+
+    if (req.url === "/health-logs") {
+      const recent = getRecentLogs(50);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ logs: recent }));
+      return;
+    }
+
+    // ── Public consolidated dashboard API ──────────────────────────────────────
+    // Used by remote/static dashboard instances (Vercel, Grok, etc.)
+    if (req.url === "/api/dashboard") {
+      // Optional API key check via ?key= or Authorization header
+      const url = new URL(req.url, "http://localhost");
+      const providedKey = url.searchParams.get("key") || req.headers["x-api-key"] || null;
+      if (config.dashboard.apiKey && providedKey !== config.dashboard.apiKey) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      getHealthDataForDashboard(cb).then(data => {
+        data.logs = getRecentLogs(50);
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify(data));
+      }).catch(() => {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "failed" }));
+      });
+      return;
+    }
+
+    if (req.url === "/" || req.url === "/dashboard") {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(SERVE_DASHBOARD_HTML());
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
   });
   _healthServer.listen(port, () => log("health", `Health server listening on port ${port}`));
   _healthServer.on("error", e => log("health", `Health server error: ${e.message}`));
@@ -290,6 +468,10 @@ async function runPnLPoll() {
   const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
   if (telegramEnabled()) sendMessage(`📈 PnL Poll [${ts}] ID: ${corrId}\n\n${lines.join("\n")}`).catch(() => {});
   log("pnl_poll", `PnL poll — positions: ${positions?.total_positions ?? 0}, exposure: ${exposurePct}%, pnl: ${totalPnl.toFixed(2)}%`);
+
+  // Record to pnlHistory ring buffer for dashboard
+  _pnlHistory.push({ ts: new Date().toISOString(), totalPnl, exposurePct, positionCount: posList.length });
+  if (_pnlHistory.length > _maxPnlHistory) _pnlHistory.shift();
 }
 
 function stripThink(text) {
@@ -403,7 +585,11 @@ export async function runManagementCycle({ silent = false } = {}) {
       _m("management", `EXEC deterministic ${act.action} ${p.pair} (${act.reason})`);
       if (act.action === "CLOSE") {
         const r = await closePosition({ position_address: p.position }).catch(e => ({ success: false, error: e.message }));
-        if (r.success) _m("management", `  → closed ${p.pair}`); else _m("error", `  → close failed: ${r.error}`);
+        if (r.success) {
+          _m("management", `  → closed ${p.pair}`);
+          _closedPoolsHistory.push({ pair: p.pair, pnl_pct: p.pnl_pct ?? 0, closedAt: new Date().toISOString() });
+          if (_closedPoolsHistory.length > 50) _closedPoolsHistory.shift();
+        } else _m("error", `  → close failed: ${r.error}`);
       } else if (act.action === "CLAIM") {
         const { executeTool } = await import("./tools/executor.js");
         const r = await executeTool("claim_fees", { position_address: p.position }).catch(e => ({ success: false, error: e.message }));
@@ -480,6 +666,7 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
   } finally {
     _managementBusy = false;
     _managementLastCompleted = Date.now();
+    _lastLlmZoneCount = llmZone.length;
     if (lockAcquired) completeManagementLock();
     if (!silent && telegramEnabled() && mgmtReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -647,6 +834,25 @@ RULES:
     screenReport = `Failed: ${error.message}`;
   } finally {
     _release();
+    _lastScreeningReport = {
+      discovered: stats.discovered,
+      afterVolume: stats.afterVolume,
+      meteoraPools: stats.meteoraPools,
+      fibPassed: stats.fibPassed,
+      candidates: freshCandidates.map(c => ({
+        name: c.name,
+        symbol: c.symbol,
+        pool: c.pool,
+        price: c.price,
+        volume_1h: c.volume_1h,
+        market_cap: c.market_cap,
+        tvl: c.active_tvl,
+        signal: c.fib_signal?.signal,
+        confluence: c.fib_signal?.confluenceScore,
+        binsBelow: c.fib_signal?.binsBelow,
+      })),
+      content: screenReport,
+    };
     if (!silent && telegramEnabled() && screenReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
       sendMessage(`🔍 Fibonacci Screening [${ts}] ID: ${corrId}\n${stripThink(screenReport)}`).catch(() => {});
@@ -880,10 +1086,11 @@ probeLLMProviders().catch(e => log("startup", `LLM probe error: ${e.message}`)).
     // REPL mode — start cron + Telegram polling + REPL interface
     startCronJobs();
     startHealthServer();
+    log("startup", `Dashboard: http://localhost:${_healthPort}/dashboard | API: http://localhost:${_healthPort}/api/dashboard`);
     startREPL(); // does not return — blocks on readline
   } else {
     // PM2 / non-TTY mode
-    log("startup", "Non-TTY mode — starting cycles.");
+    log("startup", `Non-TTY mode — Dashboard: http://localhost:${_healthPort}/dashboard | API: http://localhost:${_healthPort}/api/dashboard`);
     startCronJobs();
     startHealthServer();
     _screeningLastTriggered = 0;

@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prospera Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body { background: #0f1117; color: #e2e8f0; }
+    .card { background: #1a1d27; border: 1px solid #2d3142; border-radius: 12px; }
+    .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .badge-green { background: #052e16; color: #4ade80; border: 1px solid #14532d; }
+    .badge-red   { background: #2a0a0a; color: #f87171; border: 1px solid #7f1d1d; }
+    .badge-yellow{ background: #1c1400; color: #fbbf24; border: 1px solid #78350f; }
+    .badge-blue  { background: #0c1929; color: #60a5fa; border: 1px solid #1e40af; }
+    .tab-btn { padding: 8px 20px; border-radius: 8px 8px 0 0; font-weight: 600; font-size: 14px; cursor: pointer; }
+    .tab-active { background: #1a1d27; border-bottom: 2px solid #6366f1; color: #6366f1; }
+    .tab-inactive { background: #111827; color: #64748b; }
+    .log-line { font-size: 12px; font-family: monospace; padding: 2px 0; border-bottom: 1px solid #1f2937; }
+    .log-ts   { color: #475569; margin-right: 8px; }
+    .log-info  { color: #94a3b8; }
+    .log-warn  { color: #fbbf24; }
+    .log-error { color: #f87171; }
+    .log-mgmt  { color: #38bdf8; }
+    .log-scr   { color: #a78bfa; }
+    .progress-bar { height: 8px; border-radius: 999px; background: #1f2937; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #6366f1, #8b5cf6); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 12px; border-bottom: 1px solid #2d3142; color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+    td { padding: 10px 12px; border-bottom: 1px solid #1f2937; }
+    tr:hover td { background: #1f2937; }
+    .pnl-pos { color: #4ade80; }
+    .pnl-neg { color: #f87171; }
+    .fade-in { animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .err-box { background: #2a0a0a; border: 1px solid #7f1d1d; border-radius: 8px; padding: 16px; color: #f87171; text-align: center; }
+    .config-note { background: #1c1400; border: 1px solid #78350f; border-radius: 6px; padding: 8px 12px; font-size: 11px; color: #fbbf24; margin-top: 8px; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<!-- NAV -->
+<nav class="flex items-center justify-between px-6 py-4 border-b border-[#2d3142]" style="background:#0f1117;">
+  <div class="flex items-center gap-3">
+    <div class="w-2 h-2 rounded-full" id="agent-dot" style="background:#4ade80;"></div>
+    <span class="text-lg font-bold text-white">Prospera</span>
+    <span class="text-sm text-slate-500">DLMM LP Agent</span>
+  </div>
+  <div class="flex items-center gap-4 text-sm">
+    <span id="uptime-label" class="text-slate-400"></span>
+    <span id="provider-badge" class="badge badge-blue">MiniMax</span>
+    <span id="api-mode-label" class="text-xs text-slate-600"></span>
+    <button onclick="refreshAll()" class="text-xs text-slate-500 hover:text-white cursor-pointer border border-[#2d3142] px-3 py-1 rounded" style="background:#111827;">Refresh</button>
+  </div>
+</nav>
+
+<!-- TABS -->
+<div class="flex px-6 border-b border-[#2d3142]" style="background:#111827;">
+  <div class="tab-btn tab-active" id="tab-overview" onclick="switchTab('overview')">Overview</div>
+  <div class="tab-btn tab-inactive" id="tab-screening" onclick="switchTab('screening')">Screening</div>
+  <div class="tab-btn tab-inactive" id="tab-positions" onclick="switchTab('positions')">Positions</div>
+  <div class="tab-btn tab-inactive" id="tab-pnl" onclick="switchTab('pnl')">PnL</div>
+</div>
+
+<!-- MAIN CONTENT -->
+<div class="p-6 fade-in" id="tab-content">
+
+  <!-- ═══ OVERVIEW ═══ -->
+  <div id="page-overview">
+    <div id="load-error" class="hidden err-box mb-6">
+      <div class="font-bold mb-1">Gagal fetch data</div>
+      <div class="text-sm" id="load-error-msg">Cek apakah Prospera agent sedang running dan API URL benar.</div>
+      <div id="config-hint" class="config-note hidden">
+        <b>Remote deployment:</b> Set <code>dashboardBaseUrl</code> di user-config.json, contoh:<br/>
+        <code>"dashboardBaseUrl": "https://your-prospera-app.railway.app"</code><br/>
+        Atau cek <code>?key=</code> param &amp; <code>dashboardApiKey</code> jika API dilindungi.
+      </div>
+    </div>
+
+    <div id="overview-grid" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Status</div>
+        <div class="text-xl font-bold" id="agent-status">—</div>
+        <div class="text-xs text-slate-500 mt-1" id="circuit-state"></div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Exposure</div>
+        <div class="text-xl font-bold" id="exposure-pct">—</div>
+        <div class="progress-bar mt-2">
+          <div class="progress-fill" id="exposure-bar" style="width:0%"></div>
+        </div>
+        <div class="text-xs text-slate-500 mt-1" id="exposure-sol"></div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Today's PnL</div>
+        <div class="text-xl font-bold" id="pnl-today">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Total Positions</div>
+        <div class="text-xl font-bold" id="total-positions">—</div>
+        <div class="text-xs text-slate-500 mt-1" id="llm-zone-count"></div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">SOL Balance</div>
+        <div class="text-lg font-bold" id="sol-balance">—</div>
+        <div class="text-xs text-slate-500 mt-1" id="sol-price"></div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Last Screening</div>
+        <div class="text-lg font-bold" id="last-screening">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Last Management</div>
+        <div class="text-lg font-bold" id="last-management">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Morning Briefing</div>
+        <div class="text-lg font-bold" id="last-briefing">—</div>
+        <div class="text-xs text-slate-500 mt-1" id="briefing-date"></div>
+      </div>
+    </div>
+
+    <div class="card p-4 mb-6">
+      <div class="text-sm font-semibold text-slate-300 mb-3">Recent Logs</div>
+      <div id="recent-logs" class="max-h-64 overflow-y-auto"></div>
+    </div>
+  </div>
+
+  <!-- ═══ SCREENING ═══ -->
+  <div id="page-screening" class="hidden">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Discovered</div>
+        <div class="text-xl font-bold" id="scr-discovered">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">After Volume</div>
+        <div class="text-xl font-bold" id="scr-aftervol">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Meteora Pools</div>
+        <div class="text-xl font-bold" id="scr-pools">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Fib Passed</div>
+        <div class="text-xl font-bold" id="scr-fibpassed">—</div>
+      </div>
+    </div>
+    <div class="card p-4 mb-6">
+      <div class="text-sm font-semibold text-slate-300 mb-3">Last Screening Report</div>
+      <pre id="scr-report" class="text-xs text-slate-400 whitespace-pre-wrap" style="font-family:monospace;max-height:300px;overflow-y:auto;"></pre>
+    </div>
+    <div class="card p-4">
+      <div class="text-sm font-semibold text-slate-300 mb-3">Top Candidates</div>
+      <div id="scr-candidates" class="overflow-x-auto"></div>
+    </div>
+  </div>
+
+  <!-- ═══ POSITIONS ═══ -->
+  <div id="page-positions" class="hidden">
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Open Positions</div>
+        <div class="text-xl font-bold" id="pos-count">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">LLM Zone</div>
+        <div class="text-xl font-bold text-indigo-400" id="pos-llmzone">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Deterministic</div>
+        <div class="text-xl font-bold text-amber-400" id="pos-deterministic">—</div>
+      </div>
+    </div>
+    <div class="card p-4 mb-6">
+      <div class="text-sm font-semibold text-slate-300 mb-3">Open Positions</div>
+      <div id="pos-table" class="overflow-x-auto"></div>
+    </div>
+    <div class="card p-4">
+      <div class="text-sm font-semibold text-slate-300 mb-3">Closed History</div>
+      <div id="pos-history" class="overflow-x-auto"></div>
+    </div>
+  </div>
+
+  <!-- ═══ PnL ═══ -->
+  <div id="page-pnl" class="hidden">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Total PnL</div>
+        <div class="text-2xl font-bold" id="pnl-total">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Win Rate</div>
+        <div class="text-2xl font-bold" id="pnl-winrate">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Max Drawdown</div>
+        <div class="text-2xl font-bold text-red-400" id="pnl-drawdown">—</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-500 mb-1">Closed Positions</div>
+        <div class="text-2xl font-bold" id="pnl-closed">—</div>
+      </div>
+    </div>
+    <div class="card p-4">
+      <div class="text-sm font-semibold text-slate-300 mb-4">PnL History</div>
+      <canvas id="pnl-chart" height="120"></canvas>
+    </div>
+  </div>
+
+</div>
+
+<script>
+'use strict';
+
+// ── API URL resolution ──────────────────────────────────────────────────────────
+// Detect if we're served by Prospera (same-origin) or standalone (Vercel).
+// When same-origin → use relative URL so it works behind reverse proxy.
+// When standalone → use window.PROSPERA_API_URL or fallback to configured URL.
+const PROSPERA_API_BASE = (() => {
+  // If Prospera sets this global before serving the HTML, use it.
+  if (window.PROSPERA_API_URL) return window.PROSPERA_API_URL;
+  // If this page is served from the same host as the API (Prospera health server),
+  // use relative URL.
+  // Otherwise use the configured external base URL from meta tag.
+  const metaBase = document.querySelector('meta[name="prospera-api-base"]');
+  return metaBase ? metaBase.content : '';
+})();
+
+// Build API endpoint URL
+function apiUrl(path, key) {
+  if (!PROSPERA_API_BASE) return path + (key ? `?key=${encodeURIComponent(key)}` : '');
+  const base = PROSPERA_API_BASE.replace(/\/$/, '');
+  let url = `${base}${path}`;
+  if (key) url += `${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(key)}`;
+  return url;
+}
+
+// Read API key from meta tag (set by server when serving dashboard HTML)
+const API_KEY = document.querySelector('meta[name="prospera-api-key"]')?.content || null;
+
+// ── State ───────────────────────────────────────────────────────────────────────
+let data = {};
+let pnlChart = null;
+let lastFetch = 0;
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function refreshAll() {
+  const el = document.getElementById('load-error');
+  const hint = document.getElementById('config-hint');
+  const grid = document.getElementById('overview-grid');
+  el.classList.add('hidden');
+  hint.classList.add('hidden');
+
+  try {
+    const url = apiUrl('/api/dashboard', API_KEY);
+    const res = await fetch(url);
+    if (!res.ok) {
+      if (res.status === 401) showError('Unauthorized — cek dashboardApiKey di user-config.json', true);
+      else if (res.status === 404) showError('Endpoint /api/dashboard tidak ditemukan — update Prospera ke versi terbaru', true);
+      else showError(`HTTP ${res.status}`, false);
+      return;
+    }
+    data = await res.json();
+    lastFetch = Date.now();
+    renderAll();
+  } catch (e) {
+    const isSelfHosted = !PROSPERA_API_BASE;
+    if (isSelfHosted) {
+      showError(`Cannot connect ke Prospera health server: ${e.message}`, false);
+    } else {
+      showError(`Cannot reach ${PROSPERA_API_BASE}: ${e.message}`, true);
+    }
+  }
+}
+
+function showError(msg, showHint) {
+  const el = document.getElementById('load-error');
+  const hint = document.getElementById('config-hint');
+  const grid = document.getElementById('overview-grid');
+  document.getElementById('load-error-msg').textContent = msg;
+  el.classList.remove('hidden');
+  if (showHint) hint.classList.remove('hidden');
+  grid.style.opacity = '0.3';
+}
+
+function renderAll() {
+  const grid = document.getElementById('overview-grid');
+  grid.style.opacity = '1';
+  renderOverview();
+  renderScreening();
+  renderPositions();
+  renderPnL();
+  renderLogs();
+}
+
+// ── Overview ──────────────────────────────────────────────────────────────────
+function renderOverview() {
+  const h = data;
+  const dot = document.getElementById('agent-dot');
+  dot.style.background = h.status === 'ok' ? '#4ade80' : '#f87171';
+  document.getElementById('agent-status').textContent = h.status === 'ok' ? 'Running' : 'Stopped';
+  document.getElementById('circuit-state').textContent = h.circuitState?.isCircuitBroken
+    ? `Circuit OPEN (${h.circuitState.cooldownRemainingSec}s)`
+    : 'Circuit OK';
+
+  // Provider
+  const prov = document.getElementById('provider-badge');
+  prov.textContent = h.activeProvider === 'openrouter' ? 'OpenRouter' : 'MiniMax';
+  prov.className = 'badge ' + (h.activeProvider === 'openrouter' ? 'badge-yellow' : 'badge-blue');
+
+  // Uptime
+  if (h.uptime) {
+    const s = Math.round(h.uptime);
+    const d = Math.floor(s/86400), r = s%86400;
+    const hh = Math.floor(r/3600), m = Math.floor((r%3600)/60);
+    document.getElementById('uptime-label').textContent = `Uptime: ${d}d ${hh}h ${m}m`;
+  }
+
+  // Exposure
+  const expPct = h.exposurePct ?? 0;
+  document.getElementById('exposure-pct').textContent = expPct > 0 ? expPct + '%' : '0%';
+  document.getElementById('exposure-bar').style.width = Math.min(expPct, 100) + '%';
+  document.getElementById('exposure-sol').textContent = h.deployedSol ? `${h.deployedSol} SOL` : '';
+
+  // PnL today
+  const pnl = h.pnlToday ?? 0;
+  const pnlEl = document.getElementById('pnl-today');
+  pnlEl.textContent = pnl >= 0 ? `+${pnl.toFixed(2)}%` : `${pnl.toFixed(2)}%`;
+  pnlEl.className = 'text-xl font-bold ' + (pnl >= 0 ? 'pnl-pos' : 'pnl-neg');
+
+  // Positions
+  document.getElementById('total-positions').textContent = `${h.totalPositions ?? 0}/${h.maxPositions ?? '?'}`;
+  document.getElementById('llm-zone-count').textContent = `LLM zone: ${h.llmZone ?? 0}`;
+
+  // SOL balance
+  document.getElementById('sol-balance').textContent = h.solBalance != null ? h.solBalance.toFixed(3) + ' SOL' : '—';
+  document.getElementById('sol-price').textContent = h.solPrice != null ? `$${h.solPrice.toFixed(2)}/SOL` : '';
+
+  // Timers
+  document.getElementById('last-screening').textContent = h.lastScreening ? relTime(h.lastScreening) : '—';
+  document.getElementById('last-management').textContent = h.lastManagement ? relTime(h.lastManagement) : '—';
+  document.getElementById('last-briefing').textContent = h.lastBriefing ? relTime(h.lastBriefing) : '—';
+  document.getElementById('briefing-date').textContent = h.briefingDate || '';
+}
+
+// ── Screening ─────────────────────────────────────────────────────────────────
+function renderScreening() {
+  const scr = h => h.lastScreeningReport || {};
+  document.getElementById('scr-discovered').textContent = data.lastScreeningReport?.discovered ?? '—';
+  document.getElementById('scr-aftervol').textContent = data.lastScreeningReport?.afterVolume ?? '—';
+  document.getElementById('scr-pools').textContent = data.lastScreeningReport?.meteoraPools ?? '—';
+  document.getElementById('scr-fibpassed').textContent = data.lastScreeningReport?.fibPassed ?? '—';
+  document.getElementById('scr-report').textContent = data.lastScreeningReport?.content || 'No screening report yet.';
+
+  renderCandidates(data.lastScreeningReport?.candidates || []);
+}
+
+function renderCandidates(candidates) {
+  const el = document.getElementById('scr-candidates');
+  if (!candidates.length) { el.innerHTML = '<div class="text-sm text-slate-500">No candidates in last screening.</div>'; return; }
+  let html = `<table><thead><tr>
+    <th>Pair</th><th>Price</th><th>1h Vol</th><th>MCap</th><th>TVL</th><th>Fib</th><th>Confluence</th><th>Bins↓</th>
+  </tr></thead><tbody>`;
+  candidates.forEach(c => {
+    const vol = c.volume_1h != null ? `$${c.volume_1h.toFixed(0)}` : '—';
+    const mcap = c.market_cap != null ? `$${fmtNum(c.market_cap)}` : '—';
+    const tvl = c.tvl != null ? `$${fmtNum(c.tvl)}` : '—';
+    html += `<tr>
+      <td class="font-medium">${escHtml(c.name || c.symbol || '?')}</td>
+      <td>${c.price != null ? '$' + c.price.toPrecision(3) : '—'}</td>
+      <td>${vol}</td>
+      <td>${mcap}</td>
+      <td>${tvl}</td>
+      <td><span class="badge ${c.signal === 'ENTRY' ? 'badge-green' : 'badge-yellow'}">${c.signal || '?'}</span></td>
+      <td>${c.confluence != null ? c.confluence.toFixed(2) : '—'}</td>
+      <td>${c.binsBelow ?? '—'}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+// ── Positions ─────────────────────────────────────────────────────────────────
+function renderPositions() {
+  const positions = data.positions || [];
+  document.getElementById('pos-count').textContent = positions.length;
+  document.getElementById('pos-llmzone').textContent = data.llmZone ?? 0;
+  document.getElementById('pos-deterministic').textContent = data.deterministicCount ?? 0;
+
+  const posTable = document.getElementById('pos-table');
+  if (!positions.length) {
+    posTable.innerHTML = '<div class="text-sm text-slate-500">No open positions.</div>';
+  } else {
+    let html = `<table><thead><tr>
+      <th>Pair</th><th>PnL %</th><th>Range</th><th>Action</th><th>Fees</th><th>Value</th>
+    </tr></thead><tbody>`;
+    positions.forEach(p => {
+      const pnl = p.pnl_pct ?? 0;
+      const status = p.in_range
+        ? `<span class="badge badge-green">IN</span>`
+        : `<span class="badge badge-red">OOR ${p.minutes_out_of_range || 0}m</span>`;
+      html += `<tr>
+        <td class="font-medium">${escHtml(p.pair || '?')}</td>
+        <td class="${pnl >= 0 ? 'pnl-pos' : 'pnl-neg'} font-bold">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%</td>
+        <td>${status}</td>
+        <td>${p.action || '—'}</td>
+        <td>$${(p.unclaimed_fees_usd || 0).toFixed(2)}</td>
+        <td>$${(p.total_value_usd || 0).toFixed(2)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    posTable.innerHTML = html;
+  }
+
+  // Closed history
+  const hist = document.getElementById('pos-history');
+  const closed = data.closedHistory || [];
+  if (!closed.length) {
+    hist.innerHTML = '<div class="text-sm text-slate-500">No closed positions yet.</div>';
+  } else {
+    let html = `<table><thead><tr><th>Pair</th><th>PnL %</th><th>Closed At</th></tr></thead><tbody>`;
+    closed.forEach(c => {
+      const pnl = c.pnl_pct ?? 0;
+      html += `<tr>
+        <td class="font-medium">${escHtml(c.pair || '?')}</td>
+        <td class="${pnl >= 0 ? 'pnl-pos' : 'pnl-neg'} font-bold">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%</td>
+        <td class="text-slate-500">${c.closedAt ? new Date(c.closedAt).toLocaleString('id-ID') : '—'}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    hist.innerHTML = html;
+  }
+}
+
+// ── PnL ───────────────────────────────────────────────────────────────────────
+function renderPnL() {
+  const stats = data.pnlStats || {};
+  document.getElementById('pnl-total').textContent = stats.totalPnl != null ? `${stats.totalPnl >= 0 ? '+' : ''}${stats.totalPnl}%` : '—';
+  document.getElementById('pnl-total').className = `text-2xl font-bold ${(stats.totalPnl ?? 0) >= 0 ? 'pnl-pos' : 'pnl-neg'}`;
+  document.getElementById('pnl-winrate').textContent = stats.winRate != null ? `${stats.winRate}%` : '—';
+  document.getElementById('pnl-drawdown').textContent = stats.maxDrawdown != null ? `${stats.maxDrawdown}%` : '—';
+  document.getElementById('pnl-closed').textContent = stats.totalClosed ?? '—';
+
+  renderPnlChart(data.pnlHistory || []);
+}
+
+function renderPnlChart(history) {
+  const canvas = document.getElementById('pnl-chart');
+  if (!history.length) { canvas.style.display = 'none'; return; }
+  canvas.style.display = 'block';
+
+  // Group by day
+  const byDay = {};
+  history.forEach(h => {
+    const day = new Date(h.ts).toLocaleDateString('en-CA'); // YYYY-MM-DD
+    if (!byDay[day]) byDay[day] = { pnl: 0, count: 0 };
+    byDay[day].pnl += h.totalPnl;
+    byDay[day].count++;
+  });
+
+  const labels = Object.keys(byDay).slice(-30);
+  const values = labels.map(d => byDay[d].pnl);
+
+  if (pnlChart) pnlChart.destroy();
+  pnlChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Daily PnL %',
+        data: values,
+        backgroundColor: values.map(v => v >= 0 ? '#22c55e80' : '#ef444480'),
+        borderColor: values.map(v => v >= 0 ? '#22c55e' : '#ef4444'),
+        borderWidth: 1,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#64748b', maxTicksLimit: 10 }, grid: { color: '#1f2937' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: '#1f2937' } },
+      }
+    }
+  });
+}
+
+// ── Logs ────────────────────────────────────────────────────────────────────────
+function renderLogs() {
+  const el = document.getElementById('recent-logs');
+  const logs = data.logs || [];
+  if (!logs.length) { el.innerHTML = '<div class="text-sm text-slate-500">No logs yet.</div>'; return; }
+  el.innerHTML = logs.slice(-50).map(l => {
+    const cat = (l.cat || '').toLowerCase();
+    let cls = 'log-info';
+    if (cat === 'error' || cat === 'management_error') cls = 'log-error';
+    else if (cat === 'warn' || cat === 'management_warn') cls = 'log-warn';
+    else if (cat === 'management') cls = 'log-mgmt';
+    else if (cat === 'screening') cls = 'log-scr';
+    return `<div class="log-line ${cls}">
+      <span class="log-ts">${l.ts ? new Date(l.ts).toLocaleTimeString('en-CA') : ''}</span>
+      <span class="text-[10px] text-indigo-500 mr-2">[${escHtml(cat)}]</span>
+      ${escHtml(l.msg || '')}
+    </div>`;
+  }).join('');
+}
+
+// ── Tabs ────────────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  ['overview','screening','positions','pnl'].forEach(t => {
+    const pg = document.getElementById('page-' + t);
+    const btn = document.getElementById('tab-' + t);
+    if (t === tab) {
+      pg.classList.remove('hidden');
+      btn.className = 'tab-btn tab-active';
+    } else {
+      pg.classList.add('hidden');
+      btn.className = 'tab-btn tab-inactive';
+    }
+  });
+  document.getElementById('tab-content').classList.add('fade-in');
+  setTimeout(() => document.getElementById('tab-content').classList.remove('fade-in'), 10);
+}
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+function relTime(ts) {
+  if (!ts) return '—';
+  const d = Date.now() - new Date(ts).getTime();
+  if (d < 60000) return 'Just now';
+  if (d < 3600000) return Math.floor(d/60000) + 'm ago';
+  if (d < 86400000) return Math.floor(d/3600000) + 'h ago';
+  return new Date(ts).toLocaleDateString('id-ID');
+}
+
+function fmtNum(n) {
+  if (n >= 1e9) return (n/1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return n.toFixed(0);
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Start ───────────────────────────────────────────────────────────────────────
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+</body>
+</html>
