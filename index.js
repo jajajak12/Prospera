@@ -33,7 +33,7 @@ import { logWithId, logSkip, shortId, logCycleStart } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { getCircuitState, shouldSkipNextCycle, clearSkipNextCycle } from "./tools/circuit-breaker.js";
+import { getCircuitState, shouldSkipNextCycle } from "./tools/circuit-breaker.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled } from "./telegram.js";
@@ -291,8 +291,7 @@ function stripThink(text) {
 // ── Management Cycle ───────────────────────────────────────────────────────────
 export async function runManagementCycle({ silent = false } = {}) {
   if (shouldSkipNextCycle()) {
-    log("management", "Circuit breaker skip — next cycle skipped");
-    clearSkipNextCycle();
+    log("management", "Circuit breaker skip — cycle skipped (auto-clears when cooldown expires)");
     return null;
   }
 
@@ -463,8 +462,7 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
 // ── Screening Cycle ────────────────────────────────────────────────────────────
 export async function runScreeningCycle({ silent = false } = {}) {
   if (shouldSkipNextCycle()) {
-    log("screening", "Circuit breaker skip — next cycle skipped");
-    clearSkipNextCycle();
+    log("screening", "Circuit breaker skip — cycle skipped (auto-clears when cooldown expires)");
     return null;
   }
 

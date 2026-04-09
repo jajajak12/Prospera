@@ -49,21 +49,34 @@ function _saveBrokenSupportCache(map) {
 
 const _fibBrokenSupportCache = _loadBrokenSupportCache();
 
-function loadJsonSet(filename) {
-  try {
+// Cached sets with file mtime tracking — reload only when file changes
+function makeCachedSet(filename) {
+  let cache = { mtime: 0, set: new Set() };
+  return () => {
     const p = path.join(__dirname, "..", filename);
-    if (!fs.existsSync(p)) return new Set();
-    return new Set(JSON.parse(fs.readFileSync(p, "utf8")));
-  } catch { return new Set(); }
+    try {
+      if (!fs.existsSync(p)) return cache.set;
+      const { mtimeMs } = fs.statSync(p);
+      if (mtimeMs !== cache.mtime) {
+        cache.mtime = mtimeMs;
+        cache.set = new Set(JSON.parse(fs.readFileSync(p, "utf8")));
+        log("screening", `Loaded ${filename}: ${cache.set.size} entries cached`);
+      }
+    } catch { /* non-fatal */ }
+    return cache.set;
+  };
 }
 
+const _blacklistCache = makeCachedSet("token-blacklist.json");
+const _devBlockCache = makeCachedSet("dev-blocklist.json");
+
 function isBlacklisted(mint) {
-  return loadJsonSet("token-blacklist.json").has(mint);
+  return _blacklistCache().has(mint);
 }
 
 function isDevBlocked(devAddress) {
   if (!devAddress) return false;
-  return loadJsonSet("dev-blocklist.json").has(devAddress);
+  return _devBlockCache().has(devAddress);
 }
 
 /**

@@ -19,7 +19,7 @@ let isCircuitBroken  = false;
 let fallbackUntil    = 0;    // timestamp (ms) when fallback period ends
 let lastError        = null; // last error message for debugging
 let lastCorrId       = null; // last correlation ID for graceful shutdown logging
-let skipNextCycle    = false; // if true, next management/screening cycle is skipped on 3 failures
+let skipUntil        = 0;    // timestamp (ms) — if Date.now() < skipUntil, next cycle is skipped (auto-clears when expired)
 
 // Config constants
 const TRIP_THRESHOLD  = 3;          // consecutive failures to trip circuit
@@ -88,17 +88,13 @@ export function isFallbackActive() {
 }
 
 /**
- * Returns true if we should skip the next cycle (3 failures just tripped).
+ * Returns true if we should skip the next cycle (skipUntil has not yet expired).
+ * Auto-clears when skipUntil expires (no manual clear needed).
  */
 export function shouldSkipNextCycle() {
-  return skipNextCycle;
-}
-
-/**
- * Clear the skip flag once the skipped cycle runs.
- */
-export function clearSkipNextCycle() {
-  skipNextCycle = false;
+  if (Date.now() < skipUntil) return true;
+  skipUntil = 0; // expired — auto-clear
+  return false;
 }
 
 /**
@@ -113,7 +109,8 @@ export function getCircuitState() {
     lastCorrId,
     isFallbackActive: isFallbackActive(),
     cooldownRemainingSec: isCircuitBroken ? Math.max(0, Math.ceil((fallbackUntil - Date.now()) / 1000)) : 0,
-    skipNextCycle,
+    skipUntil,
+    skipActive: Date.now() < skipUntil,
   };
 }
 
@@ -152,10 +149,11 @@ export function recordFailure(error, corrId = null) {
   if (failureCount >= TRIP_THRESHOLD) {
     isCircuitBroken = true;
     fallbackUntil   = Date.now() + COOLDOWN_MS;
-    skipNextCycle   = true;
-    log("error", `Circuit TRIPPED — 3 consecutive failures → skip next cycle + alert for ${COOLDOWN_MS / 60_000} min`, {
+    skipUntil       = Date.now() + COOLDOWN_MS;
+    log("error", `Circuit TRIPPED — 3 consecutive failures → skip next cycle + alert for ${COOLDOWN_MS / 60_000} min until ${new Date(skipUntil).toISOString()}`, {
       lastError: lastError.slice(0, 200),
       fallbackUntil: new Date(fallbackUntil).toISOString(),
+      skipUntil: new Date(skipUntil).toISOString(),
       correlationId: corrId || lastCorrId,
     });
     failureCount = 0; // reset count once tripped
