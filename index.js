@@ -279,8 +279,8 @@ function startHealthServer(port = 3000) {
       return;
     }
 
-    // Serve app.js from public/dashboard/
-    if (req.url === "/dashboard/app.js") {
+    // Serve app.js from public/dashboard/ — both paths work
+    if (req.url === "/dashboard/app.js" || req.url === "/app.js") {
       try {
         const js = fs.readFileSync(path.join(__dirname, "public", "dashboard", "app.js"), "utf8");
         res.writeHead(200, { "Content-Type": "application/javascript" });
