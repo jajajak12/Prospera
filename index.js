@@ -773,7 +773,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           const fib500 = fib?.fibLevels?.fib500 != null ? `$${fib.fibLevels.fib500.toPrecision(4)}` : "n/a";
           const fib382 = fib?.fibLevels?.fib382 != null ? `$${fib.fibLevels.fib382.toPrecision(4)}` : "n/a";
           const screenPrice = fib?.currentPrice != null ? `$${fib.currentPrice.toPrecision(4)}` : "n/a";
-          return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${fib?.confluenceScore?.toFixed(2)} binsBelow=${fib?.binsBelow}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  active_bin: ${activeBin}`;
+          return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${fib?.confluenceScore?.toFixed(2)} binsBelow=${fib?.binsBelow} binsAbove=${fib?.binsAbove ?? 0}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  active_bin: ${activeBin}`;
         }).join("\n\n");
 
         const { content } = await agentLoop(`
@@ -785,7 +785,7 @@ ${candidateBlocks}
 
 RULES:
 1. Pick highest confluenceScore pool with good metrics.
-2. bins_above=0 ALWAYS. bins_below from fib_signal.
+2. bins_below and bins_above from fib_signal (chart.js output). In ATH zone bins_above is NEGATIVE — pass it AS-IS (do NOT zero it out).
 3. strategy=bid_ask. amount_y=${deployAmount} SOL.
     `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, corrId);
 
@@ -813,6 +813,7 @@ RULES:
         signal: c.fib_signal?.signal,
         confluence: c.fib_signal?.confluenceScore,
         binsBelow: c.fib_signal?.binsBelow,
+        binsAbove: c.fib_signal?.binsAbove ?? 0,
       })),
       content: screenReport,
     };

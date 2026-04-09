@@ -28,5 +28,11 @@
     "ath": 0.0024860617744192678,
     "pool": "4nen7bzJKTZ135hWqz1QLgWTpj8F9MPbbugiNzeJFqo4",
     "openedAt": "2026-04-09T11:45:34.363Z"
+  },
+  "4xkpmQH8nFSJoUyqQyMfPHHZz3iFmVgSQ6NF1SaVtkxR": {
+    "athBin": -492,
+    "ath": 0.0016804018666414248,
+    "pool": "8cMcEhNqJDjSTEfaXVECkryxyJRrjeMcJk2FssUdVL5y",
+    "openedAt": "2026-04-09T21:00:20.710Z"
   }
 }
