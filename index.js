@@ -88,7 +88,18 @@ let _closedPoolsHistory = [];    // [{pair, pnl_pct, closedAt}]
  */
 function SERVE_DASHBOARD_HTML() {
   try {
-    return fs.readFileSync(path.join(__dirname, "public", "dashboard", "index.html"), "utf8");
+    let html = fs.readFileSync(path.join(__dirname, "public", "dashboard", "index.html"), "utf8");
+    const baseUrl = (config.dashboard?.baseUrl || '').replace(/\/$/, '') || `http://localhost:${_healthPort || 3000}`;
+    const apiKey  = config.dashboard?.apiKey || '';
+    // Inject API base URL into meta tag so app.js can read it
+    html = html.replace(
+      '<meta name="prospera-api-base" content="" />',
+      `<meta name="prospera-api-base" content="${escHtml(baseUrl)}" />`
+    ).replace(
+      '<meta name="prospera-api-key" content="" />',
+      apiKey ? `<meta name="prospera-api-key" content="${escHtml(apiKey)}" />` : ''
+    );
+    return html;
   } catch {
     return "<html><body style='background:#0f1117;color:#e2e8f0;font-family:system-ui;padding:40px'><h1>Dashboard not found</h1><p>public/dashboard/index.html missing.</p></body></html>";
   }
@@ -1091,10 +1102,12 @@ probeLLMProviders().catch(e => log("startup", `LLM probe error: ${e.message}`)).
     startCronJobs();
     startHealthServer();
     log("startup", `Dashboard: http://localhost:${_healthPort}/dashboard | API: http://localhost:${_healthPort}/api/dashboard`);
+    log("startup", "Vercel deploy: cp public/dashboard/* ke repo terpisah + vercel.json. Docs: PROSPERA.md § Vercel Deploy.");
     startREPL(); // does not return — blocks on readline
   } else {
     // PM2 / non-TTY mode
     log("startup", `Non-TTY mode — Dashboard: http://localhost:${_healthPort}/dashboard | API: http://localhost:${_healthPort}/api/dashboard`);
+    log("startup", "Vercel deploy: cp public/dashboard/* ke repo terpisah + vercel.json. Docs: PROSPERA.md § Vercel Deploy.");
     startCronJobs();
     startHealthServer();
     _screeningLastTriggered = 0;
