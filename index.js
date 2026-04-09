@@ -706,11 +706,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
   _s("screening", `Starting cycle | deploy: ${deployAmount} SOL | wallet: ${preBalance.sol} SOL`);
 
   let screenReport = null;
+  let stats = { discovered: 0, afterVolume: 0, meteoraPools: 0, fibPassed: 0 };
+  let freshCandidates = [];
 
   try {
     const topResult = await getTopCandidates({ limit: 20, correlationId: corrId }).catch(() => null);
     const candidates = topResult?.candidates || [];
-    const stats = {
+    stats = {
       discovered: topResult?.total_screened ?? 0,
       afterVolume: topResult?.after_volume_count ?? 0,
       meteoraPools: topResult?.withPool_count ?? 0,
@@ -730,7 +732,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       // ── Freshness check: drop candidates where price crashed >50% since pool discovery ──
       // activeBin.price and pool.price are both SOL-denominated (Meteora pool_price)
-      const freshCandidates = [];
+      freshCandidates = [];
       const freshActiveBinResults = [];
       for (let i = 0; i < candidates.length; i++) {
         const c = candidates[i];
