@@ -136,7 +136,7 @@ function getClient() {
 export async function probeLLMProviders() {
   const results = { minimax: "skip", openrouter: "skip" };
 
-  // ── Probe MiniMax ──────────────────────────────────────────────────────────
+  // ── Probe MiniMax FIRST (primary) ─────────────────────────────────────────
   if (_minimaxKeyPresent) {
     const keyHint = _minimaxKey.slice(0, 12) + "...";
     log("startup", `LLM probe: MiniMax key=${keyHint} (len=${_minimaxKey.length}) — testing...`);
@@ -165,14 +165,19 @@ export async function probeLLMProviders() {
     }
   } else {
     results.minimax = "no_key";
-    log("startup", `LLM probe: MiniMax → SKIP (no key configured — set LLM_API_KEY in .env or minimaxApiKey in user-config.json)`);
+    log("startup", `LLM probe: MiniMax → SKIP (no key configured)`);
   }
 
-  // ── Probe OpenRouter ───────────────────────────────────────────────────────
-  if (_openrouterKeyPresent) {
+  // ── Only probe OpenRouter if MiniMax is unavailable ─────────────────────────
+  if (results.minimax === "ok") {
+    // MiniMax is primary and working — skip OpenRouter probe entirely to save cost
+    results.openrouter = "skipped";
+    log("startup", `LLM probe: OpenRouter → SKIP (MiniMax primary and available — no need to probe)`);
+  } else if (_openrouterKeyPresent) {
+    // MiniMax failed — probe OpenRouter as fallback
     const orKeyHint = _openrouterKey.slice(0, 12) + "...";
     const orModel = config.llm?.openrouterModel || "anthropic/claude-sonnet-4";
-    log("startup", `LLM probe: OpenRouter key=${orKeyHint} (len=${_openrouterKey.length}) — testing...`);
+    log("startup", `LLM probe: OpenRouter key=${orKeyHint} (len=${_openrouterKey.length}) — testing (fallback)...`);
     try {
       const resp = await openrouterClient.chat.completions.create({
         model: orModel,
@@ -194,7 +199,7 @@ export async function probeLLMProviders() {
     }
   } else {
     results.openrouter = "no_key";
-    log("startup", `LLM probe: OpenRouter → SKIP (OPENROUTER_API_KEY not set)`);
+    log("startup", `LLM probe: OpenRouter → SKIP (no key configured)`);
   }
 
   // ── Decide active provider ─────────────────────────────────────────────────
@@ -203,9 +208,7 @@ export async function probeLLMProviders() {
   } else if (results.openrouter === "ok") {
     _probeResult = "openrouter";
     // Trip circuit so runtime calls go to openrouter immediately — log only, no recordFailure (probe ≠ real call)
-    if (results.minimax !== "ok") {
-      log("startup", `LLM probe: MiniMax unavailable — circuit set to OpenRouter (no failure recorded)`);
-    }
+    log("startup", `LLM probe: MiniMax unavailable — circuit set to OpenRouter (no failure recorded)`);
   } else {
     _probeResult = "none";
     log("startup", `LLM probe: ⚠️ BOTH providers unavailable — agent will run but LLM calls will fail`);
