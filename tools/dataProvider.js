@@ -205,6 +205,18 @@ async function geckoPoolData(poolAddress, chain) {
   });
 }
 
+// GeckoTerminal token info — includes top_pools sorted by relevance (most active pool first)
+async function geckoTokenInfo(tokenMint, chain) {
+  return withRetry(async () => {
+    const network = chain === "solana" ? "solana" : chain;
+    const res = await fetch(`${GECKOTERMINAL_BASE}/networks/${network}/tokens/${tokenMint}`, { headers: GT_HEADERS, signal: sig(TIMEOUT_MS) });
+    if (res.status === 429) throw new Error("GeckoTerminal 429");
+    if (!res.ok) throw new Error(`GeckoTerminal token info error: ${res.status}`);
+    const data = res.json(); // sync .json() is fine here — already buffered
+    return data;
+  });
+}
+
 async function geckoOHLCV(poolAddress, chain, timeframe, limit) {
   return withRetry(async () => {
     const network = chain === "solana" ? "solana" : chain;
@@ -286,16 +298,32 @@ export class HybridDataProvider {
       try {
         const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
         log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles)`, { pool: poolAddress });
+
         // Pool-specific candle data may be thin for newly-created pools.
-        // If insufficient, try Birdeye token mint (aggregates ALL DEX pools — better coverage).
+        // If insufficient, fetch the most active pool for this token via GeckoTerminal
+        // token info (top_pools[0] — sorted by relevance/TVL) and retry OHLCV with that.
         if (candles.length < MIN_CANDLES && tokenMint) {
-          log.warn("screening", `getOHLCV: GeckoTerminal thin (${candles.length} < ${MIN_CANDLES}) → trying Birdeye token mint`, { pool: poolAddress });
+          log.warn("screening", `getOHLCV: GeckoTerminal thin (${candles.length} < ${MIN_CANDLES}) → fetching top pool for ${tokenMint}`);
+          try {
+            const tokenData = await geckoTokenInfo(tokenMint, chain);
+            const topPoolId = tokenData?.data?.relationships?.top_pools?.data?.[0]?.id;
+            const topPoolAddress = topPoolId?.split("_")[1] ?? null;
+            if (topPoolAddress && topPoolAddress !== poolAddress) {
+              log.warn("screening", `getOHLCV: top pool ${topPoolAddress} != current ${poolAddress} → retrying OHLCV with top pool`);
+              const topCandles = await geckoOHLCV(topPoolAddress, chain, timeframe, limit);
+              log.debug("screening", `getOHLCV: top pool OHLCV OK (${topCandles.length} candles)`, { pool: topPoolAddress });
+              return topCandles;
+            }
+          } catch (err) {
+            log.warn("screening", `getOHLCV: top pool fetch failed → Birdeye token mint fallback (${err.message})`);
+          }
+
+          // Fallback to Birdeye token mint if top pool retry also thin
           try {
             const tokenCandles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
             log.debug("screening", `getOHLCV: Birdeye token mint OK (${tokenCandles.length} candles)`, { token: tokenMint });
             return tokenCandles;
           } catch {
-            // Birdeye token mint also thin — return what we have (GeckoTerminal) and let chart.js decide
             log.warn("screening", `getOHLCV: Birdeye token mint also thin — using GeckoTerminal (${candles.length} candles)`, { pool: poolAddress });
           }
         }
