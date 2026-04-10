@@ -259,26 +259,26 @@ export class HybridDataProvider {
    * @param {string} [tokenMint=null]   — when provided, Birdeye token endpoint tried first
    */
   async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana", tokenMint = null) {
-    // Token-mint path: Birdeye token endpoint (USD) → GeckoTerminal (USD)
+    // Token-mint path: GeckoTerminal (primary, USD) → Birdeye (fallback, USD)
     // NOTE: Dexscreener is intentionally skipped here — it returns SOL-denominated prices
     // for TOKEN/SOL pairs (same problem as birdeyeOHLCVByPair), causing RSI/EMA/Fib
     // unit mismatch against USD currentPrice in Fib analysis.
+    // NOTE: GeckoTerminal is primary to preserve Birdeye API credits (30k/month limit).
     if (tokenMint) {
-      try {
-        const candles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
-        log.debug("screening", `getOHLCV: Birdeye token OK`, { token: tokenMint });
-        return candles;
-      } catch (err) {
-        log.warn("screening", `getOHLCV: Birdeye token failed → GeckoTerminal (${err.message})`, { token: tokenMint });
-      }
-
       if (poolAddress) {
-        const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
-        log.debug("screening", `getOHLCV: GeckoTerminal (Birdeye fallback)`, { pool: poolAddress });
-        return candles;
+        try {
+          const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
+          log.debug("screening", `getOHLCV: GeckoTerminal OK`, { pool: poolAddress });
+          return candles;
+        } catch (err) {
+          log.warn("screening", `getOHLCV: GeckoTerminal failed → Birdeye (${err.message})`, { pool: poolAddress });
+        }
       }
 
-      throw new Error("getOHLCV: tokenMint path requires poolAddress for GeckoTerminal fallback");
+      // Birdeye fallback (or primary if no poolAddress)
+      const candles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
+      log.debug("screening", `getOHLCV: Birdeye token OK`, { token: tokenMint });
+      return candles;
     }
 
     // Pool-address path (no tokenMint): Dexscreener → GeckoTerminal
