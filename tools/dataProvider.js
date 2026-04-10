@@ -279,11 +279,26 @@ export class HybridDataProvider {
    * @param {string} [tokenMint=null]
    */
   async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana", tokenMint = null) {
+    const MIN_CANDLES = 20;
+
     // ── GeckoTerminal primary (always available when poolAddress is known) ──────
     if (poolAddress) {
       try {
         const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
-        log.debug("screening", `getOHLCV: GeckoTerminal OK`, { pool: poolAddress });
+        log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles)`, { pool: poolAddress });
+        // Pool-specific candle data may be thin for newly-created pools.
+        // If insufficient, try Birdeye token mint (aggregates ALL DEX pools — better coverage).
+        if (candles.length < MIN_CANDLES && tokenMint) {
+          log.warn("screening", `getOHLCV: GeckoTerminal thin (${candles.length} < ${MIN_CANDLES}) → trying Birdeye token mint`, { pool: poolAddress });
+          try {
+            const tokenCandles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
+            log.debug("screening", `getOHLCV: Birdeye token mint OK (${tokenCandles.length} candles)`, { token: tokenMint });
+            return tokenCandles;
+          } catch {
+            // Birdeye token mint also thin — return what we have (GeckoTerminal) and let chart.js decide
+            log.warn("screening", `getOHLCV: Birdeye token mint also thin — using GeckoTerminal (${candles.length} candles)`, { pool: poolAddress });
+          }
+        }
         return candles;
       } catch (err) {
         log.warn("screening", `getOHLCV: GeckoTerminal failed → Birdeye (${err.message})`, { pool: poolAddress });
@@ -294,7 +309,7 @@ export class HybridDataProvider {
     if (tokenMint) {
       try {
         const candles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
-        log.debug("screening", `getOHLCV: Birdeye token OK`, { token: tokenMint });
+        log.debug("screening", `getOHLCV: Birdeye token OK (${candles.length} candles)`, { token: tokenMint });
         return candles;
       } catch (err) {
         log.warn("screening", `getOHLCV: Birdeye fallback failed → skip candidate (${err.message})`, { token: tokenMint });
