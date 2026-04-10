@@ -72,7 +72,7 @@ export const config = {
     stopLossPct:           u.stopLossPct           ?? -20,
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
     takeProfitMaxPct:      u.takeProfitMaxPct      ?? 25,
-    minFeePerTvl24h:           u.minFeePerTvl24h           ?? 7,
+    minFeePerTvl24h:           u.minFeePerTvl24h           ?? 1,
     lowYieldCheckIntervalMin:   u.lowYieldCheckIntervalMin   ?? 120, // 2h per position
     minAgeBeforeYieldCheck:     u.minAgeBeforeYieldCheck     ?? 60,
     minSolToOpen:          u.minSolToOpen          ?? 0.6,
