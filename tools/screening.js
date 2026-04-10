@@ -25,6 +25,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEXSCREENER_BASE  = "https://api.dexscreener.com";
+const GECKO_BASE        = "https://api.geckoterminal.com/api/v2";
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -596,6 +597,49 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       return true;
     });
     log.screening(`Step 2 — Volume filter: ${eligible.length}/${before} passed (min 1h $${s.minVolume})`);
+  }
+
+  // ── Step 2b: GeckoTerminal volume override ──────────────────────────────────
+  // Dexscreener /tokens/v1 batch returns stale/wrong volume for migrated tokens.
+  // GeckoTerminal vol24h is aggregated across all DEX pools — more accurate.
+  {
+    const mints = eligible.map(t => t.mint);
+    const geckoVolMap = new Map();
+    const chunkSize = 20;
+    for (let i = 0; i < mints.length; i += chunkSize) {
+      const chunk = mints.slice(i, i + chunkSize);
+      const results = await Promise.allSettled(
+        chunk.map(mint =>
+          fetch(`${GECKO_BASE}/networks/solana/tokens/${mint}`, { signal: AbortSignal.timeout(8_000) })
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null)
+        )
+      );
+      for (const result of results) {
+        if (result.status !== "fulfilled" || !result.value) continue;
+        try {
+          const attrs = result.value?.data?.attributes;
+          if (!attrs) continue;
+          const mint = result.value.data.id;
+          const vol24h = parseFloat(attrs.volume_usd?.h24 ?? 0) || 0;
+          const marketCap = parseFloat(attrs.market_cap_usd) || 0;
+          if (vol24h > 0) geckoVolMap.set(mint, { vol24h, marketCap });
+        } catch { /**/ }
+      }
+    }
+    let geckoOverrideCount = 0;
+    for (const t of eligible) {
+      const gecko = geckoVolMap.get(t.mint);
+      if (gecko && gecko.vol24h > (t._volH1 ?? 0)) {
+        const overrideBy = ((gecko.vol24h / Math.max(t._volH1 ?? 1, 1) - 1) * 100).toFixed(0);
+        t._volH1 = Math.round(gecko.vol24h);
+        if (gecko.marketCap > 0) t.mcap = gecko.marketCap;
+        geckoOverrideCount++;
+      }
+    }
+    if (geckoOverrideCount > 0) {
+      log.screening(`Step 2b — GeckoTerminal volume override: ${geckoOverrideCount} tokens updated (Dexscreener stale)`);
+    }
   }
 
   if (eligible.length === 0) {
