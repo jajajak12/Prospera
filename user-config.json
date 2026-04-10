@@ -14,7 +14,7 @@
   "minOrganic": 60,
   "minHolders": 500,
   "maxBundlePct": 30,
-  "maxBotHoldersPct": 50,
+  "maxBotHoldersPct": 70,
   "maxTop10Pct": 22,
   "minTokenFeesSol": 30,
   "athFilterPct": null,
