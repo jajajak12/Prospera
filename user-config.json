@@ -13,7 +13,7 @@
   "timeframe": "5m",
   "minOrganic": 60,
   "minHolders": 500,
-  "maxBundlePct": 30,
+  "maxBundlePct": 50,
   "maxBotHoldersPct": 70,
   "maxTop10Pct": 25,
   "minHolders": 800,
