@@ -776,7 +776,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
           const fib500 = fib?.fibLevels?.fib500 != null ? `$${fib?.fibLevels?.fib500.toPrecision(4)}` : "n/a";
           const fib382 = fib?.fibLevels?.fib382 != null ? `$${fib?.fibLevels?.fib382.toPrecision(4)}` : "n/a";
           const screenPrice = fib?.currentPrice != null ? `$${fib?.currentPrice.toPrecision(4)}` : "n/a";
-          return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${fib?.confluenceScore?.toFixed(2)} binsBelow=${fib?.binsBelow} binsAbove=${fib?.binsAbove ?? 0}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  active_bin: ${activeBin}`;
+          const conf = fib?.confluenceScore != null ? fib.confluenceScore.toFixed(2) : "n/a";
+          return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${conf} binsBelow=${fib?.binsBelow} binsAbove=${fib?.binsAbove ?? 0}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  active_bin: ${activeBin}`;
         }).join("\n\n");
 
         const { content } = await agentLoop(`
