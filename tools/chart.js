@@ -459,11 +459,15 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   }
 
   // ── Check 2: EMA Trend Filter ──────────────────────────────────────────────
-  if (ema20 != null && ema50 != null && ema20 <= ema50) {
-    return skip(
-      `EMA trend bearish — EMA20 (${fmt(ema20)}) <= EMA50 (${fmt(ema50)}). Fib pullback invalid in downtrend.`,
-      currentPrice, fib
-    );
+  // If EMA20/EMA50 not yet formed (insufficient candles for that period),
+  // skip EMA filter — rely on RSI only for momentum confirmation.
+  if (ema20 != null && ema50 != null) {
+    if (ema20 <= ema50) {
+      return skip(
+        `EMA trend bearish — EMA20 (${fmt(ema20)}) <= EMA50 (${fmt(ema50)}). Fib pullback invalid in downtrend.`,
+        currentPrice, fib
+      );
+    }
   }
 
   // ── Check 3: RSI Momentum ─────────────────────────────────────────────────
