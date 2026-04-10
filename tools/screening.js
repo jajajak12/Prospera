@@ -599,9 +599,10 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     log.screening(`Step 2 — Volume filter: ${eligible.length}/${before} passed (min 1h $${s.minVolume})`);
   }
 
-  // ── Step 2b: GeckoTerminal volume override ──────────────────────────────────
+  // ── Step 2b: GeckoTerminal volume override (BEFORE volume filter) ───────────
   // Dexscreener /tokens/v1 batch returns stale/wrong volume for migrated tokens.
   // GeckoTerminal vol24h is aggregated across all DEX pools — more accurate.
+  // MUST run before Step 2 volume filter so override affects the filter decision.
   {
     const mints = eligible.map(t => t.mint);
     const geckoVolMap = new Map();
@@ -631,7 +632,6 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     for (const t of eligible) {
       const gecko = geckoVolMap.get(t.mint);
       if (gecko && gecko.vol24h > (t._volH1 ?? 0)) {
-        const overrideBy = ((gecko.vol24h / Math.max(t._volH1 ?? 1, 1) - 1) * 100).toFixed(0);
         t._volH1 = Math.round(gecko.vol24h);
         if (gecko.marketCap > 0) t.mcap = gecko.marketCap;
         geckoOverrideCount++;
@@ -642,17 +642,36 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     }
   }
 
+  {
+    const missingVol = eligible.filter(t => t._volH1 == null).map(t => t.mint);
+    const volMap = missingVol.length > 0
+      ? await batchGetTokenVolumeH1(missingVol).catch(() => new Map())
+      : new Map();
+    const before = eligible.length;
+    eligible = eligible.filter(t => {
+      const volH1 = t._volH1 ?? volMap.get(t.mint);
+      if (volH1 == null) return true; // API miss → keep
+      if (volH1 < s.minVolume) {
+        log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
+        return false;
+      }
+      t._volH1 = Math.round(volH1);
+      return true;
+    });
+    log.screening(`Step 2 — Volume filter: ${eligible.length}/${before} passed (min 1h $${s.minVolume})`);
+  }
+
   if (eligible.length === 0) {
     return { candidates: [], total_screened: allTokens.length, after_volume_count: 0, withPool_count: 0, fib_analyzed: 0 };
   }
 
   const afterVolumeCount = eligible.length;
 
-  // ── Step 3: mcap pre-filter from Dexscreener discovery data (when available) ─
+  // ── Step 3: mcap filter + pre-cap cull ─────────────────────────────────────
   {
     const before = eligible.length;
     const afterMcapFilter = eligible.filter(t => {
-      if (t.mcap == null) return true; // no GT data → defer to Meteora query
+      if (t.mcap == null) return true;
       if (t.mcap < s.minMcap) {
         log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — mcap $${Math.round(t.mcap)} < min $${s.minMcap} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
@@ -663,7 +682,6 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       }
       return true;
     });
-    // Pre-cap: only top N go to expensive API calls (RugCheck, Jupiter, pool lookup)
     const preCapCount = afterMcapFilter.length;
     if (preCapCount > limit * 3) {
       const ranked = [...afterMcapFilter].sort((a, b) => (b._volH1 ?? 0) - (a._volH1 ?? 0));
@@ -678,7 +696,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   }
 
   if (eligible.length === 0) {
-    return { candidates: [], total_screened: allTokens.length, after_volume_count: afterVolumeCount ?? 0, withPool_count: 0, fib_analyzed: 0 };
+    return { candidates: [], total_screened: allTokens.length, after_volume_count: afterVolumeCount, withPool_count: 0, fib_analyzed: 0 };
   }
 
   // ── Step 4: RugCheck bundle / honeypot / dev filter ──────────────────────
