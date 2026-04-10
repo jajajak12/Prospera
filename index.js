@@ -669,6 +669,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
     _s("screening", "Screening lock released");
   };
 
+  // Outer try/finally guarantees _release() even if pre-screening logic throws unexpectedly
+  try {
+
   let prePositions = null, preBalance = null, deployAmount;
 
   // Separate try/catch per call — getMyPositions error = skip cycle, getWalletBalances error = continue
@@ -823,6 +826,13 @@ RULES:
     }
   }
   return screenReport;
+
+  } catch (outerErr) {
+    // Outer safety net — ensures _screeningBusy is always released even if pre-screening throws
+    _s("error", `Screening outer catch: ${outerErr.message} — releasing lock`);
+    _release();
+    return null;
+  }
 }
 
 // ── Cron Jobs ─────────────────────────────────────────────────────────────────

@@ -178,7 +178,8 @@ export function calculateCurrentExposure(positions, solPrice) {
     return parseFloat((totalUsd / solPrice).toFixed(4));
   }
   // Jika solPrice tidak tersedia, kembalikan 0 — jangan salah hitung exposure
-  log("config", `calculateCurrentExposure: solPrice unavailable, returning 0 (totalUsd=${totalUsd})`);
+  // log intentionally omitted — config.js has no logger import; console.warn used instead
+  console.warn(`[config] calculateCurrentExposure: solPrice unavailable, returning 0 (totalUsd=${totalUsd})`);
   return 0;
 }
 
