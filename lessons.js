@@ -73,10 +73,14 @@ function save(data) {
 export async function recordPerformance(perf) {
   const data = load();
 
-  const pnl_usd = (perf.final_value_usd + perf.fees_earned_usd) - perf.initial_value_usd;
-  const pnl_pct = perf.initial_value_usd > 0
-    ? (pnl_usd / perf.initial_value_usd) * 100
-    : 0;
+  // Use Meteora's pre-calculated pnl values if provided (avoids double-count bug in allTimeFees + allTimeWithdrawals)
+  // allTimeWithdrawals already includes fee tokens; adding allTimeFees again = double-count
+  const pnl_usd = perf.pnl_usd_override != null
+    ? perf.pnl_usd_override
+    : (perf.final_value_usd + perf.fees_earned_usd) - perf.initial_value_usd;
+  const pnl_pct = perf.pnl_pct_override != null
+    ? perf.pnl_pct_override
+    : (perf.initial_value_usd > 0 ? (pnl_usd / perf.initial_value_usd) * 100 : 0);
   const range_efficiency = perf.minutes_held > 0
     ? (perf.minutes_in_range / perf.minutes_held) * 100
     : 0;

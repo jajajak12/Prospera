@@ -721,9 +721,14 @@ export async function closePosition({ position_address, reason }) {
         has_hidden_divergence: tracked.has_hidden_divergence ?? null,
         smart_wallet_present:  tracked.smart_wallet_present  ?? null,
         amount_sol: tracked.amount_sol,
-        fees_earned_usd: feesUsd,
+        // allTimeWithdrawals already includes fee tokens — allTimeFees double-counts them
+        // Use pnlUsd from Meteora directly (already correct), don't add fees separately
+        fees_earned_usd: 0,
         final_value_usd: finalValueUsd,
         initial_value_usd: initialUsd,
+        // Trust Meteora's pnlUsd which is pre-calculated without double-count
+        pnl_usd_override: pnlUsd,
+        pnl_pct_override: pnlPct,
         minutes_in_range: minutesHeld - minutesOOR,
         minutes_held: minutesHeld,
         close_reason: reason || "agent decision",
