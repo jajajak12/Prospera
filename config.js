@@ -73,7 +73,7 @@ export const config = {
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
     takeProfitMaxPct:      u.takeProfitMaxPct      ?? 25,
     minFeePerTvl24h:           u.minFeePerTvl24h           ?? 7,
-    lowYieldCheckIntervalMin:   u.lowYieldCheckIntervalMin   ?? 60, // check low yield every N minutes
+    lowYieldCheckIntervalMin:   u.lowYieldCheckIntervalMin   ?? 120, // 2h per position
     minAgeBeforeYieldCheck:     u.minAgeBeforeYieldCheck     ?? 60,
     minSolToOpen:          u.minSolToOpen          ?? 0.6,
     minDeployAmountSol:    u.minDeployAmountSol    ?? (u.deployAmountSol ?? 0.5), // minimum validation — actual deploy is tiered: floor(sol/5)+1
