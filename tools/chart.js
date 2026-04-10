@@ -522,9 +522,12 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   let binsBelow, binsAbove;
 
   if (inAthZone) {
-    // Unclamped shift calculation — exact bins from currentPrice to fib236
+    // bin_step can be as small as 0.00001 (0.01 bp/bin) for TOKEN/SOL pairs.
+    // At that granularity, a 0.023% price distance gives shiftBins=1 — far too small.
+    // Cap effectiveBinStep at 1 bp/step so shift calculation stays meaningful.
+    const effectiveBinStep = Math.max(binStep, 1);
     const shiftBins = Math.max(0, Math.round(
-      Math.abs(Math.log(fib.fib236 / currentPrice) / Math.log(1 - binStep / 10000))
+      Math.abs(Math.log(fib.fib236 / currentPrice) / Math.log(1 - effectiveBinStep / 10000))
     ));
     // Depth of the range: from fib236 down to support (use existing clamped function)
     const depthBins = calcBinsToTarget(fib.fib236, supportPrice, binStep);

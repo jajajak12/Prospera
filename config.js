@@ -164,23 +164,16 @@ export function getPositionSizing(totalSol) {
 }
 
 /**
- * Hitung total SOL yang sedang di-deploy di semua posisi aktif.
- * total_value_usd adalah USD, bukan SOL. Bagi dengan SOL/USD untuk dapat SOL.
- * Fallback ke 0 jika data tidak tersedia.
- *
- * @param {Array} positions - array dari getMyPositions().positions
- * @param {number} [solPrice] - harga SOL saat ini (USD). Jika tidak diberikan, tidak bisa konversi USD→SOL.
+ * Total value USD dari semua posisi aktif.
+ * Setelah fix dlmm.js getMyPositions (valueNative → USD conversion),
+ * total_value_usd sudah dalam USD. Tidak perlu bagi solPrice lagi.
+ * @param {Array} positions - array position objects dari getMyPositions
+ * @returns {number} total value USD
  */
-export function calculateCurrentExposure(positions, solPrice) {
+export function calculateCurrentExposure(positions) {
   if (!Array.isArray(positions) || positions.length === 0) return 0;
   const totalUsd = positions.reduce((sum, p) => sum + (p.total_value_usd ?? 0), 0);
-  if (solPrice && solPrice > 0) {
-    return parseFloat((totalUsd / solPrice).toFixed(4));
-  }
-  // Jika solPrice tidak tersedia, kembalikan 0 — jangan salah hitung exposure
-  // log intentionally omitted — config.js has no logger import; console.warn used instead
-  console.warn(`[config] calculateCurrentExposure: solPrice unavailable, returning 0 (totalUsd=${totalUsd})`);
-  return 0;
+  return Math.round(totalUsd * 100) / 100;
 }
 
 /**

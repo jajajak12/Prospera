@@ -47,6 +47,19 @@
         "bin_step": 125,
         "volatility": 4.56
       }
+    },
+    {
+      "win": true,
+      "ts": "2026-04-10T05:05:09.860Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.65,
+        "fib_zone": "ATH_ZONE",
+        "bin_step": 80,
+        "volatility": null
+      }
     }
   ]
 }

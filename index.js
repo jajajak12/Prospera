@@ -117,7 +117,7 @@ async function getHealthDataForDashboard(cb) {
   const positions = await getMyPositions({ force: false }).catch(() => null);
   const balance   = await getWalletBalances().catch(() => null);
   const posList   = positions?.positions ?? [];
-  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList, balance?.sol_price) : 0;
+  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList) : 0;
   const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
   const pnlToday   = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
 
@@ -339,7 +339,7 @@ async function runMorningBriefing({ force = false } = {}) {
 
   // Balance + exposure
   const balance = await getWalletBalances().catch(() => null);
-  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList, balance?.sol_price) : 0;
+  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList) : 0;
   const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
 
   // Circuit state
@@ -410,7 +410,7 @@ async function runPnLPoll() {
   }
 
   const balance = await getWalletBalances().catch(() => null);
-  const deployedSol = calculateCurrentExposure(posList, balance?.sol_price);
+  const deployedSol = calculateCurrentExposure(posList);
   const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
   const totalPnl = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
   const totalValue = posList.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
@@ -595,7 +595,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     });
 
     // Compute total exposure percentage
-    const deployedSol = calculateCurrentExposure(positions, preBalance?.sol_price);
+    const deployedSol = calculateCurrentExposure(positions);
     const exposurePct = preBalance?.sol > 0 ? +((deployedSol / preBalance.sol) * 100).toFixed(1) : 0;
 
     mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}% | LLM zone: ${llmZone.length}\n\n${reportLines.join("\n")}`;
@@ -693,7 +693,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   deployAmount = getPositionSizing(preBalance.sol);
   if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
 
-  const currentExposure = calculateCurrentExposure(prePositions.positions, preBalance.sol_price);
+  const currentExposure = calculateCurrentExposure(prePositions.positions);
   const cap = checkExposureCap(currentExposure, preBalance.sol, deployAmount);
   if (cap.level === "hard_pause") {
     _exposureHardPausedUntil = cap.pauseUntil;

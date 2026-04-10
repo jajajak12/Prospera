@@ -394,6 +394,9 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
   }
 
   _positionsInflight = (async () => { try {
+    // ── Fetch solPrice for SOL→USD conversion (needed since ...Native fields = SOL) ─
+    const { sol_price: solPrice } = await import("./wallet.js").then(m => m.getWalletBalances().catch(() => ({ sol_price: 0 })));
+
     // ── Pure LPAgent — study.js already handles retry + backup key ─
     const lpAgentData = await fetchLPAgentOpenPositions(walletAddress);
 
@@ -403,6 +406,9 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
     }
 
     if (!silent) log("positions", `LPAgent: ${lpAgentData.length} open position(s)`);
+
+    // ── SOL price for native→USD conversion (from getWalletBalances or cached balance) ─
+    const _solPrice = solPrice > 0 ? solPrice : 0;
 
     const positions = lpAgentData.map(lp => {
       const positionAddress = lp.position || lp.tokenId;
@@ -416,6 +422,9 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
         ? Math.floor((Date.now() - new Date(tracked.deployed_at).getTime()) / 60000)
         : null;
 
+      // Convert SOL (Native) → USD for all value fields
+      // total_value_usd, unclaimed_fees_usd, collected_fees_usd, pnl_usd were mislabeled as _usd
+      // but actually contained SOL values from LPAgent's ...Native fields
       return {
         position:             positionAddress,
         pool:                 lp.pool,
@@ -425,14 +434,14 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
         upper_bin:            lp.range?.[1] ?? tracked?.bin_range?.max ?? null,
         active_bin:           lp.range?.[2] ?? tracked?.bin_range?.active ?? null,
         in_range:             !!lp.inRange,
-        unclaimed_fees_usd:   Math.round((lp.unCollectedFeeNative ?? 0) * 10000) / 10000,
-        total_value_usd:      Math.round((lp.valueNative ?? 0) * 10000) / 10000,
-        collected_fees_usd:   Math.round((lp.collectedFeeNative ?? 0) * 10000) / 10000,
-        pnl_usd:              Math.round((lp.pnl?.valueNative ?? 0) * 10000) / 10000,
-        // percentNative dari LPAgent sudah dalam format % (0.38 = 0.38%), bukan decimal.
-        // JANGAN kali 100 lagi — cukup round ke 2 desimal.
+        unclaimed_fees_usd:   _solPrice > 0 ? Math.round((lp.unCollectedFeeNative ?? 0) * _solPrice * 100) / 100 : 0,
+        total_value_usd:      _solPrice > 0 ? Math.round((lp.valueNative          ?? 0) * _solPrice * 100) / 100 : 0,
+        collected_fees_usd:   _solPrice > 0 ? Math.round((lp.collectedFeeNative   ?? 0) * _solPrice * 100) / 100 : 0,
+        pnl_usd:              _solPrice > 0 ? Math.round((lp.pnl?.valueNative     ?? 0) * _solPrice * 100) / 100 : 0,
+        // percentNative from LPAgent already in % format (0.38 = 0.38%) — no conversion needed
         pnl_pct:              Math.round((lp.pnl?.percentNative ?? 0) * 100) / 100,
-        fee_per_tvl_24h:      Math.round((lp.dprNative ?? 0) * 100) / 100,
+        // dprNative in SOL — convert to USD if solPrice available
+        fee_per_tvl_24h:      _solPrice > 0 ? Math.round((lp.dprNative ?? 0) * _solPrice * 100) / 100 : 0,
         age_minutes:          lp.ageHour != null ? Math.round(lp.ageHour * 60) : ageFromState,
         minutes_out_of_range: minutesOutOfRange(positionAddress),
         instruction:          tracked?.instruction ?? null,
