@@ -302,17 +302,32 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
 
   // ── Low yield ─────────────────────────────────────────────────
-  // Close if 24h fees/TVL < min threshold — no age check for ATH zone
+  // Close if 24h fees/TVL < min threshold — checked hourly only (60 min interval)
   // We wait for entry zone to be touched; if fees are low, pool may be dead
   if (
     fee_per_tvl_24h != null &&
     mgmtConfig.minFeePerTvl24h != null &&
     fee_per_tvl_24h < mgmtConfig.minFeePerTvl24h
   ) {
+    const now = Date.now();
+    const lastCheck = pos.last_low_yield_check_at ? new Date(pos.last_low_yield_check_at).getTime() : 0;
+    const minInterval = (mgmtConfig.lowYieldCheckIntervalMin ?? 60) * 60 * 1000;
+    if (now - lastCheck < minInterval) {
+      // Skip this cycle — not enough time since last check
+      return null;
+    }
+    pos.last_low_yield_check_at = new Date().toISOString();
+    changed = true;
     return {
       action: "LOW_YIELD",
       reason: `Low yield: fee/TVL ${fee_per_tvl_24h.toFixed(2)}% < min ${mgmtConfig.minFeePerTvl24h}%`,
     };
+  } else {
+    // Reset check timer if yield is ok
+    if (pos.last_low_yield_check_at) {
+      pos.last_low_yield_check_at = null;
+      changed = true;
+    }
   }
 
   return null;
