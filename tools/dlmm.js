@@ -583,7 +583,7 @@ export async function claimFees({ position_address }) {
 }
 
 // ─── Close Position ────────────────────────────────────────────
-export async function closePosition({ position_address, reason }) {
+export async function closePosition({ position_address, reason, skip_swap = false }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
     return { dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
@@ -644,9 +644,32 @@ export async function closePosition({ position_address, reason }) {
       txHashes.push(txHash);
     }
     log("close", `SUCCESS txs: ${txHashes.join(", ")}`, closeCtx);
-    // Wait for RPC to reflect withdrawn balances before returning — prevents
-    // agent from seeing zero balance when attempting post-close swap
+    // Wait for RPC to reflect withdrawn balances before returning
     await new Promise(r => setTimeout(r, 5000));
+
+    // ─── Step 3: Auto-swap base token to SOL ──────────────────────
+    if (!skip_swap && tracked?.pool) {
+      try {
+        const { getWalletBalances, swapToken: doSwap } = await import("./wallet.js");
+        const pool = await getPool(new PublicKey(tracked.pool));
+        const baseMint = pool.lbPair.tokenXMint.toString();
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          await new Promise(r => setTimeout(r, attempt * 3000));
+          const balances = await getWalletBalances({});
+          const token = balances.tokens?.find(t => t.mint === baseMint);
+          if (token && token.usd >= 0.10) {
+            log("close", `Step 3: Auto-swapping ${token.symbol || baseMint.slice(0, 8)} ($${token.usd.toFixed(2)}) to SOL`);
+            const swapR = await doSwap({ input_mint: baseMint, output_mint: "SOL", amount: token.balance }).catch(e => ({ error: e.message }));
+            if (swapR?.error) log("close_warn", `Step 3 swap failed: ${swapR.error}`);
+            else if (swapR?.amount_out) log("close", `Step 3 OK: received ${swapR.amount_out} SOL`);
+            break;
+          }
+        }
+      } catch (e) {
+        log("close_warn", `Step 3 auto-swap error: ${e.message}`);
+      }
+    }
+
     recordClose(position_address, reason || "agent decision");
 
     // Record performance for learning
