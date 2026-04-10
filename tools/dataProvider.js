@@ -28,18 +28,40 @@ const DEXSCREENER_BASE   = "https://api.dexscreener.com";
 const BIRDEYE_BASE       = "https://public-api.birdeye.so";
 const GECKOTERMINAL_BASE = "https://api.geckoterminal.com/api/v2";
 const TIMEOUT_MS = 3000;
-const RETRY_DELAY_MS = 2000;
+
+// Birdeye multi-key support — rotate on 401
+const _birdeyeKeys = () => [
+  process.env.BIRDEYE_API_KEY,
+  process.env.BIRDEYE_API_KEY_2,
+].filter(Boolean);
+let _beKeyIdx = 0;
+function birdeyeKey() {
+  const keys = _birdeyeKeys();
+  if (keys.length === 0) return null;
+  const key = keys[_beKeyIdx % keys.length];
+  return key;
+}
+function birdeyeKeyRotate() {
+  _beKeyIdx++;
+  const keys = _birdeyeKeys();
+  const tried = keys.length;
+  const current = _beKeyIdx % tried;
+  const key = keys[current];
+  return key;
+}
 
 function sig(ms) { return AbortSignal.timeout(ms); }
 
-async function withRetry(fn) {
-  try { return await fn(); }
-  catch (err) {
-    if (err.message?.includes("429")) {
-      await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
-      return fn(); // 1 retry
+// Exponential backoff for rate-limit retries (max 2 retries: 2s → 4s)
+async function withRetry(fn, retries = 2, baseDelayMs = 2000) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try { return await fn(); }
+    catch (err) {
+      if (!err.message?.includes("429")) throw err;
+      if (attempt === retries) throw err; // exhausted retries
+      const delay = baseDelayMs * Math.pow(2, attempt);
+      await new Promise(r => setTimeout(r, delay));
     }
-    throw err;
   }
 }
 
@@ -94,8 +116,8 @@ async function dexscreenerOHLCV(poolAddress, chain, timeframe, limit) {
 
 // ─── Birdeye ─────────────────────────────────────────────────────────────────
 
-function birdeyeHeaders(chain) {
-  const apiKey = process.env.BIRDEYE_API_KEY;
+function birdeyeHeaders(chain, apiKeyOverride = null) {
+  const apiKey = apiKeyOverride ?? birdeyeKey();
   if (!apiKey) throw new Error("BIRDEYE_API_KEY not configured");
   return { "X-API-KEY": apiKey, "x-chain": chain };
 }
@@ -126,7 +148,26 @@ async function birdeyePoolData(poolAddress, chain) {
 }
 
 // Birdeye OHLCV by token mint (address_type=token) — used by chart.js Fib logic
+// Tries all available Birdeye keys on 401 before failing
 async function birdeyeOHLCVByMint(tokenMint, type, limit, chain) {
+  const keys = _birdeyeKeys();
+  let lastErr;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    try {
+      return await _birdeyeOHLCVByMintOnce(tokenMint, type, limit, chain, key);
+    } catch (err) {
+      if (err.message?.includes("401")) {
+        lastErr = err;
+        continue; // try next key
+      }
+      throw err; // non-401 error — no point retrying other keys
+    }
+  }
+  throw lastErr ?? new Error("Birdeye OHLCV: no valid keys");
+}
+
+async function _birdeyeOHLCVByMintOnce(tokenMint, type, limit, chain, apiKey) {
   return withRetry(async () => {
     const typeMap = { "1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1D": "1D", "1d": "1D" };
     const bType = typeMap[type] ?? "5m";
@@ -135,10 +176,14 @@ async function birdeyeOHLCVByMint(tokenMint, type, limit, chain) {
     const timeFrom = now - intervalSec * limit;
     const res = await fetch(
       `${BIRDEYE_BASE}/defi/ohlcv?address=${tokenMint}&address_type=token&type=${bType}&time_from=${timeFrom}&time_to=${now}`,
-      { headers: birdeyeHeaders(chain), signal: sig(TIMEOUT_MS) }
+      { headers: birdeyeHeaders(chain, apiKey), signal: sig(TIMEOUT_MS) }
     );
     if (res.status === 429) throw new Error("Birdeye 429");
-    if (!res.ok) throw new Error(`Birdeye OHLCV error: ${res.status}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      if (res.status === 401) throw new Error("Birdeye 401");
+      throw new Error(`Birdeye OHLCV error: ${res.status}`);
+    }
     const data  = await res.json();
     const items = data?.data?.items;
     if (!items || items.length === 0) throw new Error("Birdeye: empty OHLCV");
