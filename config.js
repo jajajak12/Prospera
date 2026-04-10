@@ -36,8 +36,9 @@ export const config = {
     maxBundlePct:         u.maxBundlePct         ?? 30,
     maxBotHoldersPct:     u.maxBotHoldersPct     ?? 30,
     maxTop10Pct:          u.maxTop10Pct          ?? 22,
-    minTokenFeesSol:      u.minTokenFeesSol      ?? 25,
-    athFilterPct:         u.athFilterPct         ?? null,
+    minTokenFeesSol:           u.minTokenFeesSol           ?? 25,
+    minTokenFeesSolHighMcap:  u.minTokenFeesSolHighMcap  ?? 100,  // fee min for mcap > $1M
+    athFilterPct:            u.athFilterPct            ?? null,
     minMcap:       u.minMcap       ?? 200_000,
     maxMcap:       u.maxMcap       ?? 10_000_000,
     minBinStep:           u.minBinStep           ?? 80,
@@ -323,8 +324,9 @@ export function reloadScreeningThresholds() {
     if (fresh.maxBundlePct          !== undefined) s.maxBundlePct     = fresh.maxBundlePct;
     if (fresh.maxBotHoldersPct      !== undefined) s.maxBotHoldersPct = fresh.maxBotHoldersPct;
     if (fresh.maxTop10Pct           !== undefined) s.maxTop10Pct      = fresh.maxTop10Pct;
-    if (fresh.minTokenFeesSol       !== undefined) s.minTokenFeesSol  = fresh.minTokenFeesSol;
-    if (fresh.athFilterPct          !== undefined) s.athFilterPct     = fresh.athFilterPct;
+    if (fresh.minTokenFeesSol           !== undefined) s.minTokenFeesSol          = fresh.minTokenFeesSol;
+    if (fresh.minTokenFeesSolHighMcap   !== undefined) s.minTokenFeesSolHighMcap  = fresh.minTokenFeesSolHighMcap;
+    if (fresh.athFilterPct              !== undefined) s.athFilterPct             = fresh.athFilterPct;
     if (fresh.autoBacktest          !== undefined) s.autoBacktest      = fresh.autoBacktest;
     if (fresh.minBacktestWinRate    != null)       s.minBacktestWinRate = fresh.minBacktestWinRate;
     if (fresh.backtestAggregate     != null)       s.backtestAggregate  = fresh.backtestAggregate;

@@ -690,8 +690,10 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
         log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
-      if (jup.feesSOL != null && jup.feesSOL < (s.minTokenFeesSol ?? 25)) {
-        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL} SOL < min ${s.minTokenFeesSol ?? 25} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+      // Dynamic fee threshold: if mcap > $1M, require minimum 100 SOL fees (not just 25)
+      const feeThreshold = (t.mcap > 1_000_000) ? (s.minTokenFeesSolHighMcap ?? 100) : (s.minTokenFeesSol ?? 25);
+      if (jup.feesSOL != null && jup.feesSOL < feeThreshold) {
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL} SOL < min ${feeThreshold} (mcap=${(t.mcap/1e6).toFixed(1)}M) | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
       t._jup = jup;
