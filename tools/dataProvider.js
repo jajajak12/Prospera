@@ -1,13 +1,22 @@
 /**
- * dataProvider.js — Hybrid data provider for OHLCV + pool data
+ * Hybrid Data Provider for OHLCV + Pool Data
  *
  * Priority chain:
- *   Pool data:     Dexscreener (primary) → Birdeye → GeckoTerminal
- *   OHLCV (USD):   GeckoTerminal (primary) → Birdeye (fallback) → skip candidate
  *
- * Birdeye is kept as fallback only to conserve its API quota (30k tokens/3 days).
- * If both GeckoTerminal and Birdeye fail for a candidate, that candidate is SKIPPED
- * rather than processed with degraded TA quality.
+ * - Pool Discovery & Matching:
+ *   Meteora pool-discovery API (primary) + RocketScan fallback
+ *   Dexscreener hanya untuk initial discovery, volume, dan supplementary data
+ *
+ * - Pool Detail (TVL, binStep, fee, liquidity dll):
+ *   Meteora DLMM API (primary)
+ *   Birdeye hanya sebagai last fallback (jarang dipakai)
+ *
+ * - OHLCV (USD-consistent untuk Technical Analysis):
+ *   GeckoTerminal (primary) → Birdeye (fallback) → skip candidate
+ *
+ * Tujuan: Menghemat Birdeye API quota (30k/bulan).
+ * Birdeye sekarang hanya dipakai sebagai fallback untuk OHLCV.
+ * Jika GeckoTerminal dan Birdeye gagal → skip kandidat (jangan pakai TA yang degraded).
  *
  * Fallback triggers: timeout > 3s, HTTP 429, any thrown error.
  * Each source: 1 retry on 429 before falling back to next.
