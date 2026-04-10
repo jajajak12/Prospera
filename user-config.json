@@ -45,7 +45,7 @@
   "gasReserve": 0.1,
   "minTvl": 5000,
   "maxSteps": 12,
-  "partialHarvestPct": 10,
+  "partialHarvestPct": null,
   "trailingTakeProfit": false,
   "binsExtraLow": 0,
   "binsExtraMid": 0,
