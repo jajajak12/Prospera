@@ -291,7 +291,7 @@ export class HybridDataProvider {
    * @param {string} [tokenMint=null]
    */
   async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana", tokenMint = null) {
-    const MIN_CANDLES = 10;
+    const MIN_CANDLES = 6;
 
     // ── GeckoTerminal primary (always available when poolAddress is known) ──────
     if (poolAddress) {

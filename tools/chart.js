@@ -375,8 +375,8 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     return skip(`Chart data unavailable: ${e.message}`, currentPrice);
   }
 
-  if (!candles || candles.length < 10) {
-    return skip(`Insufficient candle data (${candles?.length ?? 0} candles, need 10+)`, currentPrice);
+  if (!candles || candles.length < 6) {
+    return skip(`Insufficient candle data (${candles?.length ?? 0} candles, need 6+)`, currentPrice);
   }
 
   // ── Fibonacci: drawn from all-time-low → ATH ───────────────────────────────
