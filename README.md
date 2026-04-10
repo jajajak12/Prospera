@@ -1,442 +1,454 @@
 # Prospera
 
-Autonomous DLMM liquidity provider agent untuk pool Meteora di Solana. Menggabungkan sinyal entry Fibonacci retracement, filter keamanan token berlapis, backtesting otomatis dengan auto-apply konservatif, crash recovery mandiri, dan manajemen posisi self-learning.
+Autonomous DLMM LP (Liquidity Provider) agent untuk pool Meteora di Solana. Agent ini secara otomatis menemukan token Solana yang trending, menyaringnya melalui Fibonacci retracement, filter keamanan berlapis, dan menerapkan posisi liquidity di Meteora DLMM.
+
+**Disclaimer: Gunakan dengan risiko sendiri. Bukan financial advice.**
 
 ---
 
-## Gambaran Umum
+## Table of Contents
 
-Prospera adalah LP agent yang berjalan sepenuhnya otomatis:
-- Menemukan token Solana trending dari semua DEX via Dexscreener (discovery), lalu mencari pool Meteora DLMM-nya
-- Memfilter berdasarkan sinyal entry Fibonacci (level Fib dari ATH menggunakan candle Birdeye — OHLCV 1m + daily)
-- Opsional: backtest setiap kandidat di data OHLCV historis sebelum deploy
-- Menjalankan filter keamanan token berlapis (organic score, RugCheck bundle/honeypot, usia token, blacklist)
-- Mengelola posisi terbuka dengan aturan bertingkat (stop loss, LLM decision zone, auto take-profit)
-- Belajar dari posisi yang ditutup untuk mengevolusi threshold screening dan mendeteksi smart money wallet
-- Mengirim briefing pagi harian via Telegram pukul 08:00
-- Self-healing saat crash — global error handler notifikasi Telegram dan biarkan PM2 auto-restart
-
----
-
-## Strategi Entry
-
-### Level Fibonacci
-
-Fibonacci digambar dari **all-time-low → ATH** menggunakan candle OHLCV harian (Birdeye). Untuk token dengan ≤ 3 candle harian, ekstrem intraday juga disertakan untuk menangkap high/low sesi berjalan. Karena data diambil fresh setiap siklus screening, ATH baru otomatis tercermin di run berikutnya.
-
-### Syarat Sinyal (semua harus lolos)
-
-| Sinyal | Kondisi | Tujuan |
-|--------|---------|--------|
-| **Harga** | Di atas Fib 0.500 (hard gate — di bawah = skip langsung) | Token masih dalam range valid |
-| **Tren EMA** | EMA20 > EMA50 | Uptrend terkonfirmasi |
-| **Momentum RSI** | RSI > `rsiMin` (default 45) + slope >= -2.0 | Momentum bullish (allows minor pullback) |
-| **Cek ATR** | ATR% < bin\_step% × 4 | Volatilitas kompatibel dengan pool |
-
-### Zone Entry
-
-- **ATH Zone (di atas 0.236)** — entry pre-posisi, harga masih dekat ATH
-- **Primary zone (0.236–0.382)** — entry ideal, pullback dangkal
-- **Secondary zone (0.382–0.500)** — entry valid, pullback lebih dalam
-- **Hard gate: Fib 0.500** — harga di bawah 0.500 = skip + reason "below Fib 0.500", tidak ada excepciones
-
-### Confluence Score
-
-Skor dasar dari posisi harga (bobot 0.6) + kekuatan volume POC (bobot 0.4).
-
-| Kondisi | Penyesuaian |
-|---------|------------|
-| Primary zone | +0.10 |
-| Hidden Bullish Divergence | +0.15 |
-| Slope RSI > 3 | +0.05 |
-| Smart wallet ada di pool | +0.10 |
-
-Kandidat di bawah `minConfluenceScore` difilter sebelum dilihat LLM.
-
-### Perhitungan bins_below
-
-- **ATH Zone**: dihitung dari Fib 0.236 → Fib 0.618 (range di bawah harga saat ini, siap untuk pullback)
-- **Fib Zone**: dihitung dari harga saat ini → swing low terdekat di bawah Fib 0.618 minus satu buffer ATR. Fallback ke Fib 0.786 jika tidak ada swing low.
-
-Dibatasi di [35, 90]. `bins_above` selalu 0.
+1. [ Prerequisites ](#prerequisites)
+2. [ Installation ](#installation)
+3. [ Environment Variables ](#environment-variables)
+4. [ Configuration ](#configuration)
+5. [ Running the Agent ](#running-the-agent)
+6. [ Telegram Setup ](#telegram-setup-optional)
+7. [ Health Check & Monitoring ](#health-check--monitoring)
+8. [ Project Structure ](#project-structure)
+9. [ Strategy & Entry Rules ](#strategy--entry-rules)
+10. [ Troubleshooting ](#troubleshooting)
 
 ---
 
-## Filter Keamanan Token
+## Prerequisites
 
-Diterapkan secara berurutan dari yang paling murah ke paling mahal — kegagalan di satu tahap langsung mengeliminasi pool:
+- **Node.js** >= 18.0.0
+- **npm** atau **yarn**
+- **PM2** (untuk production run)
+- **Solana wallet** dengan SOL untuk deployment + gas reserve
+- **OpenRouter API key** (untuk LLM decision-making)
+- **LPAgent API key** (untuk real-time PnL tracking)
+- **RPC endpoint** (rekomendasi: Helius)
 
-1. **Discovery Dexscreener** — token Solana trending dari semua DEX via boosts + profiles (~40 token)
-2. **Blacklist** — `token-blacklist.json` (mint address) dan `dev-blocklist.json` (alamat deployer)
-3. **Volume 1h Dexscreener** — volume 1 jam terakhir aktual dari SEMUA DEX (`minVolume`), lebih stabil dari snapshot 5m
-4. **Pre-filter mcap** — dari data Dexscreener (`minMcap` / `maxMcap`)
-5. **Filter RugCheck** — deteksi honeypot/rugged, cek bundle %, verifikasi alamat creator
-6. **Keamanan token Jupiter** — konsentrasi 10 holder teratas, % bot holder, kumulatif fee SOL (`minTokenFeesSol`)
-7. **Pool Discovery Meteora** — bulk fetch semua pool DLMM qualifying dalam satu request (`page_size=100`, `timeframe=24h`), match by `token_x.address` client-side; filter usia diterapkan client-side
-8. **RocketScan fallback** — token yang tidak ditemukan di Meteora API dicari via RocketScan (deteksi on-chain, lebih cepat); detail pool di-fetch dari `dlmm.datapi.meteora.ag`
-9. **Filter ATH proximity** (opsional) — skip token yang terlalu dekat ATH (`athFilterPct`)
-10. **Filter sinyal Fibonacci** — Fib zone, EMA, RSI, ATR, confluenceScore via Birdeye OHLCV (paling mahal — dijalankan terakhir)
-11. **Filter auto-backtest** (opsional) — cek win rate historis setiap kandidat sebelum deploy
+Opsional:
+- **Telegram bot token + chat ID** (untuk notifikasi & perintah)
+- **UptimeRobot** atau service serupa (untuk health monitoring)
 
 ---
 
-## Data Providers & Hybrid Architecture
+## Installation
 
-Prospera menggunakan **HybridDataProvider** dengan prioritas yang jelas — setiap provider dipilih berdasarkan use-case spesifik dan rate limit:
+### 1. Clone Repository
 
-| Priority | Provider | Digunakan Untuk |
-|----------|----------|----------------|
-| **Primary** | Dexscreener | Discovery trending, volume 1h, data pool (liquidity, price, mcap) |
-| **Birdeye** | Birdeye | Chart OHLCV, RSI, EMA, Fibonacci calculation **(HANYA untuk 10 kandidat terbaik)** |
-| **Last Resort** | GeckoTerminal | Backtest historis, fallback jika Dexscreener + Birdeye error |
-
-### Birdeye Rate Limit Protection
-
-Birdeye memiliki limit **60 RPM**. Karena setiap Fib analysis = 2 calls (1m candles + daily candles), maximum **10 kandidat** yang lolos ke tahap Birdeye. Cap ini diterapkan **sebelum** pool matching (Step 8) sehingga Meteora API calls juga berkurang. Total Birdeye usage: ~20 RPM dari 60 RPM limit (~33% capacity, safe margin).
-
-### Alur Screening (sesuai implementasi)
-
-```
-1. Discovery           → Dexscreener boosts + profiles (trending Solana tokens)
-2. Blacklist filter    → token-blocklist.json + dev-blocklist.json
-3. Volume 1h           → Dexscreener  (minVolume = 150000)
-4. MCap pre-filter     → Dexscreener  (minMcap = 200000, maxMcap = 10000000)
-5. RugCheck            → bundle%, honeypot detection
-6. Jupiter safety      → top10 holders, bot holders, fees SOL
-7. Pool matching       → Meteora DLMM qualifying pools
-8. [NEW] Pre-pool cap  → ranking by volume, ambil TOP 10 SAJA (maxTechnicalAnalysisCandidates)
-9. Fib/RSI/EMA         → Birdeye OHLCV (max 10 kandidat × 2 calls = 20 RPM)
-10. Smart money check  → wallets aktif di pool (non-blocking)
-11. Deploy             → kandidat dengan ENTRY signal → LLM deploy decision
+```bash
+git clone https://github.com/jajajak12/Prospera.git
+cd Prospera
 ```
 
-**Catatan:** `pool.price` (SOL-denominated) **tidak pernah** dipakai untuk Fib comparison — selalu pakai USD price dari Dexscreener atau Birdeye.
+### 2. Install Dependencies
 
----
-
-## Backtesting & Optimasi Parameter
-
-Prospera menyertakan engine backtesting bawaan (`backtest.js`) yang memutar ulang logika entry/exit Fibonacci pada data OHLCV historis dari GeckoTerminal.
-
-### Auto-Backtest Periodik (02:00 setiap hari)
-
-Setiap malam pukul 02:00, Prospera otomatis:
-1. Mengambil hingga 8 pool yang baru-baru ini ditutup (7 hari terakhir)
-2. Menjalankan backtest + parameter sweep di setiap pool
-3. Mengevaluasi konsensus antar pool
-4. Jika kriteria terpenuhi, mengirim **proposal Telegram** untuk konfirmasi
-
-**Parameter sweep** menguji 16 kombinasi dari:
-- Threshold minimum RSI: `40 / 44 / 48 / 52`
-- Minimum confluence score: `0.25 / 0.30 / 0.35 / 0.40`
-
-### Aturan Auto-Apply Konservatif
-
-Hasil sweep diusulkan (tidak langsung diterapkan) hanya jika **semua** kondisi ini terpenuhi:
-
-| Guard | Nilai |
-|-------|-------|
-| Peningkatan win rate vs baseline | ≥ +7% rata-rata antar pool |
-| Konsensus mayoritas | > 50% pool yang diuji setuju |
-| Max perubahan RSI per run | ±4 poin |
-| Max perubahan confluence per run | ±0.05 |
-
-Jika kondisi terpenuhi, Prospera mengirim preview Telegram:
-
-```
-🔬 Sweep proposal (WR +12%, 4 pools):
-  rsiMin: 48 → 44
-  minConfluenceScore: 0.30 → 0.35
-
-Ketik /apply_sweep untuk apply, /reject_sweep untuk batalkan.
-Config lama akan di-backup otomatis sebelum di-apply.
+```bash
+npm install
 ```
 
-Balas `/apply_sweep` untuk menerapkan (config lama di-backup sebagai `user-config.YYYYMMDD.backup.json`), atau `/reject_sweep` untuk membatalkan.
+> Note: `postinstall` script secara otomatis menjalankan `patch-anchor.js` untuk fix kompatibilitas `@meteora-ag/dlmm`.
 
-### On-Demand via Telegram
+### 3. Buat File Environment
 
-```
-/backtest        — 7 hari terakhir
-/backtest 30d    — 30 hari terakhir
-/backtest all    — sepanjang waktu
+```bash
+cp .env.example .env
 ```
 
-### Parameter Backtest
+### 4. Isi Environment Variables
 
-| Aggregate | History yang dicakup |
-|-----------|---------------------|
-| 1m | ~16.7 jam |
-| 5m | ~3.5 hari |
-| 15m | ~10 hari (default untuk periodik) |
-| 60m | ~42 hari |
+Buka file `.env` dan isi semua variable yang diperlukan. Lihat bagian [Environment Variables](#environment-variables) untuk detail.
 
-**Fallback graceful untuk token baru:** jika pool tidak memiliki cukup history pada aggregate yang diminta, otomatis fallback ke timeframe lebih kecil (15m → 5m → 1m). Jika masih < 3 trade simulasi, pool dilewati tanpa penalti.
+### 5. Verifikasi Instalasi (Dry Run)
 
-> **Catatan:** PnL bersifat perkiraan — fee diestimasi pada 40% utilisasi in-range, IL disederhanakan. Paling berguna untuk perankingan kualitas sinyal dan tuning parameter, bukan proyeksi profit akurat.
-
----
-
-## Manajemen Posisi
-
-### Aturan Penutupan (bertingkat)
-
-| Kondisi | Aksi |
-|---------|------|
-| PnL ≤ −20% | Tutup wajib (stop loss) |
-| PnL ≥ 25% | Tutup wajib (auto take-profit) |
-| PnL ≥ 10% (partial harvest) | Tutup wajib — kunci gain, biarkan screening redeploy jika masih valid |
-| OOR > 10 menit DAN active bin > 20 bin keluar | Tutup wajib (keluar Fib zone) |
-| Fee/TVL < 1% setelah 60 menit | Tutup wajib (yield rendah) |
-| PnL 5%–10% | LLM mengevaluasi: tahan atau tutup berdasarkan volume/momentum |
-| PnL apapun di atas stop loss | LLM bisa menutup jika ada sinyal deteriorasi konkret |
-
-`partialHarvestPct` bisa dikonfigurasi (default 10%). Set ke `null` untuk menonaktifkan.
-
-Setelah penutupan apapun, base token otomatis di-swap kembali ke SOL via Jupiter (melewati token bernilai < $0.10).
-
-### Ukuran Deploy & Exposure Cap
-
-**Tiered position sizing** otomatis menyesuaikan saldo wallet:
-
-| Saldo Wallet | Deploy per Posisi |
-|--------------|-------------------|
-| < 8 SOL | 1.5 SOL |
-| 8–15 SOL | 2.8 SOL |
-| 15–25 SOL | 4.2 SOL |
-| 25–40 SOL | 6.0 SOL |
-| > 40 SOL | min(18% wallet, 9 SOL) |
-
-**Total Exposure Cap (60%)** — Sebelum membuka posisi baru, agent mengecek apakah total SOL yang sedang di-deploy tidak melebihi 60% dari saldo yang bisa di-deploy (setelah 1 SOL gas reserve). Jika cap terlampaui, screening dilewati hingga ada posisi yang ditutup.
-
-Contoh pada 10 SOL wallet:
-- Deployable: 10 − 1 = 9 SOL
-- Max exposure: 9 × 60% = **5.4 SOL**
-- Per posisi: 2.8 SOL → 2 posisi = 5.6 SOL > 5.4 → posisi kedua ditolak
-
-Dibatasi oleh `maxDeployAmount` (default 50 SOL).
-
----
-
-## Crash Recovery & Health Check
-
-### Self-Healing
-
-Prospera menangkap error yang tidak tertangani di level proses:
-
-- **`uncaughtException`** — log error, kirim alert Telegram, graceful shutdown → PM2 auto-restart
-- **`unhandledRejection`** — log + peringatan Telegram, proses berlanjut
-
-PM2 dikonfigurasi via `ecosystem.config.cjs`:
-
-```js
-restart_delay: 5000   // tunggu 5 detik sebelum restart
-max_restarts: 10      // batasi burst restart
-min_uptime: 10s       // harus bertahan 10 detik untuk dihitung stabil
+```bash
+DRY_RUN=true node index.js
 ```
 
-### HTTP Server Health Check
-
-Berjalan di port `3000` (bisa diubah via env var `HEALTH_PORT`):
-
-| Endpoint | Mengembalikan |
-|----------|--------------|
-| `GET /health` | `status`, `uptime_seconds`, timestamp screening/management terakhir |
-| `GET /status` | + jumlah posisi terbuka, jumlah error, SOL wallet, flag busy |
-
-Gunakan [UptimeRobot](https://uptimerobot.com) (gratis) untuk ping `/health` setiap 5 menit dan mendapat notifikasi jika agent mati.
-
----
-
-## Darwinian Signal Weighting
-
-Sistem self-learning yang melacak sinyal entry mana yang secara historis memprediksi trade menguntungkan.
-
-**Sinyal yang dilacak:** `organic_score`, `fee_tvl_ratio`, `volume_h1`, `confluence_score`, `fib_zone`, `bin_step`, `volatility`
-
-**Cara kerja:**
-1. Setiap kali posisi ditutup dengan PnL ≥ +5% (menang) atau ≤ −5% (kalah), snapshot sinyal disimpan
-2. Setelah 6+ observasi: untuk setiap sinyal, bandingkan nilai rata-rata ternormalisasi pada menang vs kalah
-3. Sinyal dengan nilai lebih tinggi di kemenangan → bobot +0.05 (maks 2.5)
-4. Sinyal dengan nilai lebih rendah di kemenangan → bobot −0.05 (min 0.3)
-5. Bobot disuntikkan ke prompt SCREENER: `⬆ kuat`, `→ netral`, `⬇ lemah`
-
-LLM secara alami memprioritaskan sinyal ⬆ saat memilih di antara kandidat. Disimpan di `signal-weights.json`.
-
----
-
-## Smart Wallet Tracker
-
-Sistem self-learning yang secara otomatis mengidentifikasi dan melacak wallet LP berkualitas tinggi.
-
-**Cara kerja:**
-1. Setiap kali posisi ditutup, Prospera mengambil semua wallet lain yang punya posisi di pool yang sama
-2. Wallet di pool yang Prospera untung mendapat +1 menang; pool stop-loss mendapat +1 kalah
-3. Setelah ≥ 3 observasi dengan win rate ≥ 65% → wallet otomatis **dipromosikan** ke daftar smart
-4. Saat screening, jika smart wallet punya posisi aktif di pool kandidat → confluenceScore +0.10
-
-Wallet juga bisa ditambah/dihapus manual via perintah `add_smart_wallet` / `remove_smart_wallet`.
-
----
-
-## Strategy Library
-
-Empat preset strategi bawaan. Ganti via `apply_strategy`:
-
-| Preset | Deskripsi |
-|--------|-----------|
-| `fibonacci` | Default — risk/reward seimbang |
-| `conservative` | Filter lebih ketat, stop loss lebih rapat, trailing TP aktif |
-| `aggressive` | Bin step lebih tinggi, entry lebih longgar, take-profit lebih lebar |
-| `trending` | Fokus volume tinggi uptrend, exit cepat |
-
----
-
-## Arsitektur
-
-```
-index.js              Entry utama: REPL + cron + Telegram bot + health server
-agent.js              ReAct loop (LLM OpenRouter → tool call → ulang)
-backtest.js           Engine backtesting: replay OHLCV historis + simulasi PnL
-config.js             Runtime config + logika ukuran deploy bertingkat
-prompt.js             System prompt per role (SCREENER / MANAGER / GENERAL)
-state.js              Registry posisi, trailing TP, tracking PnL
-lessons.js            Engine learning: performa → evolusi threshold (binsByStep)
-pool-memory.js        History deploy per-pool + snapshot
-smart-wallets.js      Smart money tracker dengan auto-promosi self-learning
-strategy-library.js   Preset strategi (fibonacci — single default)
-signal-weights.js     Bobot sinyal adaptif Darwinian
-ecosystem.config.cjs  Config PM2: autorestart, restart_delay, max_restarts
-
-tools/
-  chart.js            Engine sinyal: OHLCV Birdeye + Fib (ATH-based) + EMA + RSI; broken support = price < fib500
-  screening.js        Discovery pool + filter berlapis + sinyal Fib + cek smart wallet
-  dataProvider.js     HybridDataProvider: Dexscreener (volume/pool) → Birdeye (chart/OHLCV/Fib) → GeckoTerminal (backtest)
-  definitions.js      Schema tool (format OpenAI function-calling)
-  executor.js         Dispatch tool + safety check + post-close hooks
-  dlmm.js             SDK Meteora DLMM (deploy, close, claim, posisi)
-  wallet.js           Saldo SOL/token + swap Jupiter
-  okx.js              RugCheck.xyz API (honeypot, bundle %, creator address)
-  token.js            Jupiter DataAPI (bot holder, top10, fee SOL)
-  study.js            Integrasi LPAgent API untuk PnL real-time
-```
-
----
-
-## Role Agent
-
-| Role | Tujuan | Tool Utama |
-|------|--------|-----------|
-| `SCREENER` | Temukan dan deploy posisi baru | `get_chart_candidates`, `deploy_position` |
-| `MANAGER` | Kelola posisi terbuka | `close_position`, `claim_fees`, `get_position_pnl` |
-| `GENERAL` | Perintah manual + manajemen strategi | Semua tool |
-
----
-
-## Perintah Telegram
-
-| Perintah | Deskripsi |
-|---------|-----------|
-| `/status` | Uptime agent, saldo wallet, posisi terbuka, waktu siklus terakhir |
-| `/positions` | Daftar posisi terbuka dengan PnL |
-| `/close <n>` | Tutup posisi berdasarkan nomor |
-| `/set <n> <catatan>` | Set instruksi untuk suatu posisi |
-| `/backtest [7d\|30d\|all]` | Jalankan backtest periodik pada pool yang baru ditutup |
-| `/apply_sweep` | Terapkan proposal sweep yang tertunda (setelah preview Telegram) |
-| `/reject_sweep` | Batalkan proposal sweep yang tertunda |
-
----
-
-## Jadwal
-
-| Siklus | Interval Default |
-|--------|-----------------|
-| Management | Setiap 3 menit |
-| Screening | Setiap 15 menit |
-| Morning Briefing | Setiap hari pukul 08:00 |
-| Backtest + Sweep Periodik | Setiap hari pukul 02:00 |
+Kalau output menunjukkan agent mulai scanning tanpa error, instalasi berhasil.
 
 ---
 
 ## Environment Variables
 
-| Variable | Wajib | Tujuan |
-|----------|-------|--------|
-| `WALLET_PRIVATE_KEY` | Ya | Private key wallet Solana (base58) |
-| `RPC_URL` | Ya | Endpoint RPC Solana utama (rekomendasi: Helius) |
-| `OPENROUTER_API_KEY` | Ya | API key LLM (OpenRouter) |
-| `LPAGENT_API_KEY` | Ya | API key utama LPAgent (PnL real-time) |
-| `LPAGENT_API_KEY_BACKUP` | Tidak | Backup key LPAgent — failover instan jika primary gagal |
-| `TELEGRAM_BOT_TOKEN` | Tidak | Notifikasi Telegram + antarmuka perintah |
-| `TELEGRAM_CHAT_ID` | Tidak | Target chat Telegram |
-| `HELIUS_API_KEY` | Tidak | Otomatis ditambahkan sebagai fallback RPC jika di-set |
-| `HEALTH_PORT` | Tidak | Port HTTP server health check (default: 3000) |
+### Required
 
-### RPC Failover
+| Variable | Deskripsi |
+|----------|-----------|
+| `WALLET_PRIVATE_KEY` | Private key wallet Solana (format base58). **JANGAN shared atau commit ke git.** |
+| `RPC_URL` | Endpoint RPC Solana. Rekomendasi: `https://mainnet.helius-rpc.com/?api-key=<HELIUS_API_KEY>` |
+| `OPENROUTER_API_KEY` | API key untuk LLM (OpenRouter). Digunakan untuk decision-making agent. |
+| `LPAGENT_API_KEY` | API key utama LPAgent untuk tracking PnL real-time. |
 
-| Prioritas | Provider | Catatan |
-|-----------|----------|---------|
-| Primary | Helius (`RPC_URL`) | Tercepat, latensi terendah untuk trading |
-| Fallback 1 | Alchemy | Sangat cepat, free tier dermawan |
-| Fallback 2 | Ankr | Stabil, terdesentralisasi |
-| Fallback 3 | PublicNode | Endpoint publik andal |
-| Last Resort | Solana Official | Selalu up, paling lambat saat congestion |
+### Optional
 
-Otomatis reset ke primary setelah 5 menit stabil.
+| Variable | Default | Deskripsi |
+|----------|---------|-----------|
+| `LPAGENT_API_KEY_BACKUP` | - | Backup LPAgent API key. Otomatis failover jika primary gagal. |
+| `TELEGRAM_BOT_TOKEN` | - | Token bot Telegram. Diperlukan untuk notifikasi + perintah. |
+| `TELEGRAM_CHAT_ID` | - | Chat ID Telegram target untuk pengiriman notifikasi. |
+| `HELIUS_API_KEY` | - | Kalau di-set, otomatis ditambahkan sebagai fallback RPC. |
+| `HEALTH_PORT` | `3000` | Port HTTP server untuk health check endpoint. |
+| `DRY_RUN` | `false` | `true` = simulasi tanpa transaksi nyata. |
+
+### Contoh `.env` yang Sudah Terisi
+
+```env
+WALLET_PRIVATE_KEY=your_base58_private_key_here
+RPC_URL=https://mainnet.helius-rpc.com/?api-key=your_helius_key
+OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+LPAGENT_API_KEY=sk-la-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+LPAGENT_API_KEY_BACKUP=sk-la-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+TELEGRAM_CHAT_ID=-1001234567890
+HELIUS_API_KEY=your_helius_key
+HEALTH_PORT=3000
+```
 
 ---
 
-## Quick Start
+## Configuration
 
-```bash
-cp .env.example .env
-# isi WALLET_PRIVATE_KEY, RPC_URL, OPENROUTER_API_KEY, LPAGENT_API_KEY
+Semua parameter strategi ada di `user-config.json`. **Jangan edit `config.js` langsung** — `user-config.json` meng-override nilai default di `config.js`.
 
-npm install
+### Parameter Utama
+
+| Key | Default | Deskripsi |
+|-----|---------|-----------|
+| `maxPositions` | `2` | Maksimal posisi terbuka bersamaan |
+| `minBinStep` / `maxBinStep` | `80` / `200` | Range bin step pool (dalam basis point) |
+| `minVolume` | `150000` | Min volume 1h dari semua DEX ($) |
+| `minFeeActiveTvlRatio` | `0.05` | Min rasio fee/active TVL (timeframe 24h) |
+| `minMcap` / `maxMcap` | `200000` / `10000000` | Range market cap token ($) |
+| `minTvl` / `maxTvl` | `5000` / `250000` | Range TVL pool ($) |
+| `minTokenAgeHours` / `maxTokenAgeHours` | `0.5` / `720` | Range usia token (jam) |
+| `minTokenFeesSol` | `30` | Min kumulatif fee dalam SOL |
+| `rsiMin` | `45` | RSI minimum untuk entry (slope >= -2.0 allowed) |
+| `minConfluenceScore` | `0` | Minimum confluence score gate |
+| `totalExposureCapPct` | `0.60` | Max % saldo deployable yang boleh di-deploy |
+| `exposureGasReserve` | `0.5` | SOL reserved untuk gas (dikecualikan dari exposure cap) |
+| `stopLossPct` | `-20` | Stop loss threshold (%) |
+| `takeProfitMaxPct` | `25` | Auto take-profit threshold (%) |
+| `takeProfitFeePct` | `5` | LLM decision zone mulai di sini (%) |
+| `partialHarvestPct` | `10` | Auto-close di PnL ini untuk kunci gain (set `null` untuk disable) |
+| `outOfRangeBinsToClose` | `20` | Jarak bin OOR untuk trigger penutupan |
+| `maxBundlePct` | `30` | Max bundle % (RugCheck filter) |
+| `maxTop10Pct` | `20` | Max konsentrasi 10 holder teratas (%) |
+| `maxBotHoldersPct` | `30` | Max % bot holder |
+| `fibConfluenceRequired` | `true` | Wajib Fib confluence untuk entry |
+| `candleLimit` | `100` | Jumlah candle OHLCV untuk analisis |
+| `maxTechnicalAnalysisCandidates` | `10` | Maksimal kandidat ke tahap Birdeye analysis |
+| `autoBacktest` | `false` | Aktifkan filter backtest sebelum deploy |
+| `minBacktestWinRate` | `0.50` | Min win rate untuk lolos pre-deploy backtest |
+| `backtestAggregate` | `15` | Timeframe candle untuk backtest (menit) |
+
+### Cara Edit Config
+
+Edit langsung `user-config.json`:
+
+```json
+{
+  "rsiMin": 48,
+  "minConfluenceScore": 0.35,
+  "maxPositions": 3
+}
 ```
 
-Dengan PM2 (rekomendasi):
+Config di atas override hanya `rsiMin`, `minConfluenceScore`, dan `maxPositions`. Nilai lain tetap dari default `config.js`.
+
+---
+
+## Running the Agent
+
+### Development (Dry Run)
+
+Tanpa transaksi nyata:
+
+```bash
+DRY_RUN=true node index.js
+```
+
+### Production (PM2)
+
 ```bash
 pm2 start ecosystem.config.cjs
 pm2 save
 pm2 logs prospera
 ```
 
-Dry run (tanpa transaksi nyata):
+### Verifikasi Status
+
 ```bash
-DRY_RUN=true node index.js
+pm2 status
+curl http://localhost:3000/status
+```
+
+### Restart Setelah Edit
+
+```bash
+pm2 restart prospera
 ```
 
 ---
 
-## Konfigurasi Utama (`user-config.json`)
+## Telegram Setup (Optional)
 
-| Key | Default | Deskripsi |
-|-----|---------|-----------|
-| `maxPositions` | 2 | Maksimal posisi terbuka bersamaan |
-| `minBinStep` / `maxBinStep` | 80 / 200 | Range bin step pool |
-| `minVolume` | 150000 | Min volume **1h** aktual dari semua DEX ($) — `volume.h1` Dexscreener |
-| `minFeeActiveTvlRatio` | 0.05 | Min rasio fee/active TVL pool Meteora (timeframe 24h) |
-| `minMcap` / `maxMcap` | 200k / 10M | Range market cap token |
-| `minTvl` / `maxTvl` | 5000 / 250000 | Range TVL pool ($) |
-| `minTokenAgeHours` / `maxTokenAgeHours` | 0.5 / 720 | Range usia token (min 30 menit) |
-| `minTokenFeesSol` | 30 | Min kumulatif fee dalam SOL (Jupiter — tips + priority + trading) |
-| `rsiMin` | 45 | RSI minimum untuk sinyal entry (auto-tuned oleh backtest sweep); slope >= -2.0 allowed |
-| `minConfluenceScore` | 0 | Gate minimum confluence score (auto-tuned oleh backtest sweep) |
-| `totalExposureCapPct` | 0.60 | Max % saldo deployable yang boleh di-deploy sekaligus (60%) |
-| `exposureGasReserve` | 0.5 | SOL yang direservasi untuk gas, dikecualikan dari exposure cap |
-| `stopLossPct` | −20 | Threshold stop loss |
-| `takeProfitMaxPct` | 25 | Threshold auto take-profit |
-| `takeProfitFeePct` | 5 | LLM decision zone dimulai di sini |
-| `partialHarvestPct` | 10 | Auto-close di PnL ini untuk kunci gain (set null untuk nonaktifkan) |
-| `outOfRangeBinsToClose` | 20 | Jarak bin OOR untuk trigger penutupan |
-| `maxBundlePct` | 30 | Maksimal bundle % (filter RugCheck) |
-| `maxTop10Pct` | 20 | Maksimal konsentrasi 10 holder teratas % |
-| `maxBotHoldersPct` | 30 | Maksimal % bot holder |
-| `rpcFallbacks` | [] | Daftar endpoint RPC fallback berurutan |
-| `fibConfluenceRequired` | true | Wajib Fib confluence untuk entry |
-| `candleLimit` | 100 | Candle OHLCV untuk analisis |
-| `maxTechnicalAnalysisCandidates` | 10 | Maksimal kandidat pre-pool cap (Birdeye 60 RPM ÷ 2 calls = 30 max, margin 10) |
-| `autoBacktest` | false | Aktifkan filter backtest sebelum deploy |
-| `minBacktestWinRate` | 0.50 | Win rate minimum untuk lolos filter pre-deploy |
-| `backtestAggregate` | 15 | Ukuran candle untuk backtest (menit) |
+### 1. Buat Bot Telegram
+
+1. Buka [BotFather](https://t.me/BotFather) di Telegram
+2. Kirim `/newbot`
+3. Ikuti instruksi, simpan bot token yang diberikan
+
+### 2. Dapat Chat ID
+
+1. Kirim pesan apapun ke bot yang baru dibuat
+2. Buka: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+3. Cari `"chat":{"id":` — itu adalah chat ID kamu
+4. Untuk group: tambahkan bot ke group, lalu gunakan chat ID (negatif untuk group)
+
+### 3. Isi .env
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+```
+
+### 4. Kirim Test Message
+
+```bash
+curl "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<CHAT_ID>&text=test"
+```
+
+### Perintah Telegram
+
+| Perintah | Deskripsi |
+|----------|-----------|
+| `/status` | Status agent, saldo wallet, posisi terbuka |
+| `/positions` | Daftar posisi terbuka dengan PnL |
+| `/close <n>` | Tutup posisi berdasarkan nomor |
+| `/backtest [7d\|30d\|all]` | Jalankan backtest |
+| `/apply_sweep` | Terapkan proposal sweep parameter |
+| `/reject_sweep` | Batalkan proposal sweep |
+| `/set <n> <catatan>` | Set instruksi untuk posisi |
+
+---
+
+## Health Check & Monitoring
+
+### Endpoint
+
+| Endpoint | Mengembalikan |
+|----------|---------------|
+| `GET /health` | `status`, `uptime_seconds`, timestamp screening/management terakhir |
+| `GET /status` | + jumlah posisi terbuka, error count, SOL wallet, busy flag |
+
+### Setup Uptime Monitoring (UptimeRobot)
+
+1. Daftar di [uptimerobot.com](https://uptimerobot.com) (gratis)
+2. Klik "Add New Monitor"
+3. Type: **HTTP(s)**
+4. Friendly Name: `Prospera Health`
+5. URL: `http://your-server:3000/health`
+6. Monitoring Interval: **5 minutes**
+7. Alert Settings: configure email/alert kamu
+
+Kalau agent down, UptimeRobot akan kirim notifikasi.
+
+### PM2 Health
+
+```bash
+pm2 status
+pm2 logs prospera --lines 50
+pm2 monit
+```
+
+---
+
+## Project Structure
+
+```
+Prospera/
+├── index.js                 # Entry utama: REPL + cron + Telegram bot + health server
+├── agent.js                # ReAct loop (LLM → tool call → ulang)
+├── backtest.js             # Engine backtesting: replay OHLCV historis + simulasi PnL
+├── config.js               # Runtime config + tiered deploy sizing
+├── prompt.js               # System prompt per role (SCREENER / MANAGER / GENERAL)
+├── state.js                # Registry posisi, trailing TP, PnL tracking
+├── lessons.js              # Learning engine: performa → evolusi threshold
+├── pool-memory.js          # History deploy per pool + snapshot
+├── smart-wallets.js        # Smart money tracker dengan auto-promosi
+├── signal-weights.js       # Bobot sinyal adaptif Darwinian
+├── strategy-library.js      # Preset strategi (fibonacci, conservative, aggressive, trending)
+├── telegram.js             # Bot Telegram + perintah
+├── logger.js               # Logging with rotation
+├── log-utils.js            # Helper logging
+├── rpc.js                  # RPC failover logic
+├── user-config.json        # User override config (HIGH PRIORITY)
+├── ecosystem.config.cjs    # PM2 config
+├── .env                    # Environment variables (JANGAN di-commit!)
+├── .env.example            # Template .env
+├── package.json
+└── tools/
+    ├── chart.js            # OHLCV + Fib + EMA + RSI (Birdeye)
+    ├── screening.js        # Discovery + filter + Fib signals
+    ├── dataProvider.js     # Hybrid: Dexscreener → Birdeye → GeckoTerminal
+    ├── definitions.js       # Tool schema (OpenAI function-calling format)
+    ├── executor.js         # Tool dispatcher + safety check + post-close hooks
+    ├── dlmm.js             # Meteora DLMM SDK wrapper
+    ├── wallet.js           # SOL/token balance + Jupiter swap
+    ├── okx.js              # RugCheck.xyz API
+    ├── token.js            # Jupiter DataAPI (holders, fees)
+    └── study.js            # LPAgent API integration
+```
+
+---
+
+## Strategy & Entry Rules
+
+### Fibonacci Entry Zone
+
+```
+ATH Zone (di atas 0.236)     → Entry pre-posisi, dekat ATH
+Primary Zone (0.236 – 0.382) → Entry ideal, pullback dangkal ✓ RECOMMENDED
+Secondary Zone (0.382 – 0.500)→ Entry valid, pullback lebih dalam
+Hard Gate: Fib 0.500         → HARUS di atas ini untuk entry
+```
+
+### Syarat Entry (semua harus lolos)
+
+| Sinyal | Kondisi |
+|--------|---------|
+| Harga | Di atas Fib 0.500 (hard gate) |
+| Tren EMA | EMA20 > EMA50 |
+| Momentum RSI | RSI >= `rsiMin` (default 45) + slope >= -2.0 |
+| Volatilitas | ATR% < bin_step% × 4 |
+
+### Position Sizing (Tiered)
+
+| Saldo Wallet | Deploy per Posisi |
+|-------------|-------------------|
+| < 8 SOL | 1.5 SOL |
+| 8–15 SOL | 2.8 SOL |
+| 15–25 SOL | 4.2 SOL |
+| 25–40 SOL | 6.0 SOL |
+| > 40 SOL | min(18% wallet, 9 SOL) |
+
+### Exposure Cap
+
+Total yang di-deploy tidak boleh melebihi **60%** dari saldo deployable (setelah dikurangi 1 SOL gas reserve).
+
+---
+
+## Troubleshooting
+
+### Error: `ERR_AMBIGUOUS_MODULE_SYNTAX`
+
+**Penyebab:** Node.js v22+ dengan ES modules dan dotenv v16+.
+
+**Fix:**
+```bash
+pm2 restart prospera --update-env
+```
+
+### Error: `401 Unauthorized` pada LLM API
+
+**Penyebab:** API key invalid atau expired.
+
+**Fix:** Cek dan update `OPENROUTER_API_KEY` di `.env`. Restart:
+```bash
+pm2 restart prospera --update-env
+```
+
+### Error: Birdeye Rate Limit
+
+**Penyebab:** Terlalu banyak kandidat yang dianalisis.
+
+**Fix:** Pastikan `maxTechnicalAnalysisCandidates` = 10 (default). Ini udah dioptimasi untuk 60 RPM limit Birdeye.
+
+### Agent Tidak Melakukan Screening
+
+**Cek:** Lock file `screening-lock.json` mungkin masih aktif.
+
+```bash
+cat screening-lock.json
+```
+
+Biasanya timeout 10 menit. Tunggu atau hapus file kalau stuck.
+
+###posisi Tidak Tertutup Otomatis
+
+**Cek:** Pastikan `totalExposureCapPct` belum tercapai (exposure cap 60%).
+
+### Dry Run vs Real Mode
+
+```bash
+# Dry run (simulasi, tidak ada transaksi nyata)
+DRY_RUN=true node index.js
+
+# Real mode
+node index.js
+# atau dengan PM2:
+pm2 start ecosystem.config.cjs
+```
+
+---
+
+## Data Flow
+
+```
+Dexscreener (Discovery trending token)
+    ↓
+Blacklist filter (token-blocklist.json + dev-blocklist.json)
+    ↓
+Volume 1h filter (minVolume = $150k)
+    ↓
+MCap pre-filter (minMcap/maxMcap)
+    ↓
+RugCheck (honeypot/bundle% detection)
+    ↓
+Jupiter safety (top10 holders, bot holders, fees)
+    ↓
+Meteora DLMM pool matching
+    ↓
+Pre-pool cap: TOP 10 by volume (Birdeye RPM protection)
+    ↓
+Fibonacci + RSI + EMA analysis (Birdeye OHLCV)
+    ↓
+Smart wallet check (confluence +0.10 kalau smart wallet ada di pool)
+    ↓
+LLM deploy decision (SCREENER role)
+    ↓
+Deploy position (Meteora DLMM)
+```
+
+---
+
+## Jadwal Siklus
+
+| Siklus | Interval |
+|--------|----------|
+| Management | Setiap 3 menit |
+| Screening | Setiap 15 menit |
+| Morning Briefing (Telegram) | Setiap hari 08:00 |
+| Backtest + Parameter Sweep | Setiap hari 02:00 |
+
+---
+
+## Safety Rules
+
+1. **Hard gate Fib 0.500** — Harga di bawah 0.500 = skip langsung, tidak ada exceptions
+2. **Exposure cap 60%** — Tidak pernah lebih dari 60% saldo deployable
+3. **Gas reserve 1 SOL** — Selalu ada buffer untuk transaksi
+4. **Max 2 posisi** — Tidak boleh lebih dari `maxPositions`
+5. **Stop loss -20%** — Mandatory close kalau PnL <= -20%
+
+---
+
+## License
+
+MIT. Use at your own risk.
