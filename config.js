@@ -28,7 +28,7 @@ export const config = {
 
   // ─── Pool Screening Thresholds ───────────
   screening: {
-    minTvl:        u.minTvl        ?? 5_000,
+    minTvl:        u.minTvl        ?? 3_000,
     maxTvl:        u.maxTvl        ?? 500_000,
     minVolume:     u.minVolume     ?? 150_000,
     minOrganic:    u.minOrganic    ?? 60,
