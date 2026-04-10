@@ -302,16 +302,20 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
 
   // ── Low yield ─────────────────────────────────────────────────
-  // Close if 24h fees/TVL < min threshold — checked hourly only (60 min interval)
+  // Only check when position has dropped below fib.236 (ATH zone entries are skipped)
   // We wait for entry zone to be touched; if fees are low, pool may be dead
   if (
     fee_per_tvl_24h != null &&
     mgmtConfig.minFeePerTvl24h != null &&
     fee_per_tvl_24h < mgmtConfig.minFeePerTvl24h
   ) {
+    // Skip if still in ATH zone — we give ATH zone positions time to recover
+    if (pos.fib_zone === 'ATH_ZONE') {
+      return null;
+    }
     const now = Date.now();
     const lastCheck = pos.last_low_yield_check_at ? new Date(pos.last_low_yield_check_at).getTime() : 0;
-    const minInterval = (mgmtConfig.lowYieldCheckIntervalMin ?? 60) * 60 * 1000;
+    const minInterval = (mgmtConfig.lowYieldCheckIntervalMin ?? 120) * 60 * 1000;
     if (now - lastCheck < minInterval) {
       // Skip this cycle — not enough time since last check
       return null;
