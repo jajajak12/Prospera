@@ -35,7 +35,7 @@ export const config = {
     minHolders:        u.minHolders        ?? 500,
     maxBundlePct:         u.maxBundlePct         ?? 30,
     maxBotHoldersPct:     u.maxBotHoldersPct     ?? 30,
-    maxTop10Pct:          u.maxTop10Pct          ?? 60,
+    maxTop10Pct:          u.maxTop10Pct          ?? 22,
     minTokenFeesSol:      u.minTokenFeesSol      ?? 25,
     athFilterPct:         u.athFilterPct         ?? null,
     minMcap:       u.minMcap       ?? 200_000,
@@ -79,7 +79,7 @@ export const config = {
     minDeployAmountSol:    u.minDeployAmountSol    ?? (u.deployAmountSol ?? 0.5), // minimum validation — actual deploy is tiered: floor(sol/5)+1
     gasReserve:            u.gasReserve            ?? 0.1,
     // Partial harvest — auto-close at this PnL% (between soft TP and max TP). null = disabled.
-    partialHarvestPct:     u.partialHarvestPct     ?? 10,
+    partialHarvestPct:     u.partialHarvestPct     ?? null,
     // Trailing take-profit (disabled by default for Fibonacci strategy)
     trailingTakeProfit:    u.trailingTakeProfit    ?? false,
     trailingTriggerPct:    u.trailingTriggerPct    ?? 5,
@@ -99,7 +99,7 @@ export const config = {
 
   // ─── Scheduling ─────────────────────────
   schedule: {
-    managementIntervalMin:  u.managementIntervalMin  ?? 3,
+    managementIntervalMin:  u.managementIntervalMin  ?? 5,
     screeningIntervalMin:   u.screeningIntervalMin   ?? 15,
     healthCheckIntervalMin: u.healthCheckIntervalMin ?? 60,
   },

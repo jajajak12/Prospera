@@ -2,7 +2,7 @@
  * chart.js — Hybrid OHLCV + Fibonacci + Indicators
  *
  * Signal engine for the Fibonacci LP agent.
- * Fetches candles via HybridDataProvider (Dexscreener → Birdeye → GeckoTerminal), calculates:
+ * Fetches candles via HybridDataProvider (GeckoTerminal primary → Birdeye fallback → skip candidate), calculates:
  *   - Fibonacci retracement levels (ATH/ATL from daily candles)
  *   - EMA trend filter (EMA20 > EMA50)
  *   - RSI momentum: RSI > 48 + rising slope

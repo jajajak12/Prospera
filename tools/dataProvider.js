@@ -1,8 +1,13 @@
 /**
  * dataProvider.js — Hybrid data provider for OHLCV + pool data
  *
- * Priority chain (all methods):
- *   Dexscreener → Birdeye → GeckoTerminal
+ * Priority chain:
+ *   Pool data:     Dexscreener (primary) → Birdeye → GeckoTerminal
+ *   OHLCV (USD):   GeckoTerminal (primary) → Birdeye (fallback) → skip candidate
+ *
+ * Birdeye is kept as fallback only to conserve its API quota (30k tokens/3 days).
+ * If both GeckoTerminal and Birdeye fail for a candidate, that candidate is SKIPPED
+ * rather than processed with degraded TA quality.
  *
  * Fallback triggers: timeout > 3s, HTTP 429, any thrown error.
  * Each source: 1 retry on 429 before falling back to next.
@@ -247,58 +252,48 @@ export class HybridDataProvider {
 
   /**
    * OHLCV candles. Oldest-first.
-   * Called only for pre-filtered candidates (max 10) — Birdeye rate limit safe.
    *
-   * If tokenMint provided: Birdeye token endpoint (best history) → Dexscreener → GeckoTerminal.
-   * If tokenMint omitted:  Dexscreener → Birdeye (pair) → GeckoTerminal.
+   * Priority:
+   *   tokenMint provided:   GeckoTerminal (primary, USD) → Birdeye (fallback, USD) → throw (skip candidate)
+   *   poolAddress only:      GeckoTerminal (primary, USD) → Birdeye (fallback, USD) → throw (skip candidate)
    *
-   * @param {string} poolAddress        — required for Dexscreener/GT fallback
+   * Dexscreener OHLCV is SKIPPED — it returns SOL-denominated prices for TOKEN/SOL pairs,
+   * causing unit mismatch against USD currentPrice in Fib analysis.
+   *
+   * Birdeye is last-resort fallback to conserve its 30k/month API quota.
+   * If both GeckoTerminal AND Birdeye fail for a candidate → throw (skip, do NOT use degraded TA).
+   *
+   * @param {string} poolAddress
    * @param {string} [timeframe="5m"]
    * @param {number} [limit=100]
    * @param {string} [chain="solana"]
-   * @param {string} [tokenMint=null]   — when provided, Birdeye token endpoint tried first
+   * @param {string} [tokenMint=null]
    */
   async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana", tokenMint = null) {
-    // Token-mint path: GeckoTerminal (primary, USD) → Birdeye (fallback, USD)
-    // NOTE: Dexscreener is intentionally skipped here — it returns SOL-denominated prices
-    // for TOKEN/SOL pairs (same problem as birdeyeOHLCVByPair), causing RSI/EMA/Fib
-    // unit mismatch against USD currentPrice in Fib analysis.
-    // NOTE: GeckoTerminal is primary to preserve Birdeye API credits (30k/month limit).
-    if (tokenMint) {
-      if (poolAddress) {
-        try {
-          const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
-          log.debug("screening", `getOHLCV: GeckoTerminal OK`, { pool: poolAddress });
-          return candles;
-        } catch (err) {
-          log.warn("screening", `getOHLCV: GeckoTerminal failed → Birdeye (${err.message})`, { pool: poolAddress });
-        }
-      }
-
-      // Birdeye fallback (or primary if no poolAddress)
-      const candles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
-      log.debug("screening", `getOHLCV: Birdeye token OK`, { token: tokenMint });
-      return candles;
-    }
-
-    // Pool-address path (no tokenMint): Dexscreener → GeckoTerminal
-    // NOTE: birdeyeOHLCVByPair is intentionally excluded — it returns SOL-denominated prices
-    // for TOKEN/SOL pairs, causing unit mismatch against USD currentPrice in Fib analysis.
+    // ── GeckoTerminal primary (always available when poolAddress is known) ──────
     if (poolAddress) {
       try {
-        const candles = await dexscreenerOHLCV(poolAddress, chain, timeframe, limit);
-        log.debug("screening", `getOHLCV: Dexscreener OK`, { pool: poolAddress });
+        const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
+        log.debug("screening", `getOHLCV: GeckoTerminal OK`, { pool: poolAddress });
         return candles;
       } catch (err) {
-        log.warn("screening", `getOHLCV: Dexscreener failed → GeckoTerminal (${err.message})`, { pool: poolAddress });
+        log.warn("screening", `getOHLCV: GeckoTerminal failed → Birdeye (${err.message})`, { pool: poolAddress });
       }
-
-      const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
-      log.warn("screening", `getOHLCV: GeckoTerminal (last resort)`, { pool: poolAddress });
-      return candles;
     }
 
-    throw new Error("getOHLCV: requires poolAddress or tokenMint");
+    // ── Birdeye fallback (only when tokenMint available) ───────────────────────
+    if (tokenMint) {
+      try {
+        const candles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
+        log.debug("screening", `getOHLCV: Birdeye token OK`, { token: tokenMint });
+        return candles;
+      } catch (err) {
+        log.warn("screening", `getOHLCV: Birdeye fallback failed → skip candidate (${err.message})`, { token: tokenMint });
+      }
+    }
+
+    // ── Both failed → skip candidate (degraded TA is worse than missed opportunity) ──
+    throw new Error(`getOHLCV: both GeckoTerminal and Birdeye failed for ${poolAddress ?? tokenMint} — candidate skipped`);
   }
 }
 

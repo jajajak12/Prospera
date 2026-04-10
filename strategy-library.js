@@ -2,8 +2,11 @@
  * strategy-library.js — Single default strategy preset
  *
  * Only one preset: "fibonacci" (Fibonacci + Volume Profile entry).
- * This replaces the previous multi-preset approach.
  * Apply via apply_strategy tool.
+ *
+ * NOTE: These hardcoded values are the STRATEGY DEFAULT.
+ * user-config.json values override these when set.
+ * config.js is the runtime config that merges both sources.
  */
 
 export const STRATEGIES = {
@@ -16,14 +19,14 @@ export const STRATEGIES = {
     description: "Fibonacci + Volume Profile entry — single default strategy",
     screening: {
       minBinStep:            80,
-      maxBinStep:            125,
+      maxBinStep:            200,
       minVolume:             150_000,   // 1h volume minimum (USD)
       minMcap:               200_000,   // market cap minimum (USD)
       maxMcap:               10_000_000,
       minFeeActiveTvlRatio:  0.05,
       candleLimit:           100,
       fibConfluenceRequired: true,
-      maxTechnicalAnalysisCandidates: 10,   // Birdeye 60 RPM ÷ 2 calls = 30 max. We use 10 (~33% capacity).
+      maxTechnicalAnalysisCandidates: 10,   // Conservative cap. GeckoTerminal primary → Birdeye fallback.
     },
     management: {
       stopLossPct:            -20,
