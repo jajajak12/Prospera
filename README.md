@@ -8,19 +8,21 @@ Autonomous DLMM LP agent untuk pool Meteora di Solana. Entry sinyal berbasis Fib
 
 ## Current Status — Phase 3 (April 2026)
 
-**Running: Upgraded Minimal Version** (1,106 lines) — Stability Test
+**Currently running: Upgraded Minimal Version for Phase 3 Stability Test (7-day live monitoring)**
 
-Stabil dan aktif di PM2. semua fix terbaru sudah di-merge, morning briefing upgraded, daily backtest + sweep suggestion aktif.
+Active monitoring goals:
+- Performa: PnL per posisi, total PnL, win rate
+- Drawdown: max exposure cap 60%, OOR time
+- Circuit breaker: LLM fallback behavior, cooldown cycles
+- Screening accuracy: false positive/negative rate
+- Data freshness: Dexscreener stale rate, GeckoTerminal fallback rate
+- Cron health: management cycle, screening cycle, morning briefing, daily backtest
 
-Focus:
-- Konfigurasi parameter RSI/Fibonacci sudah di-tune via auto-backtest
-- GeckoTerminal jadi primary OHLCV provider (Birdeye 401 permanent)
-- Dexscreener hanya untuk discovery + volume (bukan technical analysis)
-- partialHarvestPct dimatikan (null)
-- Monitoring aktif: exposure cap 60%, max 2 posisi concurrent
-- Morning Briefing: richer format (wallet balance, deploy/pos, exposure cap, perf, fees, strategy params)
-- Daily Backtest: 00:00 UTC (7d+14d), sweep suggestion via Telegram
-- Telegram commands: /positions, /status, /briefing, /backtest, /close, /screening, /management, /help
+Feature status:
+- Morning Briefing: upgraded (wallet balance, deploy/pos, exposure cap, perf, fees, strategy params)
+- Daily Backtest: active 00:00 UTC (7d+14d), sweep suggestion via Telegram
+- Telegram: /positions, /status, /briefing, /backtest, /close, /screening, /management, /help
+- REPL, /sweep, enhanced /status: deferred until post-7-day test
 
 ### Nota Teknis
 
