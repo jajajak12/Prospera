@@ -679,14 +679,13 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     }
   }
 
-  // Layer 4: mcap-growth fallback — if all three API sources are stale/unavailable
-  // and mcap grew >= 1.5x since discovery, estimate 1h vol = mcap × 1.0 (conservative).
-  // Peepa case: mcap $328K→$985K (3x) with GeckoTerminal 404 → est_1h_vol ~$985K > 50%×$150K=$75K.
-  // Previous 3.0x ratio was too strict — pumps rarely 3x from discovery mcap before first screen.
+  // Layer 4: mcap-growth fallback — only if ALL prior layers returned stale/unavailable
+  // AND mcap grew >= 3.0x since discovery AND estimated vol >= full minVolume ($150K).
+  // Conservative gate: pumps that haven't grown 3x from discovery are not yet eligible.
   {
-    const MCAP_VOL_RATIO     = 1.0;   // $vol/h per $1 mcap (conservative)
-    const MIN_GROWTH_RATIO   = 1.5;   // min mcap multiplier (relaxed from 3.0)
-    const VOL_OVERRIDE_RATIO = 0.50;  // allow 50% of minVolume (relaxed from 80%)
+    const MCAP_VOL_RATIO     = 1.2;   // $vol/h per $1 mcap
+    const MIN_GROWTH_RATIO   = 3.0;   // min mcap multiplier (strict)
+    const VOL_OVERRIDE_RATIO = 1.0;   // require full minVolume ($150K), not discounted
     let mcapOverrideCount = 0;
     for (const t of eligible) {
       if ((t._volH1 ?? 0) >= s.minVolume) continue;
