@@ -334,7 +334,7 @@ async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
     const data = await res.json();
     const positions = data.positions || data.data || [];
     if (positions.length === 0) {
-      log("pnl_api", `No positions returned for pool ${poolAddress.slice(0, 8)} — keys: ${Object.keys(data).join(", ")}`);
+      log("pnl_api", `No positions returned for pool ${poolAddress.slice(0, 8)} — keys: ${(data && typeof data === "object" ? Object.keys(data).join(", ") : "null/undefined")}`);
     }
     const byAddress = {};
     for (const p of positions) {
