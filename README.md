@@ -8,12 +8,25 @@ Autonomous DLMM LP agent untuk pool Meteora di Solana. Entry sinyal berbasis Fib
 
 ## Current Status — Phase 3 (April 2026)
 
-Sedang dalam tahap **Stability Test & Fine-tuning**.focus:
+**Running: Upgraded Minimal Version** (1,106 lines) — Stability Test
+
+Stabil dan aktif di PM2. semua fix terbaru sudah di-merge, morning briefing upgraded, daily backtest + sweep suggestion aktif.
+
+Focus:
 - Konfigurasi parameter RSI/Fibonacci sudah di-tune via auto-backtest
 - GeckoTerminal jadi primary OHLCV provider (Birdeye 401 permanent)
 - Dexscreener hanya untuk discovery + volume (bukan technical analysis)
 - partialHarvestPct dimatikan (null)
 - Monitoring aktif: exposure cap 60%, max 2 posisi concurrent
+- Morning Briefing: richer format (wallet balance, deploy/pos, exposure cap, perf, fees, strategy params)
+- Daily Backtest: 00:00 UTC (7d+14d), sweep suggestion via Telegram
+- Telegram commands: /positions, /status, /briefing, /backtest, /close, /screening, /management, /help
+
+### Nota Teknis
+
+- **Full version** (index.js.bak, 1,507 lines) — di-archive sementara. Contains REPL mode + extra Telegram commands (/sweep, enhanced /status). Tidak di-running karena ada unresolved module issue (ERR_AMBIGUOUS_MODULE_SYNTAX) di Node.js v22.
+- **Minimal version** — pilihan stabil untuk production. Semua fitur critical sudah ada. Fitur dari full bisa di-port satu-per-satu setelah 7 hari test stabil.
+- Riwayat fix penting: state.json positions guard (b923c42), Layer 4 mcap thresholds (ee49e80), volume priority chain (136599a), Object.entries/keys null guards (c0a403d, b754914)
 
 ---
 
