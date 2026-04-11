@@ -8,7 +8,22 @@
  */
 
 import crypto from "crypto";
+import fs from "fs";
 import { log } from "./logger.js";
+
+/**
+ * Write JSON data to file safely — catches and logs errors without throwing.
+ * @param {string} filePath  — absolute or relative path
+ * @param {any}    data      — will be JSON.stringify'd
+ * @param {string} [tag]    — log tag suffix, e.g. "lessons" → logs "lessons_error"
+ */
+export function safeSave(filePath, data, tag = "file") {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+  } catch (e) {
+    log(`${tag}_error`, `safeSave failed (${filePath}): ${e.message}`);
+  }
+}
 
 export function shortId() {
   return crypto.randomBytes(4).toString("hex");

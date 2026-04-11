@@ -14,6 +14,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { safeSave } from "./log-utils.js";
 import { sendMessage } from "./telegram.js";
 import { updateSignalWeights } from "./signal-weights.js";
 
@@ -36,11 +37,7 @@ function load() {
 }
 
 function save(data) {
-  try {
-    fs.writeFileSync(LESSONS_FILE, JSON.stringify(data, null, 2));
-  } catch (e) {
-    log("lessons_error", `save failed: ${e.message}`);
-  }
+  safeSave(LESSONS_FILE, data, "lessons");
 }
 
 // ─── Record Position Performance ──────────────────────────────

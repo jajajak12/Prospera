@@ -17,6 +17,7 @@
 
 import fs from "fs";
 import { log } from "./logger.js";
+import { safeSave } from "./log-utils.js";
 
 const WEIGHTS_FILE  = "./signal-weights.json";
 const WEIGHT_MIN    = 0.3;
@@ -61,11 +62,7 @@ function load() {
 }
 
 function save(data) {
-  try {
-    fs.writeFileSync(WEIGHTS_FILE, JSON.stringify(data, null, 2));
-  } catch (e) {
-    log("weights_error", `save failed: ${e.message}`);
-  }
+  safeSave(WEIGHTS_FILE, data, "weights");
 }
 
 function normalise(signal, value) {

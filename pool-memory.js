@@ -7,6 +7,7 @@
 
 import fs from "fs";
 import { log } from "./logger.js";
+import { safeSave } from "./log-utils.js";
 
 const POOL_MEMORY_FILE = "./pool-memory.json";
 
@@ -20,11 +21,7 @@ function load() {
 }
 
 function save(data) {
-  try {
-    fs.writeFileSync(POOL_MEMORY_FILE, JSON.stringify(data, null, 2));
-  } catch (e) {
-    log("pool_memory_error", `save failed: ${e.message}`);
-  }
+  safeSave(POOL_MEMORY_FILE, data, "pool_memory");
 }
 
 // ─── Write ─────────────────────────────────────────────────────

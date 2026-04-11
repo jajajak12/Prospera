@@ -147,24 +147,25 @@ async function birdeyePoolData(poolAddress, chain) {
   });
 }
 
-// Birdeye OHLCV by token mint (address_type=token) — used by chart.js Fib logic
-// Tries all available Birdeye keys on 401 before failing
-async function birdeyeOHLCVByMint(tokenMint, type, limit, chain) {
+// ─── Birdeye key rotation helper (DRY) ───────────────────────────────────────
+async function withBirdeyeKeyRotation(fn) {
   const keys = _birdeyeKeys();
   let lastErr;
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
     try {
-      return await _birdeyeOHLCVByMintOnce(tokenMint, type, limit, chain, key);
+      return await fn(key);
     } catch (err) {
-      if (err.message?.includes("401")) {
-        lastErr = err;
-        continue; // try next key
-      }
-      throw err; // non-401 error — no point retrying other keys
+      if (err.message?.includes("401")) { lastErr = err; continue; }
+      throw err; // non-401 — no point trying other keys
     }
   }
-  throw lastErr ?? new Error("Birdeye OHLCV: no valid keys");
+  throw lastErr ?? new Error("Birdeye: no valid keys");
+}
+
+// Birdeye OHLCV by token mint (address_type=token) — used by chart.js Fib logic
+async function birdeyeOHLCVByMint(tokenMint, type, limit, chain) {
+  return withBirdeyeKeyRotation(key => _birdeyeOHLCVByMintOnce(tokenMint, type, limit, chain, key));
 }
 
 async function _birdeyeOHLCVByMintOnce(tokenMint, type, limit, chain, apiKey) {
@@ -196,21 +197,7 @@ async function _birdeyeOHLCVByMintOnce(tokenMint, type, limit, chain, apiKey) {
 
 // Birdeye OHLCV by pool/pair address
 async function birdeyeOHLCVByPair(poolAddress, timeframe, limit, chain) {
-  const keys = _birdeyeKeys();
-  let lastErr;
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    try {
-      return await _birdeyeOHLCVByPairOnce(poolAddress, timeframe, limit, chain, key);
-    } catch (err) {
-      if (err.message?.includes("401")) {
-        lastErr = err;
-        continue; // try next key
-      }
-      throw err; // non-401 error — no point retrying other keys
-    }
-  }
-  throw lastErr ?? new Error("Birdeye OHLCV: no valid keys");
+  return withBirdeyeKeyRotation(key => _birdeyeOHLCVByPairOnce(poolAddress, timeframe, limit, chain, key));
 }
 
 async function _birdeyeOHLCVByPairOnce(poolAddress, timeframe, limit, chain, apiKey) {
