@@ -41,18 +41,17 @@ function birdeyeKey() {
   const key = keys[_beKeyIdx % keys.length];
   return key;
 }
+
+// Advance key index and return the next key (called after a 401)
 function birdeyeKeyRotate() {
   _beKeyIdx++;
   const keys = _birdeyeKeys();
-  const tried = keys.length;
-  const current = _beKeyIdx % tried;
-  const key = keys[current];
-  return key;
+  return keys[_beKeyIdx % keys.length] ?? null;
 }
 
 function sig(ms) { return AbortSignal.timeout(ms); }
 
-// Exponential backoff for rate-limit retries (max 2 retries: 2s → 4s)
+// Exponential backoff for rate-limit retries (retries=2 → 3 total attempts: 0s → 2s → 4s)
 async function withRetry(fn, retries = 2, baseDelayMs = 2000) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try { return await fn(); }
@@ -266,7 +265,7 @@ async function geckoTokenInfo(tokenMint, chain) {
     const res = await fetch(`${GECKOTERMINAL_BASE}/networks/${network}/tokens/${tokenMint}`, { headers: GT_HEADERS, signal: sig(TIMEOUT_MS) });
     if (res.status === 429) throw new Error("GeckoTerminal 429");
     if (!res.ok) throw new Error(`GeckoTerminal token info error: ${res.status}`);
-    const data = res.json(); // sync .json() is fine here — already buffered
+    const data = await res.json();
     return data;
   });
 }

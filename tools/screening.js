@@ -38,6 +38,7 @@ function _loadBrokenSupportCache() {
   try {
     if (!fs.existsSync(BROKEN_SUPPORT_CACHE_PATH)) return new Map();
     const raw = JSON.parse(fs.readFileSync(BROKEN_SUPPORT_CACHE_PATH, "utf8"));
+    if (!raw || typeof raw !== "object") return new Map();
     return new Map(Object.entries(raw));
   } catch { return new Map(); }
 }
