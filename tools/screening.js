@@ -256,7 +256,9 @@ async function discoverTokensFromDexscreener() {
     )
   );
 
-  // Per mint: keep only SOL-paired tokens, pick best pair (highest h1 volume)
+  // Per mint: sum volume.h1 across ALL SOL-paired pools (Dexscreener returns per-pool data).
+  // Solana tokens can have multiple pools (Pump.fun, Raydium, Orca, Meteora) — taking only
+  // the highest-volume pool underestimates true cross-DEX activity. Use sum instead.
   const byMint = new Map();
   for (const result of chunkResults) {
     if (result.status !== "fulfilled" || !result.value) continue;
@@ -270,7 +272,7 @@ async function discoverTokensFromDexscreener() {
       if (!mint) continue;
       const volH1 = parseFloat(pair.volume?.h1 ?? 0) || 0;
       const existing = byMint.get(mint);
-      if (!existing || volH1 > (existing._volH1 ?? 0)) {
+      if (!existing) {
         byMint.set(mint, {
           mint,
           symbol: pair.baseToken?.symbol ?? "UNKNOWN",
@@ -279,6 +281,9 @@ async function discoverTokensFromDexscreener() {
           _volH1: Math.round(volH1),
           _mcapAtDiscovery: parseFloat(pair.fdv ?? pair.marketCap) || null,
         });
+      } else {
+        // Aggregate: sum h1 volume across ALL pools for this mint
+        existing._volH1 += volH1;
       }
     }
   }
