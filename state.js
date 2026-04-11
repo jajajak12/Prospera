@@ -22,7 +22,9 @@ function load() {
     return { positions: {}, recentEvents: [], lastUpdated: null };
   }
   try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    if (!data.positions || typeof data.positions !== "object" || Array.isArray(data.positions)) data.positions = {};
+    return data;
   } catch (err) {
     log("state_error", `Failed to read state.json: ${err.message}`);
     return { positions: {}, lastUpdated: null };
