@@ -679,13 +679,15 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     }
   }
 
-  // Layer 4: mcap-growth fallback — only if ALL prior layers returned stale/unavailable
-  // AND mcap grew >= 3.0x since discovery AND estimated vol >= full minVolume ($150K).
-  // Conservative gate: pumps that haven't grown 3x from discovery are not yet eligible.
+  // Layer 4: strict mcap-growth fallback
+  // Hanya aktif jika:
+  // - Semua layer sebelumnya (Dexscreener, Gecko, Jupiter) gagal/stale
+  // - Mcap grew >= 3.0x sejak discovery
+  // - Estimated 1h volume >= full minVolume ($150K)
   {
-    const MCAP_VOL_RATIO     = 1.2;   // $vol/h per $1 mcap
-    const MIN_GROWTH_RATIO   = 3.0;   // min mcap multiplier (strict)
-    const VOL_OVERRIDE_RATIO = 1.0;   // require full minVolume ($150K), not discounted
+    const MCAP_VOL_RATIO     = 1.0;   // $vol/h per $1 mcap (full conservative)
+    const MIN_GROWTH_RATIO   = 3.0;   // min mcap multiplier
+    const VOL_OVERRIDE_RATIO = 1.0;   // full minVolume required
     let mcapOverrideCount = 0;
     for (const t of eligible) {
       if ((t._volH1 ?? 0) >= s.minVolume) continue;
