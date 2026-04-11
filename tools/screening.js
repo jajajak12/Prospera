@@ -578,38 +578,34 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
 
   log.screening(`Step 1 — Discovery: ${eligible.length} tokens (raw: ${dexTokens.length}, excl blacklist/occupied)`);
 
-  // ── Step 2: 1h volume filter ─────────────────────────────────────────────
-  // Dexscreener discovery already provides _volH1 (h1 volume) for tokens with SOL pairs.
-  // Only fetch separately for tokens where volume wasn't available in discovery.
+  // ── Step 2: Volume Priority Chain ───────────────────────────────────────────
+  // 3-layer sequential: Dexscreener → GeckoTerminal → Jupiter
+  // Each layer ONLY runs for tokens where the previous layer's vol < minVolume.
+  // If ANY layer returns >= minVolume, token passes immediately (no need to check further layers).
+  // This replaces the old split-flow where Step 2 ran before Step 2b, causing stale Dexscreener
+  // data to skip tokens before GeckoTerminal could override them.
+
+  // Layer 1: Dexscreener h1 volume (primary) — already available as _volH1 from discovery,
+  // batch-fetched for any tokens missing it.
   {
     const missingVol = eligible.filter(t => t._volH1 == null).map(t => t.mint);
-    const volMap = missingVol.length > 0
-      ? await batchGetTokenVolumeH1(missingVol).catch(() => new Map())
-      : new Map();
-    const before = eligible.length;
-    eligible = eligible.filter(t => {
-      const volH1 = t._volH1 ?? volMap.get(t.mint);
-      if (volH1 == null) return true; // API miss → keep
-      if (volH1 < s.minVolume) {
-        log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
-        return false;
+    if (missingVol.length > 0) {
+      const volMap = await batchGetTokenVolumeH1(missingVol).catch(() => new Map());
+      for (const [mint, vol] of volMap) {
+        const t = eligible.find(t => t.mint === mint);
+        if (t) t._volH1 = Math.round(vol);
       }
-      t._volH1 = Math.round(volH1);
-      return true;
-    });
-    log.screening(`Step 2 — Volume filter: ${eligible.length}/${before} passed (min 1h $${s.minVolume})`);
+    }
   }
 
-  // ── Step 2b: GeckoTerminal volume override (BEFORE volume filter) ───────────
-  // Dexscreener /tokens/v1 batch returns stale/wrong volume for migrated tokens.
-  // GeckoTerminal vol24h is aggregated across all DEX pools — more accurate.
-  // MUST run before Step 2 volume filter so override affects the filter decision.
+  // Layer 2: GeckoTerminal vol24h — override if Dexscreener vol < minVolume
+  // GeckoTerminal aggregates across ALL DEX pools, more accurate for migrated tokens.
   {
-    const mints = eligible.map(t => t.mint);
+    const needsGecko = eligible.filter(t => (t._volH1 ?? 0) < s.minVolume);
     const geckoVolMap = new Map();
     const chunkSize = 20;
-    for (let i = 0; i < mints.length; i += chunkSize) {
-      const chunk = mints.slice(i, i + chunkSize);
+    for (let i = 0; i < needsGecko.length; i += chunkSize) {
+      const chunk = needsGecko.slice(i, i + chunkSize);
       const results = await Promise.allSettled(
         chunk.map(mint =>
           fetch(`${GECKO_BASE}/networks/solana/tokens/${mint}`, { signal: AbortSignal.timeout(8_000) })
@@ -630,69 +626,92 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       }
     }
     let geckoOverrideCount = 0;
-    for (const t of eligible) {
+    for (const t of needsGecko) {
       const gecko = geckoVolMap.get(t.mint);
       if (gecko && gecko.vol24h > (t._volH1 ?? 0)) {
         t._volH1 = Math.round(gecko.vol24h);
         if (gecko.marketCap > 0) t.mcap = gecko.marketCap;
+        t._volH1Source = "geckoterminal";
         geckoOverrideCount++;
       }
     }
     if (geckoOverrideCount > 0) {
-      log.screening(`Step 2b — GeckoTerminal volume override: ${geckoOverrideCount} tokens updated (Dexscreener stale)`);
+      log.screening(`Step 2b — GeckoTerminal override: ${geckoOverrideCount} tokens (Dexscreener stale)`);
     }
   }
 
-  // ── Step 2c: mcap-growth fallback override ───────────────────────────────────
-  // If Dexscreener vol AND GeckoTerminal both report low volume BUT mcap grew
-  // significantly (>3x) since discovery, the token may be mid-pump and volume
-  // data is stale. Use mcap ratio as a proxy for organic momentum.
-  // Threshold: estimated 1h vol = (mcap / avg_token_velocity) where velocity
-  // defaults to a conservative $333/s equivalent → $1.2M/h per $1M mcap.
-  // Peepa case: mcap=$328K at discovery, pump to ~$1M → ratio ~3x.
+  // Layer 3: Jupiter assets/search — last fallback if GeckoTerminal also < minVolume or error/404
+  // /assets/search returns feesSOL and holder data but also has a volume-related 'volumeUsd24h' field.
+  // We reuse getJupiterTokenInfo which already hits this endpoint; extract vol from result.
   {
-    const MCAP_VOL_ESTIMATE_RATIO = 1.2; // $vol per hour per $1 mcap (conservative)
-    const MIN_MCAP_GROWTH_RATIO = 3.0;   // min mcap growth multiplier to trigger override
-    const VOL_OVERRIDE_RATIO    = 0.80;   // allow 80% of minVolume as override threshold
-    let mcapGrowthOverrideCount = 0;
+    const needsJupiter = eligible.filter(t => (t._volH1 ?? 0) < s.minVolume);
+    if (needsJupiter.length > 0) {
+      const jupResults = await Promise.all(
+        needsJupiter.map(t => getJupiterTokenInfo(t.mint).catch(() => null))
+      );
+      let jupiterOverrideCount = 0;
+      for (let i = 0; i < needsJupiter.length; i++) {
+        const jup = jupResults[i];
+        if (!jup || jup.notFound) continue;
+        // Jupiter 'volumeUsd24h' field (if present) as 1h proxy: use 1/24 of 24h volume
+        const vol24h = jup.volumeUsd24h ?? 0;
+        if (vol24h > 0) {
+          const volH1 = Math.round(vol24h / 24);
+          const t = needsJupiter[i];
+          if (volH1 > (t._volH1 ?? 0)) {
+            t._volH1 = volH1;
+            t._volH1Source = "jupiter";
+            jupiterOverrideCount++;
+          }
+        }
+      }
+      if (jupiterOverrideCount > 0) {
+        log.screening(`Step 2c — Jupiter override: ${jupiterOverrideCount} tokens (GeckoTerminal stale/error)`);
+      }
+    }
+  }
+
+  // Layer 4: mcap-growth fallback — if all three API sources are stale/unavailable
+  // and mcap grew >= 3x since discovery, estimate 1h vol = mcap × 1.2 (conservative).
+  // Peepa case: mcap $328K→$1M (~3x) with GeckoTerminal 404 → est_1h_vol ~$1.2M > 80%×$150K threshold.
+  {
+    const MCAP_VOL_RATIO    = 1.2;   // $vol/h per $1 mcap
+    const MIN_GROWTH_RATIO  = 3.0;   // min mcap multiplier
+    const VOL_OVERRIDE_RATIO = 0.80; // allow 80% of minVolume
+    let mcapOverrideCount = 0;
     for (const t of eligible) {
-      if ((t._volH1 ?? 0) >= s.minVolume) continue; // already passes volume filter
-      if (t._volH1 == null) t._volH1 = 0;
+      if ((t._volH1 ?? 0) >= s.minVolume) continue;
       if (t._mcapAtDiscovery == null || t.mcap == null) continue;
       const ratio = t.mcap / t._mcapAtDiscovery;
-      if (ratio >= MIN_MCAP_GROWTH_RATIO) {
-        const estimatedVol = Math.round(t.mcap * MCAP_VOL_ESTIMATE_RATIO);
-        const overrideThreshold = Math.round(s.minVolume * VOL_OVERRIDE_RATIO);
-        if (estimatedVol >= overrideThreshold) {
+      if (ratio >= MIN_GROWTH_RATIO) {
+        const estimatedVol = Math.round(t.mcap * MCAP_VOL_RATIO);
+        const threshold = Math.round(s.minVolume * VOL_OVERRIDE_RATIO);
+        if (estimatedVol >= threshold) {
           t._volH1 = estimatedVol;
           t._volH1Source = "mcap-growth-override";
-          mcapGrowthOverrideCount++;
-          log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): VOL OVERRIDE — mcap ${(ratio).toFixed(1)}x growth detected ($${Math.round(t._mcapAtDiscovery)}→$${Math.round(t.mcap)}) | est_1h_vol=$${estimatedVol} [${t._volH1Source}]`);
+          mcapOverrideCount++;
+          log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): VOL OVERRIDE (mcap ${ratio.toFixed(1)}x growth) | est_1h_vol=$${estimatedVol} [${t._volH1Source}]`);
         }
       }
     }
-    if (mcapGrowthOverrideCount > 0) {
-      log.screening(`Step 2c — mcap-growth override: ${mcapGrowthOverrideCount} tokens (Dexscreener+GeckoTerminal stale, token mid-pump)`);
+    if (mcapOverrideCount > 0) {
+      log.screening(`Step 2d — mcap-growth override: ${mcapOverrideCount} tokens (all API sources stale)`);
     }
   }
 
+  // Final pass: volume filter using the highest volume found across all layers
   {
-    const missingVol = eligible.filter(t => t._volH1 == null).map(t => t.mint);
-    const volMap = missingVol.length > 0
-      ? await batchGetTokenVolumeH1(missingVol).catch(() => new Map())
-      : new Map();
     const before = eligible.length;
     eligible = eligible.filter(t => {
-      const volH1 = t._volH1 ?? volMap.get(t.mint);
-      if (volH1 == null) return true; // API miss → keep
-      if (volH1 < s.minVolume) {
-        log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — 1h vol $${Math.round(volH1)} < min $${s.minVolume} | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
-        return false;
+      const volH1 = t._volH1 ?? 0;
+      if (volH1 >= s.minVolume) {
+        t._volH1 = Math.round(volH1);
+        return true;
       }
-      t._volH1 = Math.round(volH1);
-      return true;
+      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — vol $${Math.round(volH1)} < min $${s.minVolume} [${t._volH1Source ?? "dexscreener"}] | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
+      return false;
     });
-    log.screening(`Step 2 — Volume filter: ${eligible.length}/${before} passed (min 1h $${s.minVolume})`);
+    log.screening(`Step 2 — Volume filter: ${eligible.length}/${before} passed (3-layer chain exhausted)`);
   }
 
   if (eligible.length === 0) {
