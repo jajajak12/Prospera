@@ -1025,30 +1025,30 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     });
   }
 
-  // ── Step 9: Smart wallet activity check ──────────────────────────────────
-  if (candidates.length > 0) {
-    try {
-      const poolAddresses = candidates.map(c => c.pool);
-      const smartMoneyMap = await checkSmartWalletActivity(poolAddresses);
-      if (smartMoneyMap.size > 0) {
-        for (const c of candidates) {
-          const walletLabels = smartMoneyMap.get(c.pool);
-          if (walletLabels?.length > 0) {
-            c.smart_money = { present: true, wallets: walletLabels };
-            c.fib_signal.confluenceScore = Math.min(
-              1,
-              Math.round((c.fib_signal.confluenceScore + 0.10) * 100) / 100
-            );
-            log("screening", `  ${c.name}: SMART MONEY ✓ (${walletLabels.join(", ")}) — score boosted`);
-          } else {
-            c.smart_money = { present: false, wallets: [] };
-          }
-        }
-      }
-    } catch (e) {
-      _s("screening", `Smart wallet check failed (non-fatal): ${e.message}`);
-    }
-  }
+  // ── Step 9: Smart wallet activity check (DISABLED — LP API free tier rate limited)
+  // if (candidates.length > 0) {
+  //   try {
+  //     const poolAddresses = candidates.map(c => c.pool);
+  //     const smartMoneyMap = await checkSmartWalletActivity(poolAddresses);
+  //     if (smartMoneyMap.size > 0) {
+  //       for (const c of candidates) {
+  //         const walletLabels = smartMoneyMap.get(c.pool);
+  //         if (walletLabels?.length > 0) {
+  //           c.smart_money = { present: true, wallets: walletLabels };
+  //           c.fib_signal.confluenceScore = Math.min(
+  //             1,
+  //             Math.round((c.fib_signal.confluenceScore + 0.10) * 100) / 100
+  //           );
+  //           log("screening", `  ${c.name}: SMART MONEY ✓ (${walletLabels.join(", ")}) — score boosted`);
+  //         } else {
+  //           c.smart_money = { present: false, wallets: [] };
+  //         }
+  //       }
+  //     }
+  //   } catch (e) {
+  //     _s("screening", `Smart wallet check failed (non-fatal): ${e.message}`);
+  //   }
+  // }
 
   // Filter by minConfluenceScore if configured
   const minConf = s.minConfluenceScore ?? 0;
