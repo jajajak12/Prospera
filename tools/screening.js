@@ -277,6 +277,7 @@ async function discoverTokensFromDexscreener() {
           price:  parseFloat(pair.priceUsd) || null,
           mcap:   parseFloat(pair.fdv ?? pair.marketCap) || null,
           _volH1: Math.round(volH1),
+          _mcapAtDiscovery: parseFloat(pair.fdv ?? pair.marketCap) || null,
         });
       }
     }
@@ -639,6 +640,39 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     }
     if (geckoOverrideCount > 0) {
       log.screening(`Step 2b — GeckoTerminal volume override: ${geckoOverrideCount} tokens updated (Dexscreener stale)`);
+    }
+  }
+
+  // ── Step 2c: mcap-growth fallback override ───────────────────────────────────
+  // If Dexscreener vol AND GeckoTerminal both report low volume BUT mcap grew
+  // significantly (>3x) since discovery, the token may be mid-pump and volume
+  // data is stale. Use mcap ratio as a proxy for organic momentum.
+  // Threshold: estimated 1h vol = (mcap / avg_token_velocity) where velocity
+  // defaults to a conservative $333/s equivalent → $1.2M/h per $1M mcap.
+  // Peepa case: mcap=$328K at discovery, pump to ~$1M → ratio ~3x.
+  {
+    const MCAP_VOL_ESTIMATE_RATIO = 1.2; // $vol per hour per $1 mcap (conservative)
+    const MIN_MCAP_GROWTH_RATIO = 3.0;   // min mcap growth multiplier to trigger override
+    const VOL_OVERRIDE_RATIO    = 0.80;   // allow 80% of minVolume as override threshold
+    let mcapGrowthOverrideCount = 0;
+    for (const t of eligible) {
+      if ((t._volH1 ?? 0) >= s.minVolume) continue; // already passes volume filter
+      if (t._volH1 == null) t._volH1 = 0;
+      if (t._mcapAtDiscovery == null || t.mcap == null) continue;
+      const ratio = t.mcap / t._mcapAtDiscovery;
+      if (ratio >= MIN_MCAP_GROWTH_RATIO) {
+        const estimatedVol = Math.round(t.mcap * MCAP_VOL_ESTIMATE_RATIO);
+        const overrideThreshold = Math.round(s.minVolume * VOL_OVERRIDE_RATIO);
+        if (estimatedVol >= overrideThreshold) {
+          t._volH1 = estimatedVol;
+          t._volH1Source = "mcap-growth-override";
+          mcapGrowthOverrideCount++;
+          log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): VOL OVERRIDE — mcap ${(ratio).toFixed(1)}x growth detected ($${Math.round(t._mcapAtDiscovery)}→$${Math.round(t.mcap)}) | est_1h_vol=$${estimatedVol} [${t._volH1Source}]`);
+        }
+      }
+    }
+    if (mcapGrowthOverrideCount > 0) {
+      log.screening(`Step 2c — mcap-growth override: ${mcapGrowthOverrideCount} tokens (Dexscreener+GeckoTerminal stale, token mid-pump)`);
     }
   }
 
