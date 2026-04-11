@@ -36,7 +36,11 @@ function load() {
 }
 
 function save(data) {
-  fs.writeFileSync(LESSONS_FILE, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(LESSONS_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    log("lessons_error", `save failed: ${e.message}`);
+  }
 }
 
 // ─── Record Position Performance ──────────────────────────────

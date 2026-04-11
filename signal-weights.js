@@ -61,7 +61,11 @@ function load() {
 }
 
 function save(data) {
-  fs.writeFileSync(WEIGHTS_FILE, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(WEIGHTS_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    log("weights_error", `save failed: ${e.message}`);
+  }
 }
 
 function normalise(signal, value) {

@@ -20,7 +20,11 @@ function load() {
 }
 
 function save(data) {
-  fs.writeFileSync(POOL_MEMORY_FILE, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(POOL_MEMORY_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    log("pool_memory_error", `save failed: ${e.message}`);
+  }
 }
 
 // ─── Write ─────────────────────────────────────────────────────

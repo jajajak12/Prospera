@@ -639,14 +639,16 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
 
 // ── Screening Cycle ────────────────────────────────────────────────────────────
 export async function runScreeningCycle({ silent = false } = {}) {
-  if (shouldSkipNextCycle()) {
-    log("screening", "Circuit breaker skip — cycle skipped (auto-clears when cooldown expires)");
-    return null;
-  }
-
   const corrId = logCycleStart("screening");
   _lastCorrelationId = corrId;
   const _s = (cat, msg, meta = {}) => logWithId(cat, msg, meta, corrId);
+
+  // All early-exit checks MUST happen before lock acquisition to avoid writing
+  // a stale "running" lock file when the cycle will exit anyway.
+  if (shouldSkipNextCycle()) {
+    _s("screening", "Circuit breaker skip — cycle skipped (auto-clears when cooldown expires)");
+    return null;
+  }
 
   if (_screeningBusy) { log("cron", "Screening skipped — busy"); return null; }
 

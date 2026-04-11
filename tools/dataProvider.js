@@ -196,6 +196,24 @@ async function _birdeyeOHLCVByMintOnce(tokenMint, type, limit, chain, apiKey) {
 
 // Birdeye OHLCV by pool/pair address
 async function birdeyeOHLCVByPair(poolAddress, timeframe, limit, chain) {
+  const keys = _birdeyeKeys();
+  let lastErr;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    try {
+      return await _birdeyeOHLCVByPairOnce(poolAddress, timeframe, limit, chain, key);
+    } catch (err) {
+      if (err.message?.includes("401")) {
+        lastErr = err;
+        continue; // try next key
+      }
+      throw err; // non-401 error — no point retrying other keys
+    }
+  }
+  throw lastErr ?? new Error("Birdeye OHLCV: no valid keys");
+}
+
+async function _birdeyeOHLCVByPairOnce(poolAddress, timeframe, limit, chain, apiKey) {
   return withRetry(async () => {
     const typeMap = { "1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1D": "1D", "1d": "1D" };
     const bType = typeMap[timeframe] ?? "5m";
@@ -204,10 +222,14 @@ async function birdeyeOHLCVByPair(poolAddress, timeframe, limit, chain) {
     const timeFrom = now - intervalSec * limit;
     const res = await fetch(
       `${BIRDEYE_BASE}/defi/ohlcv/pair?address=${poolAddress}&type=${bType}&time_from=${timeFrom}&time_to=${now}`,
-      { headers: birdeyeHeaders(chain), signal: sig(TIMEOUT_MS) }
+      { headers: birdeyeHeaders(chain, apiKey), signal: sig(TIMEOUT_MS) }
     );
     if (res.status === 429) throw new Error("Birdeye 429");
-    if (!res.ok) throw new Error(`Birdeye OHLCV error: ${res.status}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      if (res.status === 401) throw new Error("Birdeye 401");
+      throw new Error(`Birdeye OHLCV error: ${res.status}`);
+    }
     const data  = await res.json();
     const items = data?.data?.items;
     if (!items || items.length === 0) throw new Error("Birdeye: empty OHLCV");

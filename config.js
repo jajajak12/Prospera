@@ -49,8 +49,10 @@ export const config = {
     minTokenAgeHours:     u.minTokenAgeHours     ?? null,
     maxTokenAgeHours:     u.maxTokenAgeHours     ?? null,
     // Fibonacci-specific
+    rsiMin:               u.rsiMin               ?? 45,     // RSI threshold: screened null→45 in ATH zone, 40 otherwise (chart.js)
     candleLimit:           u.candleLimit           ?? 100,
     fibConfluenceRequired: u.fibConfluenceRequired ?? true,
+    minConfluenceScore:   u.minConfluenceScore   ?? 0.30,   // min fib confluence to enter (screen.js)
     maxTechnicalAnalysisCandidates: u.maxTechnicalAnalysisCandidates ?? 10,  // Birdeye 60 RPM ÷ 2 calls = 30 max. We use 10 (~33% of limit).
     // Auto-backtest pre-deploy filter
     autoBacktest:         u.autoBacktest         ?? false,
