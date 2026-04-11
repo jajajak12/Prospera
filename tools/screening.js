@@ -603,8 +603,9 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     }
   }
 
-  // Layer 2: GeckoTerminal vol24h — override if Dexscreener vol < minVolume
+  // Layer 2: GeckoTerminal vol24h → h1 conversion — override if Dexscreener vol < minVolume
   // GeckoTerminal aggregates across ALL DEX pools, more accurate for migrated tokens.
+  // Convert h24 → h1 by dividing by 24 (conservative: real tokens often have intraday spikes).
   {
     const needsGecko = eligible.filter(t => (t._volH1 ?? 0) < s.minVolume);
     const geckoVolMap = new Map();
@@ -626,15 +627,17 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
           const mint = result.value.data.id;
           const vol24h = parseFloat(attrs.volume_usd?.h24 ?? 0) || 0;
           const marketCap = parseFloat(attrs.market_cap_usd) || 0;
-          if (vol24h > 0) geckoVolMap.set(mint, { vol24h, marketCap });
+          // Use h1 if available, otherwise convert h24 → h1
+          const volH1 = vol24h > 0 ? Math.round(vol24h / 24) : 0;
+          if (volH1 > 0) geckoVolMap.set(mint, { volH1, marketCap });
         } catch { /**/ }
       }
     }
     let geckoOverrideCount = 0;
     for (const t of needsGecko) {
       const gecko = geckoVolMap.get(t.mint);
-      if (gecko && gecko.vol24h > (t._volH1 ?? 0)) {
-        t._volH1 = Math.round(gecko.vol24h);
+      if (gecko && gecko.volH1 > (t._volH1 ?? 0)) {
+        t._volH1 = gecko.volH1;
         if (gecko.marketCap > 0) t.mcap = gecko.marketCap;
         t._volH1Source = "geckoterminal";
         geckoOverrideCount++;
@@ -677,12 +680,13 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   }
 
   // Layer 4: mcap-growth fallback — if all three API sources are stale/unavailable
-  // and mcap grew >= 3x since discovery, estimate 1h vol = mcap × 1.2 (conservative).
-  // Peepa case: mcap $328K→$1M (~3x) with GeckoTerminal 404 → est_1h_vol ~$1.2M > 80%×$150K threshold.
+  // and mcap grew >= 1.5x since discovery, estimate 1h vol = mcap × 1.0 (conservative).
+  // Peepa case: mcap $328K→$985K (3x) with GeckoTerminal 404 → est_1h_vol ~$985K > 50%×$150K=$75K.
+  // Previous 3.0x ratio was too strict — pumps rarely 3x from discovery mcap before first screen.
   {
-    const MCAP_VOL_RATIO    = 1.2;   // $vol/h per $1 mcap
-    const MIN_GROWTH_RATIO  = 3.0;   // min mcap multiplier
-    const VOL_OVERRIDE_RATIO = 0.80; // allow 80% of minVolume
+    const MCAP_VOL_RATIO     = 1.0;   // $vol/h per $1 mcap (conservative)
+    const MIN_GROWTH_RATIO   = 1.5;   // min mcap multiplier (relaxed from 3.0)
+    const VOL_OVERRIDE_RATIO = 0.50;  // allow 50% of minVolume (relaxed from 80%)
     let mcapOverrideCount = 0;
     for (const t of eligible) {
       if ((t._volH1 ?? 0) >= s.minVolume) continue;
