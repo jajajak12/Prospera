@@ -332,15 +332,18 @@ async function runMorningBriefing({ force = false } = {}) {
   const corrId = shortId();
   const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
 
-  // Positions + PnL
-  const positions = await getMyPositions({ force: true }).catch(() => null);
+  const [positions, balance, perf] = await Promise.all([
+    getMyPositions({ force: true }).catch(() => null),
+    getWalletBalances().catch(() => null),
+  ]).then(([p, b]) => Promise.all([p, b, getPerformanceSummary()]));
+
   const posList = positions?.positions ?? [];
   const totalPositions = positions?.total_positions ?? 0;
-
-  // Balance + exposure
-  const balance = await getWalletBalances().catch(() => null);
+  const walletSol = balance?.sol ?? 0;
+  const deployAmt = getPositionSizing(walletSol);
   const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList) : 0;
-  const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
+  const capPct = config.risk.totalExposureCapPct ?? 0.60;
+  const exposurePct = walletSol > 0 ? +((deployedSol / walletSol) * 100).toFixed(1) : 0;
 
   // Circuit state
   const cb = getCircuitState();
@@ -357,38 +360,45 @@ async function runMorningBriefing({ force = false } = {}) {
           ? ((data.results.filter(r => (r.pnl_pct ?? 0) > 0).length / data.results.length) * 100).toFixed(0)
           : "N/A";
         backtestSummary = `${label}: ${data.results?.length ?? 0} pools | WR: ${winRate}%`;
-        break; // show 7d first
+        break;
       }
     }
   } catch { /**/ }
 
+  // Performance from lessons
+  const perfLines = perf
+    ? `WR: ${perf.win_rate ?? "?"}% | Avg: ${perf.avg_pnl_pct != null ? (perf.avg_pnl_pct >= 0 ? "+" : "") + perf.avg_pnl_pct.toFixed(1) + "%" : "?"} | Closed: ${perf.total ?? 0}`
+    : null;
+
   // Build lines
   const lines = [
-    `📊 Open Positions: ${totalPositions}`,
-    `💰 Exposure: ${exposurePct}% | SOL: ${balance?.sol?.toFixed(3) ?? "?"}`,
+    `💰 Wallet: ${walletSol.toFixed(3)} SOL | Deploy: ${deployAmt} SOL/pos`,
+    `📉 Exposure: ${exposurePct}% / ${(capPct * 100).toFixed(0)}% cap | ${totalPositions}/${config.risk.maxPositions} positions`,
   ];
 
   if (cb?.isCircuitBroken) {
     lines.push(`🔧 Circuit: OPEN (${cb.cooldownRemainingSec}s left)`);
   }
 
-  if (backtestSummary) {
-    lines.push(`📈 Backtest: ${backtestSummary}`);
-  }
-
   if (posList.length > 0) {
     const totalPnl = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
-    lines.push(`📉 Total PnL: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}%`);
-
-    // Per-position breakdown
+    lines.push(`📊 Total PnL: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}%`);
     const posLines = posList.map(p => {
       const pnl = p.pnl_pct ?? 0;
       const sign = pnl >= 0 ? "+" : "";
-      const status = p.in_range ? "IN" : `OOR ${p.minutes_out_of_range ?? 0}m`;
-      return `${p.pair} ${sign}${pnl.toFixed(1)}% (${status})`;
+      const fees = (p.unclaimed_fees_usd ?? 0) > 0 ? ` | $${p.unclaimed_fees_usd.toFixed(2)} fees` : "";
+      const oor = !p.in_range ? " ⚠️OOR" : "";
+      return `${p.pair} ${sign}${pnl.toFixed(1)}%${fees}${oor}`;
     });
     lines.push(`📋 ${posLines.join(" | ")}`);
+  } else {
+    lines.push("📋 No open positions");
   }
+
+  if (perfLines) lines.push(`📈 Performance: ${perfLines}`);
+  if (backtestSummary) lines.push(`📈 Backtest: ${backtestSummary}`);
+
+  lines.push(`⚙️ ${config.screening.minBinStep}–${config.screening.maxBinStep} bin | Vol min $${config.screening.minVolume.toLocaleString()} | SL ${config.management.stopLossPct}% / TP ${config.management.takeProfitMaxPct}%`);
 
   const msg = `🌅 Morning Briefing [${ts}]\n\n${lines.join("\n")}`;
   if (telegramEnabled()) sendMessage(msg).catch(() => {});
