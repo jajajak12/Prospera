@@ -190,6 +190,9 @@ function simulatePosition(candles, entryIdx, entryPrice, binsBelow, binStep, fee
   // Fee per in-range candle (very rough — assumes 40% utilization)
   const feePerCandle = (feePct / 100) * (1 / candlesPerDay) * 0.40;
 
+  // accumulatedFees: POSITIVE decimal = cumulative fee income earned while in range.
+  // Added to price-based PnL (not subtracted). Models LP fee earnings as增益 (gain).
+  // Example: pricePnl=−0.03 (−3%), accumulatedFees=0.04 → totalPnl=+0.01 (+1%)
   let accumulatedFees = 0;
   let oorCount        = 0; // consecutive OOR candles
   let entryTime       = candles[entryIdx].timestamp;
@@ -279,16 +282,18 @@ export async function runBacktest({
   aggregate   = 5,
   candleLimit = 100,
   preset      = null,
+  cfg         = null,  // passed directly by runBacktestWithSweep; overrides preset
 }) {
-  // Load strategy config
-  const strategy = preset ? getStrategy(preset) : null;
-  const cfg = {
+  // cfg takes priority (passed from sweep); preset falls back to strategy-library lookup
+  const strategy = !cfg && preset ? getStrategy(preset) : null;
+  const STRATEGY_CFG = {
     stopLossPct:           strategy?.management?.stopLossPct           ?? -20,
     takeProfitMaxPct:      strategy?.management?.takeProfitMaxPct      ?? 25,
     outOfRangeBinsToClose: strategy?.management?.outOfRangeBinsToClose ?? 20,
     outOfRangeWaitMinutes: strategy?.management?.outOfRangeWaitMinutes ?? 10,
     fibConfluenceRequired: strategy?.screening?.fibConfluenceRequired  ?? true,
   };
+  const activeCfg = cfg ?? STRATEGY_CFG;
 
   log("backtest", `Fetching data for ${poolAddress.slice(0, 8)}... (${aggregate}m candles)`);
 
@@ -334,7 +339,7 @@ export async function runBacktest({
     if (positionOpen) continue;
 
     const window = candles.slice(i - candleLimit, i);
-    const result = analyzeWindow(window, fibLevels, binStep, cfg);
+    const result = analyzeWindow(window, fibLevels, binStep, activeCfg);
 
     if (result.signal !== "ENTRY") continue;
 
@@ -344,7 +349,7 @@ export async function runBacktest({
 
     const trade = simulatePosition(
       candles, i, entryPrice,
-      result.binsBelow, binStep, feePct, cfg
+      result.binsBelow, binStep, feePct, activeCfg
     );
 
     trade.zone        = result.inAthZone ? "ATH" : result.inPrimaryZone ? "PRIMARY" : "SECONDARY";
@@ -494,8 +499,23 @@ function sweepParams(candles, fibLevels, binStep, feePct, baseCfg, candleLimit =
 /**
  * Run backtest + parameter sweep for a single pool.
  * Returns { backtest, sweepBest } where sweepBest is the top-ranked param combo.
+ *
+ * @param {object} opts
+ * @param {string}  opts.poolAddress
+ * @param {number}  opts.binStep
+ * @param {number}  opts.feePct
+ * @param {number}  [opts.aggregate=15]
+ * @param {number}  [opts.candleLimit=100]
+ * @param {object}  [opts.cfg]  - Strategy config (same shape as runBacktest); uses defaults if omitted
  */
-export async function runBacktestWithSweep({ poolAddress, binStep, feePct, aggregate = 15, candleLimit = 100 }) {
+export async function runBacktestWithSweep({
+  poolAddress,
+  binStep,
+  feePct,
+  aggregate   = 15,
+  candleLimit = 100,
+  cfg         = null,
+}) {
   const [candles, dailyCandles] = await Promise.all([
     fetchOHLCVAggregate(poolAddress, aggregate, 1000),
     fetchDailyOHLCV(poolAddress, 1000),
@@ -521,7 +541,8 @@ export async function runBacktestWithSweep({ poolAddress, binStep, feePct, aggre
 
   const fibLevels = calcFibLevels(swingHigh, swingLow);
 
-  const baseCfg = {
+  // Use provided cfg or fall back to hardcoded defaults (kept in sync with runBacktest defaults)
+  const baseCfg = cfg ?? {
     stopLossPct:           -20,
     takeProfitMaxPct:      25,
     outOfRangeBinsToClose: 20,
@@ -532,8 +553,8 @@ export async function runBacktestWithSweep({ poolAddress, binStep, feePct, aggre
   const sweepResults = sweepParams(candles, fibLevels, binStep, feePct, baseCfg, candleLimit);
   const sweepBest    = sweepResults[0] ?? null;
 
-  // Also run baseline backtest using current default params
-  const baseline = await runBacktest({ poolAddress, binStep, feePct, aggregate, candleLimit });
+  // Also run baseline backtest — pass cfg if provided so it uses the same thresholds as sweep
+  const baseline = await runBacktest({ poolAddress, binStep, feePct, aggregate, candleLimit, cfg });
 
   return { backtest: baseline, sweepBest, sweepAll: sweepResults.slice(0, 5) };
 }

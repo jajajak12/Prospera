@@ -83,6 +83,10 @@ function buildInsights(s7, s14) {
   if (s14?.avgBacktestWinRate > 60) {
     lines.push(`🟢 WR 14d bagus: ${s14.avgBacktestWinRate}% — strategi on track`);
   }
+  if (s7?.sweepSuggestion) {
+    const sg = s7.sweepSuggestion;
+    lines.push(`💡 Sweep suggest: RSI≥${sg.rsiMin}, confluence≥${sg.minConfluenceScore} (WR +${sg.improvementPct}%) [${sg.poolsSupporting}p pools]`);
+  }
 
   return lines.length ? lines : ["✅ Tidak ada anomali signifikan"];
 }
@@ -166,10 +170,42 @@ export async function runDailyBacktest({ correlationId = null, hours = 168 } = {
     const topExit = Object.entries(exitMap).sort((a, b) => b[1] - a[1]).slice(0, 3)
       .map(([reason, count]) => ({ reason, count }));
 
+    // "oor_close" is returned by backtest.js simulatePosition; "out_of_range"/"oor_below_range" are legacy fallbacks
     const oorCount = has.filter(r =>
+      r.bt.summary?.byExitReason?.["oor_close"] ||
       r.bt.summary?.byExitReason?.["out_of_range"] ||
       r.bt.summary?.byExitReason?.["oor_below_range"]
     ).length;
+
+    // Build sweep suggestion if sweepBest meaningfully outperforms backtest baseline
+    let sweepSuggestion = null;
+    const withSweep = results.filter(r => r.sweepBest && r.bt?.totalTrades >= 3);
+    if (withSweep.length >= 2) {
+      const sweepAvgWr = withSweep.reduce((s, r) => s + r.sweepBest.winRate, 0) / withSweep.length;
+      const btAvgWr    = avgWr;
+      const improvement = (sweepAvgWr - btAvgWr) * 100;
+      if (improvement > 5) {
+        // Collect most common best params across pools
+        const rsiVotes = {};
+        const confVotes = {};
+        for (const r of withSweep) {
+          const k = `${r.sweepBest.rsiMin}|${r.sweepBest.minConfluenceScore}`;
+          rsiVotes[k] = (rsiVotes[k] || 0) + 1;
+        }
+        const topCombo = Object.entries(rsiVotes).sort((a, b) => b[1] - a[1])[0];
+        if (topCombo) {
+          const [rsi, conf] = topCombo[0].split("|");
+          sweepSuggestion = {
+            rsiMin: Number(rsi),
+            minConfluenceScore: Number(conf),
+            sweepAvgWinRate: +(sweepAvgWr * 100).toFixed(1),
+            backtestAvgWinRate: +(btAvgWr * 100).toFixed(1),
+            improvementPct: +improvement.toFixed(1),
+            poolsSupporting: topCombo[1],
+          };
+        }
+      }
+    }
 
     return {
       poolsAnalyzed: has.length,
@@ -179,6 +215,7 @@ export async function runDailyBacktest({ correlationId = null, hours = 168 } = {
       pnlDiffVsBacktest: diff,
       topExitReasons: topExit,
       oorExposurePct: has.length ? +((oorCount / has.length) * 100).toFixed(1) : null,
+      sweepSuggestion,
     };
   };
 
