@@ -36,7 +36,7 @@ export const config = {
     maxBundlePct:         u.maxBundlePct         ?? 30,
     maxBotHoldersPct:     u.maxBotHoldersPct     ?? 30,
     maxTop10Pct:          u.maxTop10Pct          ?? 22,
-    minTokenFeesSol:           u.minTokenFeesSol           ?? 25,
+    minTokenFeesSol:           u.minTokenFeesSol           ?? 23,
     minTokenFeesSolHighMcap:  u.minTokenFeesSolHighMcap  ?? 80,  // fee min for mcap > $1M
     athFilterPct:            u.athFilterPct            ?? null,
     minMcap:       u.minMcap       ?? 200_000,
