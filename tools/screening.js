@@ -804,9 +804,12 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     const before = eligible.length;
     eligible = eligible.filter((t, i) => {
       const jup = jupResults[i];
+      // 5% tolerance on fee threshold (handles minor rounding at threshold boundary)
+      const feeThreshold = (t.mcap > 1_000_000) ? (s.minTokenFeesSolHighMcap ?? 80) : (s.minTokenFeesSol ?? 25);
+      const feeMinWithTolerance = feeThreshold * 0.95;
       if (!jup) { log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): OK (no Jupiter data — API error)`); return true; }
       if (jup.notFound) {
-        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — not indexed by Jupiter (feesSOL unknown, treated as 0 < min ${s.minTokenFeesSol ?? 25})`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — not indexed by Jupiter (feesSOL unknown, treated as 0 < min ${feeMinWithTolerance.toFixed(2)} SOL w/5% tol)`);
         return false;
       }
       if (jup.top10Pct != null && jup.top10Pct > (s.maxTop10Pct ?? 20)) {
@@ -817,10 +820,9 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
         log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
-      // Dynamic fee threshold: if mcap > $1M, require minimum 100 SOL fees (not just 25)
-      const feeThreshold = (t.mcap > 1_000_000) ? (s.minTokenFeesSolHighMcap ?? 80) : (s.minTokenFeesSol ?? 25);
-      if (jup.feesSOL != null && jup.feesSOL < feeThreshold) {
-        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL} SOL < min ${feeThreshold} (mcap=${(t.mcap/1e6).toFixed(1)}M) | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+      // feesSOL check with 5% tolerance
+      if (jup.feesSOL != null && jup.feesSOL < feeMinWithTolerance) {
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL.toFixed(4)} SOL < min ${feeMinWithTolerance.toFixed(2)} SOL (5% tol from ${feeThreshold}) | mcap=${(t.mcap/1e6).toFixed(1)}M`);
         return false;
       }
       t._jup = jup;
