@@ -28,6 +28,7 @@ const DEXSCREENER_BASE   = "https://api.dexscreener.com";
 const BIRDEYE_BASE       = "https://public-api.birdeye.so";
 const GECKOTERMINAL_BASE = "https://api.geckoterminal.com/api/v2";
 const JUPITER_QUOTE_API  = "https://api.jup.ag/swap/v1";
+const JUPITER_PRICE_API = "https://api.jup.ag/price/v3";
 const SOL_MINT           = "So11111111111111111111111111111111111111112"; // wrapped SOL
 const TIMEOUT_MS = 3000;
 
@@ -327,10 +328,12 @@ async function jupiterQuotePrice(tokenMint, chain = "solana") {
 }
 
 async function jupiterSolPrice() {
-  const res = await fetch(`${JUPITER_QUOTE_API}/price?ids=${SOL_MINT}`, { signal: sig(TIMEOUT_MS) });
+  const res = await fetch(`${JUPITER_PRICE_API}?ids=${SOL_MINT}`, { signal: sig(TIMEOUT_MS) });
   if (!res.ok) throw new Error(`Jupiter price error: ${res.status}`);
   const data = await res.json();
-  const price = data?.[SOL_MINT]?.usd;
+  // v3 response: { "So1111...": { usdPrice: 81.7, ... } }
+  const entry = data?.[SOL_MINT];
+  const price = entry?.usdPrice ?? entry?.price;
   if (!price || price <= 0) throw new Error("Jupiter: missing SOL/USD");
   return price;
 }
