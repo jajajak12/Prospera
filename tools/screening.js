@@ -299,8 +299,7 @@ async function discoverTokensFromDexscreener() {
 //  RocketScan fallback — untuk pool yang belum diindex Meteora pool-discovery-api
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ROCKETSCAN_API   = "https://rocketscan.fun/api/pools";
-const DLMM_DATAPI_BASE = "https://dlmm.datapi.meteora.ag";
+const ROCKETSCAN_API = "https://rocketscan.fun/api/pools";
 
 /**
  * Untuk token yang tidak ditemukan di Meteora pool-discovery-api,
@@ -335,32 +334,34 @@ async function fetchRocketScanFallback(tokens, s) {
       const poolId = rsPool.poolId;
       if (!poolId) return null;
 
-      // 2. Fetch detail pool dari dlmm.datapi.meteora.ag
-      const dmRes = await fetch(
-        `${DLMM_DATAPI_BASE}/pools?query=${poolId}`,
+      // 2. Fetch pool detail dari pool-discovery-api (dlmm.datapi.meteora.ag now 403)
+      const pdRes = await fetch(
+        `${POOL_DISCOVERY_BASE}/pools?filter_by=${encodeURIComponent(`pool_address=${poolId}`)}&page_size=1&timeframe=1h`,
         { signal: AbortSignal.timeout(8_000) }
       );
-      if (!dmRes.ok) return null;
-      const dmData = await dmRes.json();
-      const dm = dmData.data?.[0];
-      if (!dm || dm.address !== poolId) return null;
+      if (!pdRes.ok) return null;
+      const pdData = await pdRes.json();
+      const dm = pdData.data?.[0];
+      if (!dm || dm.pool_address !== poolId) return null;
 
       // 3. Pastikan pair-nya SOL
-      const quoteSymbol = dm.token_y?.symbol ?? "";
+      const quoteSymbol = dm.token_y?.symbol ?? dm.token_y?.name ?? "";
       if (quoteSymbol !== "SOL" && dm.token_y?.address !== "So11111111111111111111111111111111111111112") {
         log("screening", `  ${token.symbol}: RS fallback — pool pair bukan SOL (${quoteSymbol}), skip`);
         return null;
       }
 
-      // 4. Apply basic filters
-      const binStep      = dm.pool_config?.bin_step ?? null;
+      // 4. Apply basic filters (pool-discovery-api field names)
+      const binStep      = dm.dlmm_params?.bin_step ?? null;
       const tvl          = dm.tvl ?? 0;
-      const holders      = dm.token_x?.holders ?? 0;
-      const mcap         = dm.token_x?.market_cap ?? 0;
-      const organicScore = rsPool.tokenB?.organicScore ?? null;
-      const tokenAge     = rsPool.tokenB?.tokenCreatedAt
-        ? (Date.now() - new Date(rsPool.tokenB.tokenCreatedAt).getTime()) / 3_600_000
-        : null;
+      const holders      = dm.base_token_holders ?? dm.token_x?.holders ?? 0;
+      const mcap         = dm.token_x?.market_cap ?? dm.base_token_market_cap ?? 0;
+      const organicScore = dm.token_x?.organic_score ?? rsPool.tokenB?.organicScore ?? null;
+      const tokenAge     = dm.token_x?.created_at
+        ? (Date.now() - dm.token_x.created_at) / 3_600_000
+        : (rsPool.tokenB?.tokenCreatedAt
+            ? (Date.now() - new Date(rsPool.tokenB.tokenCreatedAt).getTime()) / 3_600_000
+            : null);
 
       if (binStep == null || binStep < (s.minBinStep ?? 0) || binStep > (s.maxBinStep ?? 9999)) {
         log("screening", `  ${token.symbol}: RS fallback — bin_step ${binStep} diluar range [${s.minBinStep}-${s.maxBinStep}]`);
@@ -396,34 +397,33 @@ async function fetchRocketScanFallback(tokens, s) {
       }
 
       // 5. Build condensed pool object kompatibel dengan pipeline
-      // fee_active_tvl_ratio dilewati — pool terlalu baru untuk punya data 24h yang valid
       const pool = {
         pool:                poolId,
         name:                dm.name,
         base: {
-          symbol:   dm.token_x?.symbol,
+          symbol:   dm.token_x?.symbol ?? dm.token_x?.name ?? token.symbol,
           mint:     dm.token_x?.address,
           organic:  Math.round(organicScore ?? 0),
-          warnings: 0,
+          warnings: dm.token_x?.warnings?.length ?? 0,
         },
         quote: {
-          symbol: dm.token_y?.symbol,
+          symbol: dm.token_y?.symbol ?? "SOL",
           mint:   dm.token_y?.address,
         },
         bin_step:            binStep,
-        fee_pct:             dm.pool_config?.base_fee_pct ?? null,
-        active_tvl:          null,
+        fee_pct:             dm.fee_pct ?? dm.dynamic_fee_pct ?? null,
+        active_tvl:          dm.active_tvl ?? null,
         fee_window:          null,
-        volume_window:       Math.round(dm.volume?.["24h"] ?? dm.volume?.["1h"] ?? 0),
-        fee_active_tvl_ratio: null, // new pool — insufficient 24h data
-        volatility:          null,
+        volume_window:       Math.round(dm.volume ?? 0),
+        fee_active_tvl_ratio: dm.fee_active_tvl_ratio ?? null,
+        volatility:          dm.volatility ?? null,
         holders,
         mcap:                Math.round(mcap),
         organic_score:       Math.round(organicScore ?? 0),
         token_age_hours:     tokenAge,
-        price:               dm.current_price,
-        price_change_pct:    null,
-        price_trend:         null,
+        price:               dm.pool_price ?? dm.token_x?.price ?? null,
+        price_change_pct:    dm.pool_price_change_pct ?? null,
+        price_trend:         Array.isArray(dm.price_trend) ? dm.price_trend : null,
         _source:             "rocketscan",
       };
 
