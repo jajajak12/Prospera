@@ -397,6 +397,7 @@ async function getReliableUSDPrice(tokenMint, poolAddress = null, chain = "solan
   }
 
   log.warn("screening", `ALL PRICE SOURCES FAILED for ${tokenMint} — pool=${poolAddress ?? "none"}`);
+  log("price", `Final USD price for ${tokenMint}: null (ALL SOURCES FAILED)`);
   return null;
 }
 

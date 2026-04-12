@@ -365,6 +365,12 @@ function calcBinsAbove(currentPrice, targetPrice, binStep) {
  * @returns {Promise<SignalResult>}
  */
 export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimit = 50, opts = {}, poolAddress = null) {
+  // ── Hard invalid-price guard ───────────────────────────────────────────────
+  if (!currentPrice || currentPrice < 0.000001) {
+    log.warn("fib_error", `Invalid price detected: ${currentPrice} — skipping Fib calculation`, { token: tokenMint });
+    return skip(`Invalid price (${currentPrice}) — cannot compute Fib levels`, currentPrice);
+  }
+
   // ── Hard unit-mismatch guard ─────────────────────────────────────────────
   // fib_levels are computed from OHLCV candles. If candles are in SOL (wrong unit),
   // fib500 will be ~175x smaller than currentPrice (USD). Guard catches this.
