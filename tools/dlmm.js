@@ -118,7 +118,7 @@ export async function deployPosition({
   if (fib500 != null) {
     try {
       const poolData = await hybridDataProvider.getPoolData(pool_address);
-      const currentPriceUSD = poolData.priceUSD;
+      const currentPriceUSD = poolData.price;
       if (currentPriceUSD < fib500) {
         log("deploy", `Price ${currentPriceUSD} < Fib 0.500 ${fib500} — hard skip`);
         return { success: false, error: "below Fib 0.500 — no entry allowed" };
