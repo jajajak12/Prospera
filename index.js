@@ -77,115 +77,21 @@ let _exposureHardPausedUntil = 0;
 
 const timers = { managementLastRun: 0, screeningLastRun: 0 };
 
-// ── Dashboard state ───────────────────────────────────────────────────────────
+// ── Dashboard state (kept for internal tracking) ──────────────────────────────
 let _lastScreeningReport = null;
 let _closedPoolsHistory = [];
 let _lastLlmZoneCount = 0;
 
-const POSITION_META_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "position-meta.json");
 // ── Health Server ──────────────────────────────────────────────────────────────
 let _healthServer = null;
 let _healthPort = 3000;
-
-/**
- * Build rich health data for /api/dashboard endpoint.
- */
-async function getHealthDataForDashboard(cb) {
-  const positions = await getMyPositions({ force: false }).catch(() => null);
-  const balance   = await getWalletBalances().catch(() => null);
-  const posList   = positions?.positions ?? [];
-  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList) : 0;
-  const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
-  const pnlToday   = posList.reduce((s, p) => s + (p.pnl_pct ?? 0), 0);
-
-  const lastBriefing = getLastBriefingDate ? getLastBriefingDate() : null;
-  const wins = _closedPoolsHistory.filter(p => p.pnl_pct > 0).length;
-  const total = _closedPoolsHistory.length;
-  const winRate = total > 0 ? +((wins / total) * 100).toFixed(1) : null;
-
-  return {
-    status: "ok",
-    uptime: Math.round(process.uptime()),
-    activeProvider: getActiveProvider(),
-    totalPositions: positions?.total_positions ?? 0,
-    maxPositions: config.risk.maxPositions,
-    deployedSol: deployedSol > 0 ? +deployedSol.toFixed(4) : 0,
-    exposurePct,
-    solBalance: balance?.sol ?? 0,
-    solPrice: balance?.sol_price ?? 0,
-    pnlToday: +pnlToday.toFixed(2),
-    llmZone: _lastLlmZoneCount ?? 0,
-    lastScreening: timers.screeningLastRun ? new Date(timers.screeningLastRun).toISOString() : null,
-    lastManagement: timers.managementLastRun ? new Date(timers.managementLastRun).toISOString() : null,
-    lastBriefing: lastBriefing || null,
-    circuitState: cb,
-    positions: posList.map(p => ({
-      pair: p.pair ?? p.name ?? "?",
-      pnl_pct: p.pnl_pct ?? 0,
-      in_range: p.in_range ?? false,
-      minutes_out_of_range: p.minutes_out_of_range ?? 0,
-      unclaimed_fees_usd: p.unclaimed_fees_usd ?? 0,
-      total_value_usd: p.total_value_usd ?? 0,
-      action: p.action ?? "STAY",
-    })),
-    lastScreeningReport: _lastScreeningReport || {},
-    closedHistory: _closedPoolsHistory.slice(-20),
-    pnlStats: {
-      winRate,
-      totalPnl: _closedPoolsHistory.reduce((s, p) => s + (p.pnl_pct ?? 0), 0).toFixed(2),
-      totalClosed: total,
-    },
-  };
-}
 
 function startHealthServer(port = 3000) {
   _healthPort = port;
   if (_healthServer) return;
   _healthServer = http.createServer(async (req, res) => {
-    if (req.url === "/health" || req.url === "/health-data") {
-      try {
-        const cb = getCircuitState();
-        const data = await getHealthDataForDashboard(cb);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(data));
-      } catch {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "failed" }));
-      }
-      return;
-    }
-    if (req.url === "/api/dashboard") {
-      try {
-        const cb = getCircuitState();
-        const data = await getHealthDataForDashboard(cb);
-        res.writeHead(200, {
-          "Content-Type": "application/json",
-          "Cache-Control": "no-store",
-          "Access-Control-Allow-Origin": "*",
-        });
-        res.end(JSON.stringify(data));
-      } catch {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "failed" }));
-      }
-      return;
-    }
-
-    // Serve dashboard static files
-    if (req.url === "/" || req.url === "/dashboard") {
-      try {
-        const html = fs.readFileSync(path.join(__dirname, "public", "dashboard", "index.html"), "utf8");
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(html);
-      } catch {
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end("<html><body style='background:#0f1117;color:#e2e8f0;font-family:monospace;padding:40px'><h1>Dashboard not found</h1><p>public/dashboard/index.html missing.</p></body></html>");
-      }
-      return;
-    }
-
-    res.writeHead(404);
-    res.end();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", uptime: Math.round(process.uptime()) }));
   });
   _healthServer.listen(port, () => log("health", `Health server listening on port ${port}`));
   _healthServer.on("error", e => log("health", `Health server error: ${e.message}`));
@@ -705,11 +611,11 @@ RULES:
       fibPassed: stats.fibPassed,
       candidates: freshCandidates.map(c => ({
         name: c.name,
-        symbol: c.symbol,
+        symbol: c.symbol ?? c.name,
         pool: c.pool,
         price: c.price,
-        volume_1h: c.volume_1h,
-        market_cap: c.market_cap,
+        volume_1h: c.volume_h1 ?? c.volume_1h ?? null,
+        market_cap: c.mcap ?? c.market_cap ?? null,
         tvl: c.active_tvl,
         signal: c.fib_signal?.signal,
         confluence: c.fib_signal?.confluenceScore,
