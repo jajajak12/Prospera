@@ -954,23 +954,28 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
 
   const signalResults = await Promise.allSettled(
     toAnalyze.map(async ({ token, pool }) => {
-      // MUST use USD price — OHLCV candles are in USD.
-      // pool.price is Meteora SOL-denominated; using it against USD Fib levels causes unit mismatch.
-      let currentPrice = token.price; // no fallback to pool.price (SOL-denominated)
-      const binStep    = pool.bin_step;
+      // Primary price: getReliableUSDPrice (GeckoTerminal → Birdeye → Jupiter quote → Dexscreener)
+      // This guarantees USD denomination for Fib calculations vs OHLCV USD candles.
+      // token.price (Dexscreener) used as secondary override only if it's non-zero.
+      let currentPrice = null;
+      try {
+        const reliable = await hybridDataProvider.getReliableUSDPrice(token.mint, pool.pool);
+        if (reliable?.price != null && reliable.price > 0) {
+          currentPrice = reliable.price;
+          log.screening(`  ${pool.name}: price=$${currentPrice.toPrecision(4)} source=${reliable.source}`);
+        }
+      } catch { /* non-fatal */ }
+      // Override with token.price only if it's a valid non-zero Dexscreener USD price
+      if (currentPrice == null && token.price != null && token.price > 0) {
+        currentPrice = token.price;
+        log.screening(`  ${pool.name}: price=$${currentPrice.toPrecision(4)} source=dexscreener-primary`);
+      }
+      if (currentPrice == null || currentPrice <= 0) {
+        return { signal: "SKIP", reason: "Missing USD price — ALL price sources failed" };
+      }
+      const binStep = pool.bin_step;
       if (!binStep) {
         return { signal: "SKIP", reason: "Missing bin_step" };
-      }
-      // If Dexscreener discovery didn't provide USD price, try full fallback chain
-      if (!currentPrice) {
-        try {
-          const reliable = await hybridDataProvider.getReliableUSDPrice(token.mint, pool.pool);
-          currentPrice = reliable?.price ?? null;
-          if (!currentPrice) {
-            return { signal: "SKIP", reason: "Missing USD price — ALL price sources failed" };
-          }
-          log.screening(`  ${pool.name}: getReliableUSDPrice=${{ price: currentPrice, source: reliable.source }}`);
-        } catch { /* non-fatal */ }
       }
       return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? null }, pool.pool);
     })

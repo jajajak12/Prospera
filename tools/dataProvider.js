@@ -342,39 +342,61 @@ async function jupiterSolPrice() {
 // Priority: GeckoTerminal → Birdeye → Jupiter quote (SOL→token→USD) → Dexscreener priceUsd → null
 // Returns: { price: number, source: string } | null
 async function getReliableUSDPrice(tokenMint, poolAddress = null, chain = "solana") {
-  const sources = [];
-
+  // 1. GeckoTerminal (primary — most reliable for USD)
   if (poolAddress) {
     try {
       const pool = await geckoPoolData(poolAddress, chain);
-      if (pool.price && pool.price > 0) return { price: pool.price, source: "geckoterminal" };
-      sources.push("geckoterminal:null");
-    } catch (err) { sources.push(`geckoterminal:${err.message}`); }
+      if (pool.price && pool.price > 0) {
+        log.screening(`  [price] GeckoTerminal → $${pool.price.toPrecision(4)}`);
+        return { price: pool.price, source: "geckoterminal" };
+      }
+      log.screening(`  [price] GeckoTerminal → null (no price in pool data)`);
+    } catch (err) {
+      log.screening(`  [price] GeckoTerminal → FAILED (${err.message})`);
+    }
   }
 
+  // 2. Birdeye
   if (poolAddress) {
     try {
       const pool = await birdeyePoolData(poolAddress, chain);
-      if (pool.price && pool.price > 0) return { price: pool.price, source: "birdeye" };
-      sources.push("birdeye:null");
-    } catch (err) { sources.push(`birdeye:${err.message}`); }
+      if (pool.price && pool.price > 0) {
+        log.screening(`  [price] Birdeye → $${pool.price.toPrecision(4)}`);
+        return { price: pool.price, source: "birdeye" };
+      }
+      log.screening(`  [price] Birdeye → null (no price in pool data)`);
+    } catch (err) {
+      log.screening(`  [price] Birdeye → FAILED (${err.message})`);
+    }
   }
 
+  // 3. Jupiter quote (SOL → token → USD)
   try {
     const price = await jupiterQuotePrice(tokenMint, chain);
-    if (price && price > 0) return { price, source: "jupiter-quote" };
-    sources.push("jupiter:null");
-  } catch (err) { sources.push(`jupiter:${err.message}`); }
+    if (price && price > 0) {
+      log.screening(`  [price] Jupiter quote → $${price.toPrecision(4)} (SOL→token→USD)`);
+      return { price, source: "jupiter-quote" };
+    }
+    log.screening(`  [price] Jupiter quote → null (invalid price)`);
+  } catch (err) {
+    log.screening(`  [price] Jupiter quote → FAILED (${err.message})`);
+  }
 
+  // 4. Last resort: Dexscreener priceUsd
   if (poolAddress) {
     try {
       const pool = await dexscreenerPoolData(poolAddress, chain);
-      if (pool.price && pool.price > 0) return { price: pool.price, source: "dexscreener" };
-      sources.push("dexscreener:null");
-    } catch (err) { sources.push(`dexscreener:${err.message}`); }
+      if (pool.price && pool.price > 0) {
+        log.warn("screening", `  [price] Dexscreener LAST RESORT → $${pool.price.toPrecision(4)} (unreliable — use with caution)`);
+        return { price: pool.price, source: "dexscreener-last-resort" };
+      }
+      log.screening(`  [price] Dexscreener → null (no price in pool data)`);
+    } catch (err) {
+      log.screening(`  [price] Dexscreener → FAILED (${err.message})`);
+    }
   }
 
-  log.warn("screening", `ALL PRICE SOURCES FAILED for ${tokenMint} — pools tried: ${poolAddress ?? "none"}, errors: [${sources.join(" | ")}]`);
+  log.warn("screening", `ALL PRICE SOURCES FAILED for ${tokenMint} — pool=${poolAddress ?? "none"}`);
   return null;
 }
 
