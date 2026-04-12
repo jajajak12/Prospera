@@ -90,8 +90,13 @@ function startHealthServer(port = 3000) {
   _healthPort = port;
   if (_healthServer) return;
   _healthServer = http.createServer(async (req, res) => {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", uptime: Math.round(process.uptime()) }));
+    try {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", uptime: Math.round(process.uptime()) }));
+    } catch {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    }
   });
   _healthServer.listen(port, () => log("health", `Health server listening on port ${port}`));
   _healthServer.on("error", e => log("health", `Health server error: ${e.message}`));
@@ -605,22 +610,22 @@ RULES:
   } finally {
     _release();
     _lastScreeningReport = {
-      discovered: stats.discovered,
-      afterVolume: stats.afterVolume,
-      meteoraPools: stats.meteoraPools,
-      fibPassed: stats.fibPassed,
-      candidates: freshCandidates.map(c => ({
-        name: c.name,
-        symbol: c.symbol ?? c.name,
-        pool: c.pool,
-        price: c.price,
-        volume_1h: c.volume_h1 ?? c.volume_1h ?? null,
-        market_cap: c.mcap ?? c.market_cap ?? null,
-        tvl: c.active_tvl,
-        signal: c.fib_signal?.signal,
-        confluence: c.fib_signal?.confluenceScore,
-        binsBelow: c.fib_signal?.binsBelow,
-        binsAbove: c.fib_signal?.binsAbove ?? 0,
+      discovered: stats?.discovered ?? 0,
+      afterVolume: stats?.afterVolume ?? 0,
+      meteoraPools: stats?.meteoraPools ?? 0,
+      fibPassed: stats?.fibPassed ?? 0,
+      candidates: (freshCandidates || []).map(c => ({
+        name: c?.name ?? "unknown",
+        symbol: c?.symbol ?? c?.name ?? "unknown",
+        pool: c?.pool ?? c?.poolAddress ?? null,
+        price: c?.price ?? null,
+        volume_1h: c?.volume_h1 ?? c?.volume_1h ?? null,
+        market_cap: c?.mcap ?? c?.market_cap ?? null,
+        tvl: c?.active_tvl ?? null,
+        signal: c?.fib_signal?.signal ?? null,
+        confluence: c?.fib_signal?.confluenceScore ?? null,
+        binsBelow: c?.fib_signal?.binsBelow ?? null,
+        binsAbove: c?.fib_signal?.binsAbove ?? 0,
       })),
       content: screenReport,
     };
