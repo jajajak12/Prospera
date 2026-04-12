@@ -114,17 +114,21 @@ export async function deployPosition({
   pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
 
-  // Hard Fib 0.500 gate
+  // Hard Fib 0.500 gate — use getReliableUSDPrice to avoid SOL/USD mismatch
   if (fib500 != null) {
     try {
-      const poolData = await hybridDataProvider.getPoolData(pool_address);
-      const currentPriceUSD = poolData.price;
+      const reliable = await hybridDataProvider.getReliableUSDPrice(normalizeMint(pool_address), pool_address, "solana");
+      const currentPriceUSD = reliable?.price ?? null;
+      if (currentPriceUSD == null) {
+        log("deploy", `getReliableUSDPrice failed — cannot verify Fib 0.500 for ${pool_address.slice(0, 8)}`);
+        return { success: false, error: "Fib 0.500 verification failed (no USD price available)" };
+      }
       if (currentPriceUSD < fib500) {
         log("deploy", `Price ${currentPriceUSD} < Fib 0.500 ${fib500} — hard skip`);
         return { success: false, error: "below Fib 0.500 — no entry allowed" };
       }
     } catch (err) {
-      log("deploy", `Failed to verify Fib 0.500: ${err.message}`);
+      log("deploy", `Fib 0.500 verification error: ${err.message}`);
       return { success: false, error: "Fib 0.500 verification failed" };
     }
   }

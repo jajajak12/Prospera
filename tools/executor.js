@@ -6,6 +6,7 @@
  */
 
 import { getTopCandidates, getPoolDetail } from "./screening.js";
+import { hybridDataProvider } from "./dataProvider.js";
 import {
   getActiveBin,
   deployPosition,
@@ -562,21 +563,20 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // CHANGED: real-time Fib 0.500 gate — re-check price at deploy time, not just at screening time
+      // CHANGED: real-time Fib 0.500 gate — use getReliableUSDPrice for consistent USD denomination
       try {
         const pending = fs.existsSync(PENDING_ATH_PATH)
           ? JSON.parse(fs.readFileSync(PENDING_ATH_PATH, "utf8"))
           : {};
         const meta = pending[args.pool_address];
         if (meta?.fib500 != null) {
-          const poolDetail = await getPoolDetail({ pool_address: args.pool_address }).catch(() => null);
-          const poolPriceSol = poolDetail?.pool_price ?? poolDetail?.price ?? null;
-          // pool_price is SOL-denominated; fib500 is USD-denominated — must convert
-          const solPrice = balance?.sol_price ?? null;
-          const livePriceUsd = (poolPriceSol != null && solPrice > 0)
-            ? poolPriceSol * solPrice
-            : null;
-          if (livePriceUsd != null && livePriceUsd < meta.fib500) {
+          // Use getReliableUSDPrice — avoids SOL/USD mismatch that poolPriceSol * solPrice can have
+          const reliable = await hybridDataProvider.getReliableUSDPrice(args.pool_address, args.pool_address, "solana");
+          const livePriceUsd = reliable?.price ?? null;
+          if (livePriceUsd == null) {
+            return { pass: false, reason: `Fib 0.500 gate: no USD price available from any source (tried getReliableUSDPrice)` };
+          }
+          if (livePriceUsd < meta.fib500) {
             return {
               pass: false,
               reason: `Deploy blocked — live price $${livePriceUsd.toPrecision(4)} is below Fib 0.500 ($${meta.fib500.toPrecision(4)}). Price dropped since screening.`,
