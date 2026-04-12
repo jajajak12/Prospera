@@ -75,6 +75,7 @@ export function recordPoolDeploy(poolAddress, deployData) {
     close_reason: deployData.close_reason || null,
     strategy: deployData.strategy || null,
     volatility_at_deploy: deployData.volatility ?? null,
+    ath_price_at_close: deployData.ath_price ?? null,
   };
 
   entry.deploys.push(deploy);
@@ -106,6 +107,51 @@ export function recordPoolDeploy(poolAddress, deployData) {
 
   save(db);
   log("pool-memory", `Recorded deploy for ${entry.name} (${poolAddress.slice(0, 8)}): PnL ${deploy.pnl_pct}%`);
+}
+
+/**
+ * Returns true if the pool was closed via TP/SL and has NOT made a new ATH since.
+ * Used by screening to filter out candidates that are on deploy cooldown.
+ *
+ * @param {string} poolAddress
+ * @param {number} [currentPrice] — if provided, checks if price >= stored ATH (new ATH made)
+ * @returns {boolean}
+ */
+export function isPoolOnATHCooldown(poolAddress, currentPrice) {
+  if (!poolAddress) return false;
+  const db = load();
+  const entry = db[poolAddress];
+  if (!entry) return false;
+
+  const lastDeploy = entry.deploys[entry.deploys.length - 1];
+  if (!lastDeploy) return false;
+
+  const reason = lastDeploy.close_reason;
+  const isTPorSL = reason === "take_profit" || reason === "stop_loss";
+  if (!isTPorSL) return false;
+
+  // No ATH stored → fall back to time-based cooldown (conservative)
+  if (lastDeploy.ath_price_at_close == null) {
+    log("pool-memory", `${entry.name}: TP/SL close but no ath_price stored — fallback to 1h cooldown`);
+    const cooldownMs = 60 * 60 * 1000;
+    if (lastDeploy.closed_at) {
+      const closedAt = new Date(lastDeploy.closed_at).getTime();
+      return Date.now() - closedAt < cooldownMs;
+    }
+    return true; // assume cooldown if no timestamp
+  }
+
+  // If current price provided, check if new ATH was made
+  if (currentPrice != null) {
+    const madeNewAth = currentPrice >= lastDeploy.ath_price_at_close;
+    if (madeNewAth) {
+      log("pool-memory", `${entry.name}: new ATH detected (${currentPrice} >= ${lastDeploy.ath_price_at_close}) — cooldown cleared`);
+      return false;
+    }
+    return true;
+  }
+
+  return true;
 }
 
 export function isPoolOnCooldown(poolAddress) {

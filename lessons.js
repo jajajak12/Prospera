@@ -70,6 +70,7 @@ function save(data) {
  * @param {boolean} [perf.in_primary_zone]       - Price was in primary Fib zone at entry
  * @param {boolean} [perf.has_hidden_divergence] - Hidden bullish divergence at entry
  * @param {boolean} [perf.smart_wallet_present]  - Smart wallet boost was applied
+ * @param {number}  [perf.ath_price]             - ATH price at close time (for deploy cooldown)
  */
 export async function recordPerformance(perf) {
   const data = load();
@@ -124,6 +125,7 @@ export async function recordPerformance(perf) {
       close_reason:    perf.close_reason,
       strategy:        perf.strategy,
       volatility:      perf.volatility,
+      ath_price:      perf.ath_price ?? null,
     });
   }
 

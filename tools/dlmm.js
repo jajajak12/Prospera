@@ -723,6 +723,16 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         }
       }
 
+      // Fetch current ATH at close time — used for deploy cooldown check
+      let athPriceAtClose = null;
+      try {
+        const poolData = await hybridDataProvider.getPoolData(poolAddress.toString());
+        athPriceAtClose = poolData?.ath_price ?? null;
+        log("close", `ATH at close: ${athPriceAtClose ?? "N/A"}`);
+      } catch (e) {
+        log("close_warn", `ATH fetch at close failed: ${e.message}`);
+      }
+
       await recordPerformance({
         position: position_address,
         pool: poolAddress,
@@ -755,6 +765,7 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         minutes_in_range: minutesHeld - minutesOOR,
         minutes_held: minutesHeld,
         close_reason: reason || "agent decision",
+        ath_price: athPriceAtClose,
       });
 
       return { success: true, position: position_address, pool: poolAddress, pool_name: tracked.pool_name || null, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, base_mint: pool.lbPair.tokenXMint.toString() };

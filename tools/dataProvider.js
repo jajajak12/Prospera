@@ -74,12 +74,20 @@ async function dexscreenerPoolData(poolAddress, chain) {
     const data = await res.json();
     const pair = data?.pair ?? data?.pairs?.[0];
     if (!pair) throw new Error("Dexscreener: no pair data");
+    // ATH dari priceHistory candles (highest high across all candles)
+    const ath_price = pair.priceHistory?.reduce
+      ? (pair.priceHistory.length > 0
+          ? pair.priceHistory.reduce((max, c) => Math.max(max, Number(c.h) || 0), 0)
+          : null)
+      : null;
+
     return {
       poolAddress, chain,
       baseToken:  pair.baseToken,
       quoteToken: pair.quoteToken,
       price:      parseFloat(pair.priceUsd) || null,
       mcap:       parseFloat(pair.fdv ?? pair.marketCap) || null,
+
       volume: {
         m5:  parseFloat(pair.volume?.m5  ?? 0),
         h1:  parseFloat(pair.volume?.h1  ?? 0),
@@ -89,6 +97,7 @@ async function dexscreenerPoolData(poolAddress, chain) {
       liquidity: parseFloat(pair.liquidity?.usd) || null,
       dex:       pair.dexId,
       _source:   "dexscreener",
+      ath_price: ath_price > 0 ? ath_price : null,
     };
   });
 }

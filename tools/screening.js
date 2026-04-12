@@ -19,6 +19,7 @@ import { hybridDataProvider } from "./dataProvider.js";
 import { getTokenAdvancedInfo, getTokenPriceInfo } from "./okx.js";
 import { batchGetTokenVolumeH1, getJupiterTokenInfo } from "./token.js";
 import { checkSmartWalletActivity } from "../smart-wallets.js";
+import { isPoolOnATHCooldown } from "../pool-memory.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -1066,11 +1067,25 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   // Sort by confluence score descending
   filtered.sort((a, b) => (b.fib_signal.confluenceScore ?? 0) - (a.fib_signal.confluenceScore ?? 0));
 
-  _s("screening", `Step 8 — Fibonacci: ${filtered.length}/${withPool.length} passed broken-support → ${candidates.length} ENTRY`);
+  // ── ATH-based deploy cooldown ─────────────────────────────────────────────
+  const beforeCooldown = filtered.length;
+  const cooldownFiltered = filtered.filter(c => {
+    const addr = c.pool || c.poolAddress;
+    const price = c.price || c.fib_signal?.currentPrice;
+    if (!addr || !price) return true;
+    if (isPoolOnATHCooldown(addr, price)) {
+      log("screening", `  ${c.name}: SKIP — TP/SL close, no new ATH since close`);
+      return false;
+    }
+    return true;
+  });
+  _s("screening", `ATH cooldown: ${cooldownFiltered.length}/${beforeCooldown} passed (TP/SL closes without new ATH filtered)`);
+
+  _s("screening", `Step 8 — Fibonacci: ${cooldownFiltered.length}/${withPool.length} passed broken-support → ${candidates.length} ENTRY`);
   _s("screening", `Summary: discovered=${allTokens.length} (dex=${dexTokens.length}+rocket=${rocketTokens.length}) → volume=${afterVolumeCount} → eligible=${eligible.length} → prePoolCap=${maxTechAnalysis} → pools=${withPool.length} → fib_entry=${filtered.length}`);
 
   return {
-    candidates:        filtered,
+    candidates:        cooldownFiltered,
     total_screened:    allTokens.length,
     after_volume_count: afterVolumeCount,
     withPool_count:    withPool.length,
