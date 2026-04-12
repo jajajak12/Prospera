@@ -27,6 +27,8 @@ import { log } from "../logger.js";
 const DEXSCREENER_BASE   = "https://api.dexscreener.com";
 const BIRDEYE_BASE       = "https://public-api.birdeye.so";
 const GECKOTERMINAL_BASE = "https://api.geckoterminal.com/api/v2";
+const JUPITER_QUOTE_API  = "https://api.jup.ag/swap/v1";
+const SOL_MINT           = "So11111111111111111111111111111111111111112"; // wrapped SOL
 const TIMEOUT_MS = 3000;
 
 // Birdeye multi-key support — rotate on 401
@@ -300,6 +302,79 @@ async function geckoOHLCV(poolAddress, chain, timeframe, limit) {
   });
 }
 
+// ─── Jupiter Quote (SOL → token) ─────────────────────────────────────────────
+// Last-resort price: get token/USD by quoting SOL → token, then invert.
+async function jupiterQuotePrice(tokenMint, chain = "solana") {
+  return withRetry(async () => {
+    const amountStr = (1e9).toString(); // 1 SOL in lamports
+    const res = await fetch(
+      `${JUPITER_QUOTE_API}/quote?inputMint=${SOL_MINT}&outputMint=${tokenMint}&amount=${amountStr}&slippageBps=500`,
+      { signal: sig(TIMEOUT_MS) }
+    );
+    if (res.status === 429) throw new Error("Jupiter 429");
+    if (!res.ok) throw new Error(`Jupiter quote error: ${res.status}`);
+    const data = await res.json();
+    const inAmount  = Number(data.inAmount);
+    const outAmount = Number(data.outAmount);
+    if (!inAmount || !outAmount) throw new Error("Jupiter: missing inAmount/outAmount");
+    const pricePerTokenLamports = inAmount / outAmount;
+    const solUsd = await jupiterSolPrice();
+    const priceUSD = pricePerTokenLamports * solUsd;
+    if (!priceUSD || priceUSD <= 0) throw new Error("Jupiter: invalid priceUSD");
+    log.debug("screening", `jupiterQuotePrice: ${tokenMint} = $${priceUSD} (SOL/USD=${solUsd})`);
+    return priceUSD;
+  });
+}
+
+async function jupiterSolPrice() {
+  const res = await fetch(`${JUPITER_QUOTE_API}/price?ids=${SOL_MINT}`, { signal: sig(TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`Jupiter price error: ${res.status}`);
+  const data = await res.json();
+  const price = data?.[SOL_MINT]?.usd;
+  if (!price || price <= 0) throw new Error("Jupiter: missing SOL/USD");
+  return price;
+}
+
+// ─── Reliable USD Price (last-resort chain) ───────────────────────────────────
+// Priority: GeckoTerminal → Birdeye → Jupiter quote (SOL→token→USD) → Dexscreener priceUsd → null
+// Returns: { price: number, source: string } | null
+async function getReliableUSDPrice(tokenMint, poolAddress = null, chain = "solana") {
+  const sources = [];
+
+  if (poolAddress) {
+    try {
+      const pool = await geckoPoolData(poolAddress, chain);
+      if (pool.price && pool.price > 0) return { price: pool.price, source: "geckoterminal" };
+      sources.push("geckoterminal:null");
+    } catch (err) { sources.push(`geckoterminal:${err.message}`); }
+  }
+
+  if (poolAddress) {
+    try {
+      const pool = await birdeyePoolData(poolAddress, chain);
+      if (pool.price && pool.price > 0) return { price: pool.price, source: "birdeye" };
+      sources.push("birdeye:null");
+    } catch (err) { sources.push(`birdeye:${err.message}`); }
+  }
+
+  try {
+    const price = await jupiterQuotePrice(tokenMint, chain);
+    if (price && price > 0) return { price, source: "jupiter-quote" };
+    sources.push("jupiter:null");
+  } catch (err) { sources.push(`jupiter:${err.message}`); }
+
+  if (poolAddress) {
+    try {
+      const pool = await dexscreenerPoolData(poolAddress, chain);
+      if (pool.price && pool.price > 0) return { price: pool.price, source: "dexscreener" };
+      sources.push("dexscreener:null");
+    } catch (err) { sources.push(`dexscreener:${err.message}`); }
+  }
+
+  log.warn("screening", `ALL PRICE SOURCES FAILED for ${tokenMint} — pools tried: ${poolAddress ?? "none"}, errors: [${sources.join(" | ")}]`);
+  return null;
+}
+
 // ─── HybridDataProvider ───────────────────────────────────────────────────────
 
 export class HybridDataProvider {
@@ -408,6 +483,19 @@ export class HybridDataProvider {
 
     // ── Both failed → skip candidate (degraded TA is worse than missed opportunity) ──
     throw new Error(`getOHLCV: both GeckoTerminal and Birdeye failed for ${poolAddress ?? tokenMint} — candidate skipped`);
+  }
+
+  /**
+   * Last-resort USD price finder.
+   * Priority: GeckoTerminal → Birdeye → Jupiter quote (SOL→token→USD) → Dexscreener priceUsd → null.
+   * Logs "ALL PRICE SOURCES FAILED" if every source returns null/throws.
+   * @param {string} tokenMint
+   * @param {string|null} poolAddress
+   * @param {string} [chain="solana"]
+   * @returns {{ price: number, source: string } | null}
+   */
+  async getReliableUSDPrice(tokenMint, poolAddress = null, chain = "solana") {
+    return getReliableUSDPrice(tokenMint, poolAddress, chain);
   }
 }
 

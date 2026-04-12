@@ -961,15 +961,16 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       if (!binStep) {
         return { signal: "SKIP", reason: "Missing bin_step" };
       }
-      // If Dexscreener discovery didn't provide USD price, try hybridDataProvider
+      // If Dexscreener discovery didn't provide USD price, try full fallback chain
       if (!currentPrice) {
         try {
-          const poolData = await hybridDataProvider.getPoolData(pool.pool);
-          currentPrice = poolData.price ?? null;
+          const reliable = await hybridDataProvider.getReliableUSDPrice(token.mint, pool.pool);
+          currentPrice = reliable?.price ?? null;
+          if (!currentPrice) {
+            return { signal: "SKIP", reason: "Missing USD price — ALL price sources failed" };
+          }
+          log.screening(`  ${pool.name}: getReliableUSDPrice=${{ price: currentPrice, source: reliable.source }}`);
         } catch { /* non-fatal */ }
-      }
-      if (!currentPrice) {
-        return { signal: "SKIP", reason: "Missing USD price — skip to avoid unit mismatch" };
       }
       return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? null }, pool.pool);
     })
