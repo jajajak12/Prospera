@@ -411,13 +411,20 @@ export async function runManagementCycle({ silent = false } = {}) {
         return `POSITION: ${p.pair}\n  pnl: ${p.pnl_pct}% | fees: $${p.unclaimed_fees_usd} | in_range: ${p.in_range}`;
       }).join("\n\n");
 
-      const { content } = await agentLoop(`
+      let agentContent = "";
+      try {
+        const result = await agentLoop(`
 MANAGEMENT REVIEW — ${llmZone.length} position(s) need LLM judgment
 ${allBlocks}
 RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
       `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 512, corrId);
+        agentContent = result?.content ?? "";
+      } catch (agentErr) {
+        _m("error", `agentLoop crashed: ${agentErr.message} | stack: ${(agentErr.stack || "").slice(0, 500)}`);
+        agentContent = `(agentLoop error: ${agentErr.message})`;
+      }
 
-      mgmtReport += `\n\n${content}`;
+      mgmtReport += `\n\n${agentContent}`;
     }
 
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
@@ -588,7 +595,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
           return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${conf} binsBelow=${fib?.binsBelow} binsAbove=${fib?.binsAbove ?? 0}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  active_bin: ${activeBin}`;
         }).join("\n\n");
 
-        const { content } = await agentLoop(`
+        let agentContent = "";
+        try {
+          const result = await agentLoop(`
 FIBONACCI SCREENING CYCLE
 Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${preBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
 
@@ -600,8 +609,13 @@ RULES:
 2. bins_below and bins_above from fib_signal (chart.js output). In ATH zone bins_above is NEGATIVE — pass it AS-IS (do NOT zero it out).
 3. strategy=bid_ask. amount_y=${deployAmount} SOL.
     `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, corrId);
+          agentContent = result?.content ?? "";
+        } catch (agentErr) {
+          _s("error", `agentLoop crashed: ${agentErr.message} | stack: ${(agentErr.stack || "").slice(0, 500)}`);
+          agentContent = `(agentLoop error: ${agentErr.message})`;
+        }
 
-        screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${freshCandidates.length} candidate(s) passed Fib + RSI + EMA\n\n${content}`;
+        screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${freshCandidates.length} candidate(s) passed Fib + RSI + EMA\n\n${agentContent}`;
       }
     }
   } catch (error) {
