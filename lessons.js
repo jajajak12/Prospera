@@ -30,7 +30,12 @@ function load() {
     return { lessons: [], performance: [] };
   }
   try {
-    return JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8"));
+    const data = JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8"));
+    // Handle legacy bare-array format (e.g. "[]") and missing fields
+    if (Array.isArray(data)) return { lessons: [], performance: [] };
+    if (!Array.isArray(data?.lessons)) data.lessons = [];
+    if (!Array.isArray(data?.performance)) data.performance = [];
+    return data;
   } catch {
     return { lessons: [], performance: [] };
   }
