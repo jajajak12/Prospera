@@ -135,6 +135,7 @@ export async function recordPerformance(perf) {
       strategy:        perf.strategy,
       volatility:      perf.volatility,
       ath_price:      perf.ath_price ?? null,
+      ath_price_sol:  perf.ath_price_sol ?? null,
     });
   }
 
