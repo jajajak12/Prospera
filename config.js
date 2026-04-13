@@ -42,7 +42,7 @@ export const config = {
     minTokenFeesSolHighMcap:  u.minTokenFeesSolHighMcap  ?? 80,  // fee min for mcap > $1M
     athFilterPct:            u.athFilterPct            ?? null,
     minMcap:       u.minMcap       ?? 200_000,
-    maxMcap:       u.maxMcap       ?? 10_000_000,
+    maxMcap:       u.maxMcap       ?? 5_000_000,
     minBinStep:           u.minBinStep           ?? 80,
     maxBinStep:           u.maxBinStep           ?? 200,
     timeframe:            u.timeframe            ?? "5m",
