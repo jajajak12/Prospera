@@ -422,6 +422,7 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
         upper_bin:            lp.range?.[1] ?? tracked?.bin_range?.max ?? null,
         active_bin:           lp.range?.[2] ?? tracked?.bin_range?.active ?? null,
         in_range:             !!lp.inRange,
+        fib_zone:             tracked?.fib_zone ?? null,
         unclaimed_fees_usd:   _solPrice > 0 ? Math.round((lp.unCollectedFeeNative ?? 0) * _solPrice * 100) / 100 : 0,
         total_value_usd:      _solPrice > 0 ? Math.round((lp.valueNative          ?? 0) * _solPrice * 100) / 100 : 0,
         collected_fees_usd:   _solPrice > 0 ? Math.round((lp.collectedFeeNative   ?? 0) * _solPrice * 100) / 100 : 0,

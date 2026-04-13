@@ -70,7 +70,7 @@ export const config = {
   // ─── Position Management ────────────────
   management: {
     minClaimAmount:        u.minClaimAmount        ?? 5,
-    autoSwapAfterClaim:    u.autoSwapAfterClaim    ?? false,
+    autoSwapAfterClaim:    u.autoSwapAfterClaim    ?? true,  // claim → auto-swap to SOL after fees collected
     outOfRangeBinsToClose: u.outOfRangeBinsToClose ?? 20,
     outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 10,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,

@@ -342,7 +342,19 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (exitMap.has(p.position)) { actionMap.set(p.position, { action: "CLOSE", reason: exitMap.get(p.position) }); continue; }
       if (p.instruction) { actionMap.set(p.position, { action: "INSTRUCTION" }); continue; }
       if (p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) { actionMap.set(p.position, { action: "CLOSE", reason: "stop loss" }); continue; }
-      if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) { actionMap.set(p.position, { action: "CLAIM" }); continue; }
+      // Exposure cap temporarily disabled for Phase 3 Stability Test
+      // Claim unclaimed fees ONLY if position was deployed in Fib zone .236–.382 (PRIMARY zone)
+      // and fees >= 2% of current position value. Then auto-swap to SOL.
+      if (p.fib_zone === 'PRIMARY') {
+        const feesUsd   = p.unclaimed_fees_usd ?? 0;
+        const totalUsd = p.total_value_usd ?? 0;
+        const feePct   = totalUsd > 0 ? (feesUsd / totalUsd) * 100 : 0;
+        if (feePct >= 2.0) {
+          _m("management", `Claiming $${feesUsd.toFixed(2)} fees from Fib .236-.362 zone position ${p.pair} (${feePct.toFixed(1)}% of position) → swapping to SOL`);
+          actionMap.set(p.position, { action: "CLAIM" });
+          continue;
+        }
+      }
       // Build STAY reason: which checks passed
       const pnl = p.pnl_pct ?? 0;
       const inRange = p.in_range ? "in range" : `OOR ${p.minutes_out_of_range ?? 0}m`;
