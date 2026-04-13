@@ -401,7 +401,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     });
 
     // Compute total exposure percentage
-    const deployedSol = calculateCurrentExposure(positions);
+    const deployedSol = calculateCurrentExposureSol(positions, preBalance?.sol_price ?? 0);
     const exposurePct = preBalance?.sol > 0 ? +((deployedSol / preBalance.sol) * 100).toFixed(1) : 0;
 
     mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}% | LLM zone: ${llmZone.length}\n\n${reportLines.join("\n")}`;
@@ -771,7 +771,7 @@ async function handleTelegram(text) {
       const activeProvider = getActiveProvider();
       const positions = await getMyPositions({ force: true }).catch(() => null);
       const balance = await getWalletBalances().catch(() => null);
-      const deployedSol = (positions?.positions?.length ?? 0) > 0 ? calculateCurrentExposure(positions.positions) : 0;
+      const deployedSol = (positions?.positions?.length ?? 0) > 0 ? calculateCurrentExposureSol(positions.positions, balance?.sol_price ?? 0) : 0;
       const exposurePct = balance?.sol > 0 ? +((deployedSol / balance.sol) * 100).toFixed(1) : 0;
       const lastScreen = timers.screeningLastRun ? new Date(timers.screeningLastRun).toLocaleString("id-ID") : "never";
       const lastMgmt = timers.managementLastRun ? new Date(timers.managementLastRun).toLocaleString("id-ID") : "never";
