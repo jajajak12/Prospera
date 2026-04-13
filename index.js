@@ -579,7 +579,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
             const entryPrice = fib?.currentPrice ?? c.price ?? null;
             const activeBin = freshActiveBinResults[i]?.status === "fulfilled" ? freshActiveBinResults[i].value?.binId : null;
             if (c.pool && ath && entryPrice && activeBin != null) {
-              pending[c.pool] = { ath, entryPrice, binStep: c.bin_step ?? null, activeBinAtScreening: activeBin, fib500: fib?.fibLevels?.fib500 ?? null };
+              pending[c.pool] = { ath, entryPrice, binStep: c.bin_step ?? null, activeBinAtScreening: activeBin, fib500: fib?.fibLevels?.fib500 ?? null, tokenMint: c.base?.mint ?? null };
             }
           }
           fs.writeFileSync(PENDING_ATH_PATH, JSON.stringify(pending));
