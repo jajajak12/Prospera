@@ -745,6 +745,10 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
         log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — mcap $${Math.round(t.mcap)} > max $${s.maxMcap} | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
+      if (t.token_age_hours != null && s.maxTokenAgeHours != null && t.token_age_hours > s.maxTokenAgeHours) {
+        log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): SKIP — token age ${(t.token_age_hours / 24).toFixed(1)}d > max ${(s.maxTokenAgeHours / 24).toFixed(0)}d | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+        return false;
+      }
       return true;
     });
     const preCapCount = afterMcapFilter.length;

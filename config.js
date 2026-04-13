@@ -47,7 +47,7 @@ export const config = {
     minFeeActiveTvlRatio: u.minFeeActiveTvlRatio ?? 0.05,
     minFee:               u.minFee               ?? 25,
     minTokenAgeHours:     u.minTokenAgeHours     ?? null,
-    maxTokenAgeHours:     u.maxTokenAgeHours     ?? null,
+    maxTokenAgeHours:     u.maxTokenAgeHours     ?? 336,  // 2 weeks
     // Fibonacci-specific
     rsiMin:               u.rsiMin               ?? 45,     // RSI threshold: screened null→45 in ATH zone, 40 otherwise (chart.js)
     candleLimit:           u.candleLimit           ?? 100,
