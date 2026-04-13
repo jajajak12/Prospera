@@ -742,7 +742,7 @@ export function startCronJobs() {
   });
 
   _cronTasks = [mgmtTask, screenTask, backtestTask, briefingTask, pollTask];
-  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, Morning Briefing 09:00, Daily Backtest 00:00`);
+  log("cron", `Cron started — mgmt=*/${config.schedule.managementIntervalMin}min screen=*/${config.schedule.screeningIntervalMin}min`);
 }
 
 // ── Graceful Shutdown ─────────────────────────────────────────────────────────
