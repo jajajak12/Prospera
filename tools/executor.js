@@ -563,22 +563,22 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // CHANGED: real-time Fib 0.500 gate — use getReliableUSDPrice for consistent USD denomination
+      // Real-time Fib 0.500 gate — SOL denomination (consistent with OHLCV candles and Fib levels)
       try {
         const pending = fs.existsSync(PENDING_ATH_PATH)
           ? JSON.parse(fs.readFileSync(PENDING_ATH_PATH, "utf8"))
           : {};
         const meta = pending[args.pool_address];
         if (meta?.fib500 != null) {
-          const reliable = await hybridDataProvider.getReliableUSDPrice(meta.tokenMint ?? null, args.pool_address, "solana");
-          const livePriceUsd = reliable?.price ?? null;
-          if (livePriceUsd == null) {
+          const reliable = await hybridDataProvider.getReliableSOLPrice(meta.tokenMint ?? null, args.pool_address, "solana");
+          const livePriceSol = reliable?.price ?? null;
+          if (livePriceSol == null) {
             // Price unavailable at deploy time — fib500 already verified at screening, allow deploy
-            log.warn("deploy", `Fib deploy-gate: price unavailable → allowing deploy (fib500=$${meta.fib500?.toPrecision(4)} verified at screening)`, { pool: args.pool_address });
-          } else if (livePriceUsd < meta.fib500) {
+            log.warn("deploy", `Fib deploy-gate: SOL price unavailable → allowing deploy (fib500=${meta.fib500?.toPrecision(4)} SOL verified at screening)`, { pool: args.pool_address });
+          } else if (livePriceSol < meta.fib500) {
             return {
               pass: false,
-              reason: `Deploy blocked — live price $${livePriceUsd.toPrecision(4)} dropped below Fib 0.500 ($${meta.fib500.toPrecision(4)}) since screening.`,
+              reason: `Deploy blocked — live price ${livePriceSol.toPrecision(4)} SOL dropped below Fib 0.500 (${meta.fib500.toPrecision(4)} SOL) since screening.`,
             };
           }
         }

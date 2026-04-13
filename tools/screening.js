@@ -923,25 +923,25 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   // Birdeye 60 RPM ÷ 2 calls = 30 candidates max. We use 10 (~33% capacity).
 
   // Filter out pools cached as "broken support" — price far below Fib 0.618, no recovery expected soon
-  // All price values are stored in USD (token.price from Dexscreener) to match OHLCV candle units.
+  // All price values stored in SOL denomination (pool.price from Meteora) to match OHLCV candle units.
   const now = Date.now();
   const toAnalyze = withPool.filter(({ token, pool }) => {
     // Skip pools that are actively crashing (>80% price drop in 24h) — not an entry signal
     if (pool.price_change_pct != null && pool.price_change_pct <= -80) {
       log("screening", `  ${pool.name}: SKIP — price crashed ${pool.price_change_pct.toFixed(1)}% in 24h`);
-      const usdPrice = token.price ?? pool.price ?? 0;
-      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: usdPrice, athAtRejection: null });
+      const solPrice = pool.price ?? 0; // Meteora pool_price: SOL-denominated
+      _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: solPrice, athAtRejection: null });
       _saveBrokenSupportCache(_fibBrokenSupportCache);
       return false;
     }
     // Skip pools cached as "broken support" — invalidate ONLY if price broke previous ATH
     const cached = _fibBrokenSupportCache.get(pool.pool);
     if (cached && now - cached.cachedAt < FIB_BROKEN_CACHE_MS) {
-      const usdPrice = token.price ?? pool.price ?? 0;
-      if (cached.athAtRejection != null && usdPrice > cached.athAtRejection) {
+      const solPrice = pool.price ?? 0; // SOL-denominated
+      if (cached.athAtRejection != null && solPrice > cached.athAtRejection) {
         _fibBrokenSupportCache.delete(pool.pool);
         _saveBrokenSupportCache(_fibBrokenSupportCache);
-        log("screening", `  ${pool.name}: broken support cache INVALIDATED — price $${usdPrice.toPrecision(4)} reclaimed above fib swing high $${cached.athAtRejection.toPrecision(4)}, re-analyzing`);
+        log("screening", `  ${pool.name}: broken support cache INVALIDATED — price ${solPrice.toPrecision(4)} SOL reclaimed above fib swing high ${cached.athAtRejection.toPrecision(4)} SOL, re-analyzing`);
         return true;
       }
       const hrsLeft = (FIB_BROKEN_CACHE_MS - (now - cached.cachedAt)) / 3_600_000;
@@ -954,24 +954,23 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
 
   const signalResults = await Promise.allSettled(
     toAnalyze.map(async ({ token, pool }) => {
-      // Primary price: getReliableUSDPrice (GeckoTerminal → Birdeye → Jupiter quote → Dexscreener)
-      // This guarantees USD denomination for Fib calculations vs OHLCV USD candles.
-      // token.price (Dexscreener) used as secondary override only if it's non-zero.
-      let currentPrice = null;
-      try {
-        const reliable = await hybridDataProvider.getReliableUSDPrice(token.mint, pool.pool);
-        if (reliable?.price != null && reliable.price > 0) {
-          currentPrice = reliable.price;
-          log.screening(`  ${pool.name}: price=$${currentPrice.toPrecision(4)} source=${reliable.source}`);
-        }
-      } catch { /* non-fatal */ }
-      // Override with token.price only if it's a valid non-zero Dexscreener USD price
-      if (currentPrice == null && token.price != null && token.price > 0) {
-        currentPrice = token.price;
-        log.screening(`  ${pool.name}: price=$${currentPrice.toPrecision(4)} source=dexscreener-primary`);
+      // Primary price: Meteora pool_price (native SOL for TOKEN/SOL DLMM pools).
+      // Fallback: getReliableSOLPrice (GT OHLCV last close → Birdeye USD ÷ solPrice).
+      // ALL prices in SOL denomination — consistent with OHLCV candles from getOHLCV().
+      let currentPrice = (pool.price != null && pool.price > 0) ? pool.price : null;
+      if (currentPrice != null) {
+        log.screening(`  ${pool.name}: price=${currentPrice.toPrecision(4)} SOL source=meteora-pool`);
+      } else {
+        try {
+          const reliable = await hybridDataProvider.getReliableSOLPrice(token.mint, pool.pool);
+          if (reliable?.price != null && reliable.price > 0) {
+            currentPrice = reliable.price;
+            log.screening(`  ${pool.name}: price=${currentPrice.toPrecision(4)} SOL source=${reliable.source}`);
+          }
+        } catch { /* non-fatal */ }
       }
       if (currentPrice == null || currentPrice <= 0) {
-        return { signal: "SKIP", reason: "Missing USD price — ALL price sources failed" };
+        return { signal: "SKIP", reason: "Missing SOL price — Meteora pool_price null and all SOL price fallbacks failed" };
       }
       const binStep = pool.bin_step;
       if (!binStep) {
@@ -992,8 +991,8 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
 
     // Cache pools rejected for broken support — store ATH from Fib so invalidation is ATH-aware
     if (analysis.signal !== "ENTRY" && analysis.reason?.includes("broken support")) {
-      const rejectedPrice  = token.price ?? pool.price ?? 0;
-      const athAtRejection = analysis.fibLevels?.swingHigh ?? null;
+      const rejectedPrice  = pool.price ?? 0; // SOL-denominated (Meteora pool_price)
+      const athAtRejection = analysis.fibLevels?.swingHigh ?? null; // SOL-denominated (from OHLCV candles)
       _fibBrokenSupportCache.set(pool.pool, { cachedAt: now, priceAtRejection: rejectedPrice, athAtRejection });
       _saveBrokenSupportCache(_fibBrokenSupportCache);
     }
