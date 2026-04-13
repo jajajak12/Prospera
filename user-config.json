@@ -9,7 +9,7 @@
     "https://api.mainnet-beta.solana.com"
   ],
   "minDeployAmountSol": 0.5,
-  "maxPositions": 2,
+  "maxPositions": 3,
   "minSolToOpen": 0.6,
   "timeframe": "5m",
   "minOrganic": 60,
