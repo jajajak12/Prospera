@@ -302,7 +302,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   _managementBusy = true;
   timers.managementLastRun = Date.now();
-  _m("management", `Starting cycle`, { openPositions: preCount });
+  _m("management", `Management cycle started — checking ${preCount} open position(s)`);
 
   let mgmtReport = null;
   let llmZone = [];
@@ -344,6 +344,14 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) { actionMap.set(p.position, { action: "CLOSE", reason: "stop loss" }); continue; }
       if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) { actionMap.set(p.position, { action: "CLAIM" }); continue; }
       actionMap.set(p.position, { action: "STAY" });
+    }
+
+    // Per-position check logging — only STAY (no exit condition met)
+    for (const p of positionData) {
+      const act = actionMap.get(p.position);
+      if (act.action === "STAY") {
+        _m("management", `Checking ${p.pair} — no exit condition met (PnL ${(p.pnl_pct ?? 0) >= 0 ? "+" : ""}${(p.pnl_pct ?? 0).toFixed(2)}%, in_range=${p.in_range})`);
+      }
     }
 
     // ── Deterministic actions: execute immediately without LLM ──────────────────
@@ -442,6 +450,7 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
     _m("error", `Management failed: ${error.message}`);
     mgmtReport = `Failed: ${error.message}`;
   } finally {
+    _m("management", `Management cycle completed — ${llmZone.length > 0 ? "LLM judgment applied" : "no action taken"}`);
     _managementBusy = false;
     _managementLastCompleted = Date.now();
     _lastLlmZoneCount = llmZone.length;
