@@ -343,14 +343,18 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (p.instruction) { actionMap.set(p.position, { action: "INSTRUCTION" }); continue; }
       if (p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) { actionMap.set(p.position, { action: "CLOSE", reason: "stop loss" }); continue; }
       if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) { actionMap.set(p.position, { action: "CLAIM" }); continue; }
-      actionMap.set(p.position, { action: "STAY" });
+      // Build STAY reason: which checks passed
+      const pnl = p.pnl_pct ?? 0;
+      const inRange = p.in_range ? "in range" : `OOR ${p.minutes_out_of_range ?? 0}m`;
+      const slDist = p.pnl_pct != null ? `SL:${(config.management.stopLossPct - pnl).toFixed(1)}%` : "SL:?";
+      actionMap.set(p.position, { action: "STAY", reason: `${inRange}, ${slDist}` });
     }
 
-    // Per-position check logging — only STAY (no exit condition met)
+    // Per-position check logging — STAY shows why no exit triggered
     for (const p of positionData) {
       const act = actionMap.get(p.position);
       if (act.action === "STAY") {
-        _m("management", `Checking ${p.pair} — no exit condition met (PnL ${(p.pnl_pct ?? 0) >= 0 ? "+" : ""}${(p.pnl_pct ?? 0).toFixed(2)}%, in_range=${p.in_range})`);
+        _m("management", `Checking ${p.pair} — STAY: ${act.reason}, Fib gate OK`);
       }
     }
 
@@ -416,6 +420,14 @@ export async function runManagementCycle({ silent = false } = {}) {
     const deployedSol = calculateCurrentExposureSol(positions, preBalance?.sol_price ?? 0);
     const exposurePct = preBalance?.sol > 0 ? +((deployedSol / preBalance.sol) * 100).toFixed(1) : 0;
 
+    // Count actions for summary
+    const counts = { STAY: 0, CLOSE: 0, CLAIM: 0, INSTRUCTION: 0 };
+    for (const p of positionData) {
+      const act = actionMap.get(p.position);
+      if (counts[act.action] !== undefined) counts[act.action]++;
+    }
+    _m("management", `Management cycle completed — ${counts.STAY} STAY | ${counts.CLOSE} CLOSE | ${counts.CLAIM} CLAIM | exposure ${exposurePct}%`);
+
     mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}% | LLM zone: ${llmZone.length}\n\n${reportLines.join("\n")}`;
 
     if (llmZone.length > 0) {
@@ -450,7 +462,6 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
     _m("error", `Management failed: ${error.message}`);
     mgmtReport = `Failed: ${error.message}`;
   } finally {
-    _m("management", `Management cycle completed — ${llmZone.length > 0 ? "LLM judgment applied" : "no action taken"}`);
     _managementBusy = false;
     _managementLastCompleted = Date.now();
     _lastLlmZoneCount = llmZone.length;
