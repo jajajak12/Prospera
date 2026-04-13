@@ -161,9 +161,7 @@ export function getPositionSizing(totalSol) {
 }
 
 /**
- * Total value USD dari semua posisi aktif.
- * Setelah fix dlmm.js getMyPositions (valueNative → USD conversion),
- * total_value_usd sudah dalam USD. Tidak perlu bagi solPrice lagi.
+ * Total value USD dari semua posisi aktif (for display/UI).
  * @param {Array} positions - array position objects dari getMyPositions
  * @returns {number} total value USD
  */
@@ -171,6 +169,26 @@ export function calculateCurrentExposure(positions) {
   if (!Array.isArray(positions) || positions.length === 0) return 0;
   const totalUsd = positions.reduce((sum, p) => sum + (p.total_value_usd ?? 0), 0);
   return Math.round(totalUsd * 100) / 100;
+}
+
+/**
+ * Total deployed SOL dari semua posisi aktif (for exposure cap calculation).
+ * Bug fix (13 Apr 2026): total_value_usd from LPAgent path = USD (already converted),
+ * but getWalletPositions path also stores USD in same field — causing unit mismatch.
+ * Fix: convert USD back to SOL using solPrice so all callers use SOL consistently.
+ *
+ * @param {Array} positions - array position objects dari getMyPositions
+ * @param {number} solPrice  - current SOL price in USD (required for USD→SOL conversion)
+ * @returns {number} total deployed SOL (rounded to 4 decimal places)
+ */
+export function calculateCurrentExposureSol(positions, solPrice) {
+  if (!Array.isArray(positions) || positions.length === 0) return 0;
+  if (!solPrice || solPrice <= 0) {
+    console.warn("[exposure_warn] solPrice unavailable — treating USD as SOL (may over-estimate)"); // solPrice=${solPrice}
+    return calculateCurrentExposure(positions);
+  }
+  const totalUsd = positions.reduce((sum, p) => sum + (p.total_value_usd ?? 0), 0);
+  return Math.round((totalUsd / solPrice) * 10000) / 10000;
 }
 
 /**

@@ -41,7 +41,7 @@ import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositi
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
-import { config, computeDeployAmount, getPositionSizing, calculateCurrentExposure, canOpenNewPosition, checkExposureCap } from "./config.js";
+import { config, computeDeployAmount, getPositionSizing, calculateCurrentExposure, calculateCurrentExposureSol, canOpenNewPosition, checkExposureCap } from "./config.js";
 
 // ── Startup validation ─────────────────────────────────────────────────────────
 const lpKey     = process.env.LPAGENT_API_KEY;
@@ -139,7 +139,8 @@ async function runMorningBriefing({ force = false } = {}) {
   const totalPositions = positions?.total_positions ?? 0;
   const walletSol = balance?.sol ?? 0;
   const deployAmt = getPositionSizing(walletSol);
-  const deployedSol = posList.length > 0 ? calculateCurrentExposure(posList) : 0;
+  // Bug fix: calculateCurrentExposureSol returns SOL (not USD like before)
+  const deployedSol = posList.length > 0 ? calculateCurrentExposureSol(posList, balance?.sol_price ?? 0) : 0;
   const capPct = config.risk.totalExposureCapPct ?? 0.60;
   const exposurePct = walletSol > 0 ? +((deployedSol / walletSol) * 100).toFixed(1) : 0;
 
@@ -508,7 +509,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   deployAmount = getPositionSizing(preBalance.sol);
   if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
 
-  const currentExposure = calculateCurrentExposure(prePositions.positions);
+  const currentExposure = calculateCurrentExposureSol(prePositions.positions, preBalance?.sol_price ?? 0);
   const cap = checkExposureCap(currentExposure, preBalance.sol, deployAmount);
   if (cap.level === "hard_pause") {
     _exposureHardPausedUntil = cap.pauseUntil;
