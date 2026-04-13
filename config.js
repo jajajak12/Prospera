@@ -34,7 +34,7 @@ export const config = {
     minOrganic:    u.minOrganic    ?? 60,
     minHolders:        u.minHolders        ?? 500,
     maxBundlePct:         u.maxBundlePct         ?? 30,
-    maxBotHoldersPct:     u.maxBotHoldersPct     ?? 30,
+    maxBotHoldersPct:     u.maxBotHoldersPct     ?? 60,
     maxTop10Pct:          u.maxTop10Pct          ?? 22,
     minTokenFeesSol:           u.minTokenFeesSol           ?? 23,
     minTokenFeesSolHighMcap:  u.minTokenFeesSolHighMcap  ?? 80,  // fee min for mcap > $1M
