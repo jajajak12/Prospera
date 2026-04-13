@@ -274,6 +274,7 @@ async function discoverTokensFromDexscreener() {
       if (!mint) continue;
       const volH1 = parseFloat(pair.volume?.h1 ?? 0) || 0;
       const existing = byMint.get(mint);
+      const pairAgeHours = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 3_600_000 : null;
       if (!existing) {
         byMint.set(mint, {
           mint,
@@ -282,10 +283,15 @@ async function discoverTokensFromDexscreener() {
           mcap:   parseFloat(pair.fdv ?? pair.marketCap) || null,
           _volH1: Math.round(volH1),
           _mcapAtDiscovery: parseFloat(pair.fdv ?? pair.marketCap) || null,
+          token_age_hours: pairAgeHours,
         });
       } else {
         // Aggregate: sum h1 volume across ALL pools for this mint
         existing._volH1 += volH1;
+        // Keep the oldest known pair (earliest listing = true token age)
+        if (pairAgeHours != null && (existing.token_age_hours == null || pairAgeHours > existing.token_age_hours)) {
+          existing.token_age_hours = pairAgeHours;
+        }
       }
     }
   }
