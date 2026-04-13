@@ -301,6 +301,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   _m("management", `Starting cycle`, { openPositions: preCount });
 
   let mgmtReport = null;
+  let llmZone = [];
   let positions = prePositions.positions ?? [];
 
   try {
@@ -329,9 +330,8 @@ export async function runManagementCycle({ silent = false } = {}) {
     //   _m("management", `positionMeta loaded: ${Object.keys(positionMeta).length} entries (reserved for future ATH recovery logic)`);
     // }
 
-    // ── LLM zone & report vars — init before try so finally always has defined value ──
-    let llmZone = [];
-    let mgmtReport = "";
+    // ── LLM zone & report vars — declared outside try, reassign here ──
+    mgmtReport = "";
 
     const actionMap = new Map();
     for (const p of positionData) {
@@ -514,7 +514,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   if (cap.level === "hard_pause") {
     _exposureHardPausedUntil = cap.pauseUntil;
     _s("error", "HARD CAP TRIGGERED");
-    if (telegramEnabled()) sendMessage(`🔍 Fibonacci Screening — HARD CAP ${cap.exposurePct.toFixed(1)}% TRIGGERED`).catch(() => {});
+    if (telegramEnabled()) sendMessage(`🔍 Screening BLOCKED — exposure cap\nCurrent: ${cap.currentExposureSol.toFixed(2)} SOL (${((cap.currentExposureSol / Math.max(preBalance.sol - cap.gasReserveSol, 0.01)) * 100).toFixed(1)}%)\nProposed: +${deployAmount.toFixed(2)} SOL\nProjected: ${cap.projectedExposureSol.toFixed(2)} SOL (${cap.exposurePct.toFixed(1)}%) > cap ${cap.hardCapPct.toFixed(0)}%`).catch(() => {});
     _release(); return null;
   }
   if (cap.level === "warning") {
