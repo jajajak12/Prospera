@@ -76,6 +76,7 @@ export function recordPoolDeploy(poolAddress, deployData) {
     strategy: deployData.strategy || null,
     volatility_at_deploy: deployData.volatility ?? null,
     ath_price_at_close: deployData.ath_price ?? null,
+    ath_price_sol_at_close: deployData.ath_price_sol ?? null,
   };
 
   entry.deploys.push(deploy);
@@ -114,10 +115,10 @@ export function recordPoolDeploy(poolAddress, deployData) {
  * Used by screening to filter out candidates that are on deploy cooldown.
  *
  * @param {string} poolAddress
- * @param {number} [currentPrice] — if provided, checks if price >= stored ATH (new ATH made)
+ * @param {number} [currentPriceSol] — current token price in SOL (from Meteora pool.price)
  * @returns {boolean}
  */
-export function isPoolOnATHCooldown(poolAddress, currentPrice) {
+export function isPoolOnATHCooldown(poolAddress, currentPriceSol) {
   if (!poolAddress) return false;
   const db = load();
   const entry = db[poolAddress];
@@ -130,28 +131,31 @@ export function isPoolOnATHCooldown(poolAddress, currentPrice) {
   const isTPorSL = reason === "take_profit" || reason === "stop_loss";
   if (!isTPorSL) return false;
 
-  // No ATH stored → fall back to time-based cooldown (conservative)
-  if (lastDeploy.ath_price_at_close == null) {
-    log("pool-memory", `${entry.name}: TP/SL close but no ath_price stored — fallback to 1h cooldown`);
-    const cooldownMs = 60 * 60 * 1000;
-    if (lastDeploy.closed_at) {
-      const closedAt = new Date(lastDeploy.closed_at).getTime();
-      return Date.now() - closedAt < cooldownMs;
+  // Primary: compare SOL vs SOL ATH (set after April 2026 migration)
+  if (lastDeploy.ath_price_sol_at_close != null) {
+    if (currentPriceSol != null) {
+      const madeNewAth = currentPriceSol >= lastDeploy.ath_price_sol_at_close;
+      if (madeNewAth) {
+        log("pool-memory", `${entry.name}: new ATH (SOL) detected (${currentPriceSol.toPrecision(4)} >= ${lastDeploy.ath_price_sol_at_close.toPrecision(4)}) — cooldown cleared`);
+        return false;
+      }
+      log("pool-memory", `${entry.name}: on cooldown (SOL) — current=${currentPriceSol.toPrecision(4)} < ath_sol=${lastDeploy.ath_price_sol_at_close.toPrecision(4)}`);
+      return true;
     }
-    return true; // assume cooldown if no timestamp
-  }
-
-  // If current price provided, check if new ATH was made
-  if (currentPrice != null) {
-    const madeNewAth = currentPrice >= lastDeploy.ath_price_at_close;
-    if (madeNewAth) {
-      log("pool-memory", `${entry.name}: new ATH detected (${currentPrice} >= ${lastDeploy.ath_price_at_close}) — cooldown cleared`);
-      return false;
-    }
+    // No current price provided — conservative: assume still on cooldown
     return true;
   }
 
-  return true;
+  // Legacy: no SOL ATH stored (pre-April 2026 closes).
+  // ath_price_at_close is USD — cannot compare with SOL currentPrice.
+  // Fall back to time-based cooldown.
+  log("pool-memory", `${entry.name}: TP/SL close with no SOL ATH stored (legacy entry) — fallback to 1h cooldown`);
+  const cooldownMs = 60 * 60 * 1000;
+  if (lastDeploy.closed_at) {
+    const closedAt = new Date(lastDeploy.closed_at).getTime();
+    return Date.now() - closedAt < cooldownMs;
+  }
+  return true; // assume cooldown if no timestamp
 }
 
 export function isPoolOnCooldown(poolAddress) {

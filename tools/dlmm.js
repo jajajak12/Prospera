@@ -711,12 +711,22 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         }
       }
 
-      // Fetch current ATH at close time — used for deploy cooldown check
+      // Fetch SOL price at close from Meteora (native SOL — consistent with SOL-first architecture).
+      // Used for deploy cooldown check: current SOL price vs SOL price at close.
+      // Also fetch USD ATH from Dexscreener for legacy compatibility (pool-memory.js fallback).
+      let athPriceSolAtClose = null;
       let athPriceAtClose = null;
+      try {
+        const activeBin = await pool.getActiveBin();
+        athPriceSolAtClose = parseFloat(activeBin.price); // Meteora native SOL
+        log("close", `ATH SOL at close: ${athPriceSolAtClose}`);
+      } catch (e) {
+        log("close_warn", `Meteora active bin at close failed: ${e.message}`);
+      }
       try {
         const poolData = await hybridDataProvider.getPoolData(poolAddress.toString());
         athPriceAtClose = poolData?.ath_price ?? null;
-        log("close", `ATH at close: ${athPriceAtClose ?? "N/A"}`);
+        log("close", `ATH USD at close: ${athPriceAtClose ?? "N/A"}`);
       } catch (e) {
         log("close_warn", `ATH fetch at close failed: ${e.message}`);
       }
@@ -754,6 +764,7 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         minutes_held: minutesHeld,
         close_reason: reason || "agent decision",
         ath_price: athPriceAtClose,
+        ath_price_sol: athPriceSolAtClose,
       });
 
       return { success: true, position: position_address, pool: poolAddress, pool_name: tracked.pool_name || null, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, base_mint: pool.lbPair.tokenXMint.toString() };

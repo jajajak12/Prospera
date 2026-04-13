@@ -1076,9 +1076,12 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
   const beforeCooldown = filtered.length;
   const cooldownFiltered = filtered.filter(c => {
     const addr = c.pool || c.poolAddress;
-    const price = c.price || c.fib_signal?.currentPrice;
-    if (!addr || !price) return true;
-    if (isPoolOnATHCooldown(addr, price)) {
+    // Use SOL price (fib_signal.currentPrice from Meteora) — consistent with SOL-first architecture.
+    // Legacy candidates without fib_signal: use c.price (Dexscreener USD) as fallback for cooldown check,
+    // but this means unit mismatch in comparison. Acceptable — legacy entries get 1h time fallback anyway.
+    const priceSol = c.fib_signal?.currentPrice ?? (c.price ?? null);
+    if (!addr) return true;
+    if (priceSol != null && isPoolOnATHCooldown(addr, priceSol)) {
       log("screening", `  ${c.name}: SKIP — TP/SL close, no new ATH since close`);
       return false;
     }
