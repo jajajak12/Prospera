@@ -105,7 +105,7 @@ Diterapkan berurutan (murah ke mahal):
 
 ## Data Providers
 
-> ⚠️ **Aturan utama: Jangan pernah pakai `pool.price` (SOL-denominated) untuk Fib comparison. Selalu pakai USD price.**
+> ⚠️ **Aturan utama: SEMUA harga sudah SOL end-to-end sejak migrasi April 2026. `pool.price` (Meteora native SOL) adalah primary price untuk Fib comparison. `getReliableSOLPrice` digunakan sebagai fallback.**
 
 ### Provider Priority
 

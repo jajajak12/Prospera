@@ -7,7 +7,7 @@ Hard Rules:
 - Hard no-entry: price < Fib 0.500 → immediate skip with reason "below Fib 0.500"
 - Broken support cache: trigger if price < Fib 0.618, invalidate only on new ATH
 - All data (pool data & OHLCV) must use HybridDataProvider (Dexscreener primary → Birdeye fallback → GeckoTerminal last resort)
-- Never use pool.price (SOL denominated) for Fib comparison. Always use USD price.
+- All prices (pool.price, currentPrice, Fib levels, OHLCV) are now SOL-denominated end-to-end — no USD conversion.
 
 Tech: JavaScript (ES modules)
 PM2 process: restart 0 after every change
