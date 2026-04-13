@@ -254,7 +254,6 @@ export async function runManagementCycle({ silent = false } = {}) {
   const _m = (cat, msg, meta = {}) => logWithId(cat, msg, meta, corrId);
 
   if (_managementBusy) { _m("management", "Cycle busy — skipped"); return null; }
-  if (_screeningBusy) { _m("management", "Screening running — skipped"); return null; }
 
   // ── Fast path: cek posisi dulu sebelum acquire lock / busy flag ─────────────
   // Jika 0 posisi → skip secepat mungkin, tidak perlu lock, tidak perlu LPAgent call
@@ -516,11 +515,19 @@ export async function runScreeningCycle({ silent = false } = {}) {
   }
 
   if (prePositions.total_positions >= config.risk.maxPositions) { logSkip("max_positions", {}, corrId); _release(); return null; }
-  const currentExposure = calculateCurrentExposureSol(prePositions.positions, preBalance?.sol_price ?? 0);
-  const totalPortfolio = (preBalance.sol ?? 0) + currentExposure;
-  deployAmount = getPositionSizing(totalPortfolio);
+  const solPriceAvailable = (preBalance?.sol_price ?? 0) > 0;
+  const currentExposure = solPriceAvailable
+    ? calculateCurrentExposureSol(prePositions.positions, preBalance.sol_price)
+    : 0; // sol_price unavailable → skip cap check, exposure treated as 0
+  const totalPortfolio = (preBalance?.sol ?? 0) + currentExposure;
+  deployAmount = getPositionSizing(totalPortfolio > 0 ? totalPortfolio : (preBalance?.sol ?? 0));
   if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
-  const cap = checkExposureCap(currentExposure, preBalance.sol, deployAmount);
+  if (!solPriceAvailable) {
+    _s("screening", "SOL price unavailable — skipping exposure cap check, proceeding with screening");
+  }
+  const cap = solPriceAvailable
+    ? checkExposureCap(currentExposure, preBalance.sol, deployAmount)
+    : { level: "ok" };
   if (cap.level === "hard_pause") {
     _exposureHardPausedUntil = cap.pauseUntil;
     _s("error", "HARD CAP TRIGGERED");
@@ -674,7 +681,7 @@ export function startCronJobs() {
   stopCronJobs();
 
   const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
-    if (_managementBusy || _screeningBusy) return;
+    if (_managementBusy) return;
     const lockAge = Date.now() - _managementLastCompleted;
     if (lockAge < 45_000) return;
     await runManagementCycle({ silent: true });
