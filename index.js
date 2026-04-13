@@ -345,7 +345,10 @@ export async function runManagementCycle({ silent = false } = {}) {
       // Exposure cap temporarily disabled for Phase 3 Stability Test
       // Claim unclaimed fees ONLY if position was deployed in Fib zone .236–.382 (PRIMARY zone)
       // and fees >= 2% of current position value. Then auto-swap to SOL.
-      if (p.fib_zone === 'PRIMARY') {
+      const isUpperRetracementZone =
+        p.fib_zone === 'PRIMARY' ||
+        (p.current_fib_level != null && p.current_fib_level >= 0.236 && p.current_fib_level <= 0.362);
+      if (isUpperRetracementZone) {
         const feesUsd   = p.unclaimed_fees_usd ?? 0;
         const totalUsd = p.total_value_usd ?? 0;
         const feePct   = totalUsd > 0 ? (feesUsd / totalUsd) * 100 : 0;
