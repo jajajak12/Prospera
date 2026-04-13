@@ -464,15 +464,25 @@ export async function runScreeningCycle({ silent = false } = {}) {
     return null;
   }
 
-  if (_screeningBusy) { log("cron", "Screening skipped — busy"); return null; }
+  if (_screeningBusy) {
+    log("cron", "Screening skipped — busy");
+    if (!silent && telegramEnabled()) sendMessage(`🔍 Screening busy — cycle already running`).catch(() => {});
+    return null;
+  }
 
   if (_exposureHardPausedUntil > Date.now()) {
-    _s("screening", `HARD CAP pause active`);
+    const resumeAt = new Date(_exposureHardPausedUntil).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
+    _s("screening", `HARD CAP pause active until ${resumeAt}`);
+    if (!silent && telegramEnabled()) sendMessage(`🔍 Screening paused — exposure cap active, resumes at ${resumeAt} UTC`).catch(() => {});
     return null;
   }
 
   const lockResult = acquireScreeningLock();
-  if (!lockResult.acquired) { _s("screening", `Lock not acquired`); return null; }
+  if (!lockResult.acquired) {
+    _s("screening", `Lock not acquired`);
+    if (!silent && telegramEnabled()) sendMessage(`🔍 Screening skipped — lock busy`).catch(() => {});
+    return null;
+  }
 
   _screeningBusy = true;
   _screeningLastTriggered = Date.now();
