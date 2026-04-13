@@ -371,26 +371,6 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     return skip(`Invalid price (${currentPrice}) — cannot compute Fib levels`, currentPrice);
   }
 
-  // ── Hard unit-mismatch guard ─────────────────────────────────────────────
-  // fib_levels are computed from OHLCV candles. If candles are in SOL (wrong unit),
-  // fib500 will be ~175x smaller than currentPrice (USD). Guard catches this.
-  // We pre-check with a small candle fetch before doing full analysis.
-  if (currentPrice > 0.001) { // only for tokens that shouldn't have sub-solar prices
-    try {
-      const preview = await fetchOHLCV(tokenMint, 5, poolAddress).catch(() => null);
-      if (preview && preview.length >= 2) {
-        const avgCandlePrice = preview.reduce((s, c) => s + (c.close / preview.length), 0);
-        // If candles are in SOL and currentPrice is USD: ratio ≈ SOL_price (150-200)
-        // If both USD: ratio ≈ 1
-        const ratio = currentPrice / (avgCandlePrice || 1);
-        if (ratio > 50 || ratio < 0.02) {
-          log.warn("fib_error", `Unit mismatch: currentPrice=${currentPrice} avgCandleClose=${avgCandlePrice.toPrecision(4)} ratio=${ratio.toFixed(1)} — candles may be SOL-denominated, skipping`);
-          return skip(`Unit mismatch detected (candles in SOL vs currentPrice USD) — cannot compute Fib in USD`, currentPrice);
-        }
-      }
-    } catch { /* non-fatal */ }
-  }
-
   // ── Fetch OHLCV (1m for indicators) + Daily (for ATH-based Fibonacci) ──────
   let candles, dailyCandles;
   try {
@@ -448,17 +428,6 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   }
 
   const fib = calcFibLevels(swingHigh, swingLow);
-
-  // ── Hard unit-mismatch guard (post-compute) ─────────────────────────────────
-  // If fib500 and currentPrice are in different units (SOL vs USD), their ratio
-  // will be extreme. A genuine USD fib500 should be within [0.01x, 2x] of currentPrice.
-  if (currentPrice > 0 && (fib.fib500 > currentPrice * 2 || fib.fib500 < currentPrice * 0.01)) {
-    log.warn("fib_error", `Unit mismatch detected: fib500=${fib.fib500} currentPrice=${currentPrice} ratio=${(fib.fib500/currentPrice).toFixed(2)}`, { token: tokenMint });
-    return skip(
-      `Unit mismatch: fib500=${fib.fib500.toPrecision(4)} out of range vs currentPrice=${currentPrice.toPrecision(4)} — data error`,
-      currentPrice, fib
-    );
-  }
 
   // ── Hard gate: NO ENTRY below Fib 0.500 ──────────────────────────────────
   if (currentPrice < fib.fib500) {

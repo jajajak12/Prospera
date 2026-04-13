@@ -456,59 +456,75 @@ export class HybridDataProvider {
   async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana", tokenMint = null) {
     const MIN_CANDLES = 6;
 
-    // ── GeckoTerminal primary (always available when poolAddress is known) ──────
+    // ── Birdeye token mint PRIMARY (USD-guaranteed) ──────────────────────────
+    // GeckoTerminal pool OHLCV returns prices in quote-currency (SOL) for TOKEN/SOL pairs,
+    // causing unit mismatch against USD currentPrice in Fib analysis.
+    // Birdeye address_type=token always returns USD-denominated prices.
+    if (tokenMint) {
+      try {
+        const candles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
+        if (candles.length >= MIN_CANDLES) {
+          log.debug("screening", `getOHLCV: Birdeye token OK (${candles.length} candles, USD)`, { token: tokenMint });
+          return candles;
+        }
+        log.warn("screening", `getOHLCV: Birdeye token thin (${candles.length} < ${MIN_CANDLES}) → GeckoTerminal`, { token: tokenMint });
+      } catch (err) {
+        log.warn("screening", `getOHLCV: Birdeye token failed → GeckoTerminal (${err.message})`, { token: tokenMint });
+      }
+    }
+
+    // ── GeckoTerminal fallback — convert SOL→USD ─────────────────────────────
+    // Pool OHLCV from GeckoTerminal is SOL-denominated for TOKEN/SOL pairs.
+    // Multiply by solPrice to produce USD candles consistent with currentPrice.
     if (poolAddress) {
       try {
-        const candles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
-        log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles)`, { pool: poolAddress });
+        const [rawCandles, solPrice] = await Promise.all([
+          geckoOHLCV(poolAddress, chain, timeframe, limit),
+          jupiterSolPrice().catch(() => null),
+        ]);
+        if (!solPrice || solPrice <= 0) {
+          throw new Error("GeckoTerminal SOL→USD: solPrice unavailable");
+        }
+        const candles = rawCandles.map(c => ({
+          timestamp: c.timestamp,
+          open:   c.open  * solPrice,
+          high:   c.high  * solPrice,
+          low:    c.low   * solPrice,
+          close:  c.close * solPrice,
+          volume: c.volume,
+        }));
+        log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles, SOL×${solPrice.toFixed(2)}→USD)`, { pool: poolAddress });
 
-        // Pool-specific candle data may be thin for newly-created pools.
-        // If insufficient, fetch the most active pool for this token via GeckoTerminal
-        // token info (top_pools[0] — sorted by relevance/TVL) and retry OHLCV with that.
+        // If this pool is thin, try top pool for this token
         if (candles.length < MIN_CANDLES && tokenMint) {
-          log.warn("screening", `getOHLCV: GeckoTerminal thin (${candles.length} < ${MIN_CANDLES}) → fetching top pool for ${tokenMint}`);
+          log.warn("screening", `getOHLCV: GeckoTerminal thin (${candles.length}) → top pool retry`, { token: tokenMint });
           try {
             const tokenData = await geckoTokenInfo(tokenMint, chain);
             const topPoolId = tokenData?.data?.relationships?.top_pools?.data?.[0]?.id;
             const topPoolAddress = topPoolId?.split("_")[1] ?? null;
             if (topPoolAddress && topPoolAddress !== poolAddress) {
-              log.warn("screening", `getOHLCV: top pool ${topPoolAddress} != current ${poolAddress} → retrying OHLCV with top pool`);
-              const topCandles = await geckoOHLCV(topPoolAddress, chain, timeframe, limit);
-              log.debug("screening", `getOHLCV: top pool OHLCV OK (${topCandles.length} candles)`, { pool: topPoolAddress });
+              const topRaw = await geckoOHLCV(topPoolAddress, chain, timeframe, limit);
+              const topCandles = topRaw.map(c => ({
+                timestamp: c.timestamp,
+                open: c.open * solPrice, high: c.high * solPrice,
+                low:  c.low  * solPrice, close: c.close * solPrice,
+                volume: c.volume,
+              }));
+              log.debug("screening", `getOHLCV: top pool OK (${topCandles.length} candles, SOL×USD)`, { pool: topPoolAddress });
               return topCandles;
             }
           } catch (err) {
-            log.warn("screening", `getOHLCV: top pool fetch failed → Birdeye token mint fallback (${err.message})`);
-          }
-
-          // Fallback to Birdeye token mint if top pool retry also thin
-          try {
-            const tokenCandles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
-            log.debug("screening", `getOHLCV: Birdeye token mint OK (${tokenCandles.length} candles)`, { token: tokenMint });
-            return tokenCandles;
-          } catch {
-            log.warn("screening", `getOHLCV: Birdeye token mint also thin — using GeckoTerminal (${candles.length} candles)`, { pool: poolAddress });
+            log.warn("screening", `getOHLCV: top pool retry failed (${err.message})`);
           }
         }
         return candles;
       } catch (err) {
-        log.warn("screening", `getOHLCV: GeckoTerminal failed → Birdeye (${err.message})`, { pool: poolAddress });
+        log.warn("screening", `getOHLCV: GeckoTerminal failed → skip (${err.message})`, { pool: poolAddress });
       }
     }
 
-    // ── Birdeye fallback (only when tokenMint available) ───────────────────────
-    if (tokenMint) {
-      try {
-        const candles = await birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain);
-        log.debug("screening", `getOHLCV: Birdeye token OK (${candles.length} candles)`, { token: tokenMint });
-        return candles;
-      } catch (err) {
-        log.warn("screening", `getOHLCV: Birdeye fallback failed → skip candidate (${err.message})`, { token: tokenMint });
-      }
-    }
-
-    // ── Both failed → skip candidate (degraded TA is worse than missed opportunity) ──
-    throw new Error(`getOHLCV: both GeckoTerminal and Birdeye failed for ${poolAddress ?? tokenMint} — candidate skipped`);
+    // ── Both failed → skip candidate ─────────────────────────────────────────
+    throw new Error(`getOHLCV: all sources failed for ${tokenMint ?? poolAddress} — candidate skipped`);
   }
 
   /**
