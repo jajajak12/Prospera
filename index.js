@@ -254,6 +254,8 @@ export async function runManagementCycle({ silent = false } = {}) {
   _lastCorrelationId = corrId;
   const _m = (cat, msg, meta = {}) => logWithId(cat, msg, meta, corrId);
 
+  // _managementBusy guard: block concurrent cron invocations before anything else.
+  // Also blocks if a previous cycle died without clearing the flag (failsafe).
   if (_managementBusy) { _m("management", "Cycle busy — skipped"); return null; }
   const _screeningStuck = _screeningBusy && (Date.now() - _screeningBusySince) > 5 * 60_000;
   if (_screeningBusy && !_screeningStuck) { _m("management", "Screening running — skipped"); return null; }
@@ -689,6 +691,7 @@ export function startCronJobs() {
   stopCronJobs();
 
   const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
+    // _managementBusy guard: prevent concurrent management cycles from cron overlap
     if (_managementBusy) return;
     const lockAge = Date.now() - _managementLastCompleted;
     if (lockAge < 45_000) return;
