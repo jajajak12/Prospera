@@ -57,7 +57,7 @@ const toolMap = {
     if (okx?.honeypot)                                                   flags.push("HONEYPOT");
     if (okx?.bundlePct    > (s.maxBundlePct     ?? 30))                  flags.push(`bundle ${okx.bundlePct}% > max ${s.maxBundlePct ?? 30}%`);
     if (jup?.botHoldersPct != null && jup.botHoldersPct > (s.maxBotHoldersPct ?? 30)) flags.push(`bot_holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}%`);
-    if (jup?.top10Pct      != null && jup.top10Pct      > (s.maxTop10Pct      ?? 60)) flags.push(`top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 60}%`);
+    if (jup?.top10Pct      != null && jup.top10Pct      > (s.maxTop10Pct      ?? 22)) flags.push(`top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 22}%`);
     if (jup?.feesSOL       != null && jup.feesSOL       < (s.minTokenFeesSol  ?? 30)) flags.push(`fees ${jup.feesSOL} SOL < min ${s.minTokenFeesSol ?? 30}`);
     return { mint, okx, jupiter: jup, flags, pass: flags.length === 0 };
   },

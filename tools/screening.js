@@ -822,7 +822,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
         return false;
       }
       // feesSOL: >$1M mcap → 80 SOL, ≤$1M mcap → 23 SOL
-      const feeThreshold = (t.mcap > 1_000_000) ? 80 : (s.minTokenFeesSol ?? 23);
+      const feeThreshold = (t.mcap > 1_000_000) ? (s.minTokenFeesSolHighMcap ?? 80) : (s.minTokenFeesSol ?? 23);
       if (jup.feesSOL != null && jup.feesSOL < feeThreshold) {
         log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL.toFixed(4)} SOL < min ${feeThreshold} SOL | mcap=${(t.mcap/1e6).toFixed(1)}M`);
         return false;

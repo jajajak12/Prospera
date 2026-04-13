@@ -23,7 +23,7 @@ export const config = {
     exposureWarningPct:        u.exposureWarningPct        ?? 0.50,  // soft warning threshold (50%)
     totalExposureCapPct:       u.totalExposureCapPct       ?? 0.60,  // max % of balance deployed (60% hard cap)
     exposureHardPauseMinutes:  u.exposureHardPauseMinutes ?? 15,    // hard pause duration (minutes)
-    exposureGasReserve:        u.exposureGasReserve        ?? 1.0,   // SOL reserved for gas (excluded from cap calc)
+    exposureGasReserve:        u.exposureGasReserve        ?? 0.3,   // SOL reserved for gas (excluded from cap calc)
   },
 
   // ─── Pool Screening Thresholds ───────────
@@ -46,7 +46,7 @@ export const config = {
     timeframe:            u.timeframe            ?? "5m",
     minFeeActiveTvlRatio: u.minFeeActiveTvlRatio ?? 0.05,
     minFee:               u.minFee               ?? 25,
-    minTokenAgeHours:     u.minTokenAgeHours     ?? null,
+    minTokenAgeHours:     u.minTokenAgeHours     ?? 0.5,
     maxTokenAgeHours:     u.maxTokenAgeHours     ?? 336,  // 2 weeks
     // Fibonacci-specific
     rsiMin:               u.rsiMin               ?? 45,     // RSI threshold: screened null→45 in ATH zone, 40 otherwise (chart.js)
