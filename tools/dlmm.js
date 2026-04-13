@@ -428,8 +428,8 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
         pnl_usd:              _solPrice > 0 ? Math.round((lp.pnl?.valueNative     ?? 0) * _solPrice * 100) / 100 : 0,
         // percentNative from LPAgent already in % format (0.38 = 0.38%) — no conversion needed
         pnl_pct:              Math.round((lp.pnl?.percentNative ?? 0) * 100) / 100,
-        // dprNative in SOL — convert to USD if solPrice available
-        fee_per_tvl_24h:      _solPrice > 0 ? Math.round((lp.dprNative ?? 0) * _solPrice * 100) / 100 : 0,
+        // dprNative = dimensionless ratio (0.015 = 1.5% daily fee/TVL) — multiply by 100 for %
+        fee_per_tvl_24h:      Math.round((lp.dprNative ?? 0) * 100 * 100) / 100,
         age_minutes:          lp.ageHour != null ? Math.round(lp.ageHour * 60) : ageFromState,
         minutes_out_of_range: minutesOutOfRange(positionAddress),
         instruction:          tracked?.instruction ?? null,
