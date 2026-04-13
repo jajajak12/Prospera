@@ -366,7 +366,9 @@ function calcBinsAbove(currentPrice, targetPrice, binStep) {
  */
 export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimit = 50, opts = {}, poolAddress = null) {
   // ── Hard invalid-price guard ───────────────────────────────────────────────
-  if (!currentPrice || currentPrice < 0.000001) {
+  // Threshold 1e-12 SOL: allows any realistic token price (even <$0.001 mcap tokens)
+  // without falsely rejecting ultra-cheap meme tokens. Old 0.000001 was calibrated for USD.
+  if (!currentPrice || currentPrice < 1e-12) {
     log.warn("fib_error", `Invalid price detected: ${currentPrice} — skipping Fib calculation`, { token: tokenMint });
     return skip(`Invalid price (${currentPrice}) — cannot compute Fib levels`, currentPrice);
   }

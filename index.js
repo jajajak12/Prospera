@@ -72,6 +72,7 @@ let _cronTasks = [];
 let _managementBusy = false;
 let _managementLastCompleted = 0;
 let _screeningBusy = false;
+let _screeningBusySince = 0;  // timestamp when _screeningBusy was last set to true
 let _screeningLastTriggered = 0;
 let _exposureHardPausedUntil = 0;
 
@@ -254,6 +255,8 @@ export async function runManagementCycle({ silent = false } = {}) {
   const _m = (cat, msg, meta = {}) => logWithId(cat, msg, meta, corrId);
 
   if (_managementBusy) { _m("management", "Cycle busy — skipped"); return null; }
+  const _screeningStuck = _screeningBusy && (Date.now() - _screeningBusySince) > 5 * 60_000;
+  if (_screeningBusy && !_screeningStuck) { _m("management", "Screening running — skipped"); return null; }
 
   // ── Fast path: cek posisi dulu sebelum acquire lock / busy flag ─────────────
   // Jika 0 posisi → skip secepat mungkin, tidak perlu lock, tidak perlu LPAgent call
@@ -484,6 +487,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   }
 
   _screeningBusy = true;
+  _screeningBusySince = Date.now();
   _screeningLastTriggered = Date.now();
   timers.screeningLastRun = Date.now();
 
@@ -528,13 +532,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
   const cap = solPriceAvailable
     ? checkExposureCap(currentExposure, preBalance.sol, deployAmount)
     : { level: "ok" };
-  if (cap.level === "hard_pause") {
+  // Exposure cap temporarily disabled for Phase 3 Stability Test
+  if (config.risk.exposureCapDisabled) {
+    // cap always returns level:"ok" — no block, no warning, silent bypass
+  } else if (cap.level === "hard_pause") {
     _exposureHardPausedUntil = cap.pauseUntil;
     _s("error", "HARD CAP TRIGGERED");
     if (telegramEnabled()) sendMessage(`🔍 Screening BLOCKED — exposure cap\nCurrent: ${cap.currentExposureSol.toFixed(2)} SOL (${((cap.currentExposureSol / Math.max(preBalance.sol - cap.gasReserveSol, 0.01)) * 100).toFixed(1)}%)\nProposed: +${deployAmount.toFixed(2)} SOL\nProjected: ${cap.projectedExposureSol.toFixed(2)} SOL (${cap.exposurePct.toFixed(1)}%) > cap ${cap.hardCapPct.toFixed(0)}%`).catch(() => {});
     _release(); return null;
   }
-  if (cap.level === "warning") {
+  // Exposure cap temporarily disabled for Phase 3 Stability Test
+  if (!config.risk.exposureCapDisabled && cap.level === "warning") {
     _s("warn", `Exposure warning: ${cap.exposurePct.toFixed(1)}%`);
     if (telegramEnabled()) sendMessage(`⚠️ Exposure warning: ${cap.exposurePct.toFixed(1)}% (max ${cap.hardCapPct.toFixed(1)}%)`).catch(() => {});
   }

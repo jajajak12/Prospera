@@ -24,6 +24,8 @@ export const config = {
     totalExposureCapPct:       u.totalExposureCapPct       ?? 0.60,  // max % of balance deployed (60% hard cap)
     exposureHardPauseMinutes:  u.exposureHardPauseMinutes ?? 15,    // hard pause duration (minutes)
     exposureGasReserve:        u.exposureGasReserve        ?? 0.3,   // SOL reserved for gas (excluded from cap calc)
+    // Exposure cap temporarily disabled for Phase 3 Stability Test
+    exposureCapDisabled:        u.exposureCapDisabled       ?? true,
   },
 
   // ─── Pool Screening Thresholds ───────────
@@ -239,6 +241,21 @@ export function canOpenNewPosition(proposedAmountSol, currentExposureSol, wallet
  *            maxExposureSol: number, allowed: boolean, reason?: string, pauseUntil?: number }}
  */
 export function checkExposureCap(currentExposureSol, walletSol, proposedAmountSol = null) {
+  // Exposure cap temporarily disabled for Phase 3 Stability Test
+  if (config.risk.exposureCapDisabled) {
+    return {
+      level: "ok",
+      exposurePct: 0,
+      warningPct: 0,
+      hardCapPct: 0,
+      gasReserveSol: 0,
+      currentExposureSol: 0,
+      projectedExposureSol: 0,
+      maxExposureSol: 0,
+      allowed: true,
+    };
+  }
+
   const gasReserve     = config.risk.exposureGasReserve ?? 0.3;
   const warningPct     = (config.risk.exposureWarningPct ?? 0.50) * 100;
   const hardCapPct     = (config.risk.totalExposureCapPct ?? 0.60) * 100;
