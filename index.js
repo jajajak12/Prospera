@@ -516,10 +516,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
   }
 
   if (prePositions.total_positions >= config.risk.maxPositions) { logSkip("max_positions", {}, corrId); _release(); return null; }
-  deployAmount = getPositionSizing(preBalance.sol);
-  if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
-
   const currentExposure = calculateCurrentExposureSol(prePositions.positions, preBalance?.sol_price ?? 0);
+  const totalPortfolio = (preBalance.sol ?? 0) + currentExposure;
+  deployAmount = getPositionSizing(totalPortfolio);
+  if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
   const cap = checkExposureCap(currentExposure, preBalance.sol, deployAmount);
   if (cap.level === "hard_pause") {
     _exposureHardPausedUntil = cap.pauseUntil;

@@ -201,10 +201,12 @@ export function calculateCurrentExposureSol(positions, solPrice) {
  *             maxExposureSol: number, exposurePct: number, reason?: string }}
  */
 export function canOpenNewPosition(proposedAmountSol, currentExposureSol, walletSol) {
-  const gasReserve = config.risk.exposureGasReserve ?? 1.0;
+  const gasReserve = config.risk.exposureGasReserve ?? 0.3;
   const capPct     = config.risk.totalExposureCapPct ?? 0.60;
 
-  const exposurableBalance  = Math.max(0, walletSol - gasReserve);
+  // Base = total portfolio (free + deployed) so cap doesn't shrink after each deploy
+  const totalPortfolio      = walletSol + currentExposureSol;
+  const exposurableBalance  = Math.max(0, totalPortfolio - gasReserve);
   const maxExposureSol      = parseFloat((exposurableBalance * capPct).toFixed(4));
   const projectedExposureSol = parseFloat((currentExposureSol + proposedAmountSol).toFixed(4));
   const exposurePct = exposurableBalance > 0
@@ -237,16 +239,18 @@ export function canOpenNewPosition(proposedAmountSol, currentExposureSol, wallet
  *            maxExposureSol: number, allowed: boolean, reason?: string, pauseUntil?: number }}
  */
 export function checkExposureCap(currentExposureSol, walletSol, proposedAmountSol = null) {
-  const gasReserve     = config.risk.exposureGasReserve ?? 1.0;
+  const gasReserve     = config.risk.exposureGasReserve ?? 0.3;
   const warningPct     = (config.risk.exposureWarningPct ?? 0.50) * 100;
   const hardCapPct     = (config.risk.totalExposureCapPct ?? 0.60) * 100;
   const pauseMinutes   = config.risk.exposureHardPauseMinutes ?? 15;
 
-  const exposurableBalance = Math.max(0, walletSol - gasReserve);
+  // Base = total portfolio (free + deployed) so cap doesn't shrink after each deploy
+  const totalPortfolio     = walletSol + currentExposureSol;
+  const exposurableBalance = Math.max(0, totalPortfolio - gasReserve);
   const maxExposureSol     = parseFloat((exposurableBalance * hardCapPct / 100).toFixed(4));
 
   if (proposedAmountSol === null) {
-    proposedAmountSol = getPositionSizing(walletSol);
+    proposedAmountSol = getPositionSizing(totalPortfolio);
   }
 
   const projectedExposureSol = parseFloat((currentExposureSol + proposedAmountSol).toFixed(4));
