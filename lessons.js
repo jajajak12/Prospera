@@ -119,6 +119,11 @@ export async function recordPerformance(perf) {
 
   save(data);
 
+  // Chart self-learning: fire-and-forget LLM post-trade analysis (non-blocking)
+  if (outcome !== "neutral") {
+    runChartLessonAnalysis(entry, outcome).catch(e => log("lessons", `Chart analysis error: ${e.message}`));
+  }
+
   // Update pool-level memory
   if (perf.pool) {
     const { recordPoolDeploy } = await import("./pool-memory.js");
@@ -377,6 +382,68 @@ function isFiniteNum(n) { return typeof n === "number" && isFinite(n); }
 function avg(arr) { return arr.reduce((s, x) => s + x, 0) / arr.length; }
 function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
 
+// ─── Chart Self-Learning ───────────────────────────────────────
+
+/**
+ * Post-trade LLM analysis. Runs async/fire-and-forget after a position closes.
+ * Builds a chart lesson from entry signals + outcome and saves to lessons.json.
+ * Uses dynamic import to avoid circular dependency with agent.js.
+ */
+async function runChartLessonAnalysis(perf, outcome) {
+  if (!perf.fib_zone && perf.confluence_score == null && perf.rsi == null) return; // no signal data
+
+  const n  = v => (v != null ? v : '?');
+  const b  = v => (v != null ? (v ? 'yes' : 'no') : '?');
+  const pnlStr = `${(perf.pnl_pct ?? 0) >= 0 ? '+' : ''}${(perf.pnl_pct ?? 0).toFixed(2)}%`;
+  const isProfit = outcome === "good";
+  const label = isProfit ? "PROFIT" : "LOSS";
+
+  const context = [
+    `Zone: ${n(perf.fib_zone)}, conf: ${n(perf.confluence_score?.toFixed(2))}, RSI: ${n(perf.rsi?.toFixed(0))}`,
+    `ATR: ${n(perf.atr_pct?.toFixed(1))}%, depth: ${n(perf.fib_entry_pct?.toFixed(0))}%, range_eff: ${n(perf.range_efficiency?.toFixed(0))}%`,
+    `hidden_div: ${b(perf.has_hidden_divergence)}, smart_wallet: ${b(perf.smart_wallet_present)}, bin_step: ${n(perf.bin_step)}`,
+    `held: ${n(perf.minutes_held)}min, exit: ${perf.close_reason ?? '?'}`,
+  ].join(' | ');
+
+  const fillIn = isProfit
+    ? `This pattern worked because ___. For future screening, PREFER entries where ___. Be specific (use numbers).`
+    : `This pattern failed because ___. For future screening, AVOID entries where ___. Be specific (use numbers).`;
+
+  const prompt =
+    `Prospera DLMM LP agent — post-trade chart analysis.\n` +
+    `Pair: ${perf.pool_name ?? '?'} | PnL: ${pnlStr} | Result: ${label}\n` +
+    `${context}\n\n` +
+    `Write one sentence starting exactly with "CHART [${label}]:"\n` +
+    `${fillIn}\n` +
+    `Reply ONLY with the sentence. No extra text.`;
+
+  let { callLLMDirect } = await import("./agent.js");
+  const raw = await callLLMDirect(prompt, { maxTokens: 160 });
+  if (!raw) return;
+
+  // Clean up: ensure it starts with CHART [PROFIT/LOSS]:, truncate at 280 chars
+  const cleaned = raw.replace(/^.*?(CHART\s*\[(?:PROFIT|LOSS)\]:)/i, '$1').slice(0, 280);
+  if (!cleaned.toUpperCase().startsWith("CHART")) return;
+
+  const data = load();
+  data.lessons.push({
+    id: Date.now(),
+    rule: cleaned,
+    tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "screening"],
+    outcome: isProfit ? "good" : "bad",
+    source: "chart_analysis",
+    pnl_pct: perf.pnl_pct ?? null,
+    pool: perf.pool ?? null,
+    pool_name: perf.pool_name ?? null,
+    created_at: new Date().toISOString(),
+  });
+  save(data);
+
+  log("lessons", `Chart lesson saved [${label}]: ${cleaned.slice(0, 100)}`);
+  const emoji = isProfit ? "🔍✅" : "🔍❌";
+  sendMessage(`${emoji} Chart Analysis [${perf.pool_name ?? '?'} ${pnlStr}]\n${cleaned}`).catch(() => {});
+}
+
 // ─── Manual Lessons ────────────────────────────────────────────
 
 export function addLesson(rule, tags = [], { pinned = false, role = null } = {}) {
@@ -468,7 +535,7 @@ export function clearPerformance() {
 // ─── Lesson Retrieval ──────────────────────────────────────────
 
 const ROLE_TAGS = {
-  SCREENER: ["screening", "strategy", "deployment", "fib_entry", "entry", "volume"],
+  SCREENER: ["screening", "strategy", "deployment", "fib_entry", "entry", "volume", "chart_lesson"],
   MANAGER:  ["management", "risk", "oor", "fees", "position", "hold", "close", "pnl", "stop_loss"],
   GENERAL:  [],
 };
