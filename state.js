@@ -61,7 +61,7 @@ export function trackPosition({
   fib_entry_pct = null,          // Where in fib zone was entry? (0% = fib236, 100% = fib618)
   confluence_score = null,       // Fibonacci confluence score at entry (0-1)
   fib_zone = null,               // ATH_ZONE / PRIMARY / SECONDARY
-  fib_levels_sol = null,         // { fib236, fib500, fib618 } in SOL — for Failed Rebound tracking
+  fib_levels_sol = null,         // { fib236, fib500, fib618 } in SOL — for Successful Rebound tracking
   rsi = null,                    // RSI at entry
   atr_pct = null,                // ATR% at entry
   in_primary_zone = null,        // true = primary zone (fib 0.236–0.382)
@@ -347,7 +347,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
 /**
  * Update Fib touch state for a position.
  * Sets touched_lower_fib=true when price <= fib500.
- * Returns { touched, fib236 } for the management cycle to check recovery.
+ * Returns { touched, fib236 } for the management cycle to check successful rebound.
  */
 export function updateFibTouchState(position_address, livePriceSol) {
   if (livePriceSol == null) return { touched: false, fib236: null };
@@ -358,7 +358,7 @@ export function updateFibTouchState(position_address, livePriceSol) {
   if (!pos.touched_lower_fib && livePriceSol <= pos.fib_levels_sol.fib500) {
     pos.touched_lower_fib = true;
     save(state);
-    log("state", `Position ${position_address} touched Fib ≤0.500 (price ${livePriceSol.toPrecision(4)} <= fib500 ${pos.fib_levels_sol.fib500.toPrecision(4)}) — watching for failed rebound`);
+    log("state", `Position ${position_address} touched Fib ≤0.500 (price ${livePriceSol.toPrecision(4)} <= fib500 ${pos.fib_levels_sol.fib500.toPrecision(4)}) — watching for successful rebound to 0.236`);
   }
 
   return { touched: !!pos.touched_lower_fib, fib236: pos.fib_levels_sol?.fib236 ?? null };

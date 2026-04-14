@@ -1097,7 +1097,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
     }
     return true;
   });
-  _s("screening", `ATH cooldown: ${cooldownFiltered.length}/${beforeCooldown} passed (TP/SL closes without new ATH filtered)`);
+  _s("screening", `ATH cooldown: ${cooldownFiltered.length}/${beforeCooldown} passed (TP/SL/rebound closes without new ATH filtered)`);
 
   _s("screening", `Step 8 — Fibonacci: ${cooldownFiltered.length}/${withPool.length} passed broken-support → ${candidates.length} ENTRY`);
   _s("screening", `Summary: discovered=${allTokens.length} (dex=${dexTokens.length}+rocket=${rocketTokens.length}) → volume=${afterVolumeCount} → eligible=${eligible.length} → prePoolCap=${maxTechAnalysis} → pools=${withPool.length} → fib_entry=${filtered.length}`);

@@ -128,7 +128,8 @@ export function isPoolOnATHCooldown(poolAddress, currentPriceSol) {
   if (!lastDeploy) return false;
 
   const reason = lastDeploy.close_reason;
-  const isTPorSL = reason === "take_profit" || reason === "stop_loss";
+  const isTPorSL = reason === "take_profit" || reason === "stop_loss"
+    || reason?.toLowerCase().startsWith("successful rebound");
   if (!isTPorSL) return false;
 
   // Primary: compare SOL vs SOL ATH (set after April 2026 migration)
@@ -149,7 +150,7 @@ export function isPoolOnATHCooldown(poolAddress, currentPriceSol) {
   // Legacy: no SOL ATH stored (pre-April 2026 closes).
   // ath_price_at_close is USD — cannot compare with SOL currentPrice.
   // Fall back to time-based cooldown.
-  log("pool-memory", `${entry.name}: TP/SL close with no SOL ATH stored (legacy entry) — fallback to 1h cooldown`);
+  log("pool-memory", `${entry.name}: TP/SL/rebound close with no SOL ATH stored (legacy entry) — fallback to 1h cooldown`);
   const cooldownMs = 60 * 60 * 1000;
   if (lastDeploy.closed_at) {
     const closedAt = new Date(lastDeploy.closed_at).getTime();

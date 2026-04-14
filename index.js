@@ -320,7 +320,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     const positionData = positions.map(p => ({ ...p, recall: recallForPool(p.pool) }));
 
-    // Fetch live prices for Failed Rebound fib tracking (only for positions with stored fib levels)
+    // Fetch live prices for Successful Rebound fib tracking (only for positions with stored fib levels)
     const positionsWithFibLevels = positionData.filter(p => getTrackedPosition(p.position)?.fib_levels_sol != null);
     const livePriceMap = new Map();
     if (positionsWithFibLevels.length > 0) {
@@ -340,12 +340,12 @@ export async function runManagementCycle({ silent = false } = {}) {
       const exit = updatePnlAndCheckExits(p.position, p, config.management);
       if (exit) { exitMap.set(p.position, exit.reason); continue; }
 
-      // Failed Rebound: position touched Fib ≤0.500, then price recovered to ≥0.236 → close
+      // Successful Rebound: position touched Fib ≤0.500, then price recovered to ≥0.236 → close + ATH cooldown
       const livePrice = livePriceMap.get(p.position) ?? null;
       const fibState = updateFibTouchState(p.position, livePrice);
       if (fibState.touched && livePrice != null && fibState.fib236 != null && livePrice >= fibState.fib236) {
-        _m("management", `Failed rebound: ${p.pair} — touched Fib ≤0.500 then recovered ≥0.236 (live=${livePrice.toPrecision(4)} >= fib236=${fibState.fib236.toPrecision(4)}) → closing`);
-        exitMap.set(p.position, `Failed rebound: touched 0.500/0.618 then recovered to 0.236`);
+        _m("management", `Successful rebound: ${p.pair} — touched Fib ≤0.500 then recovered ≥0.236 (live=${livePrice.toPrecision(4)} >= fib236=${fibState.fib236.toPrecision(4)}) → closing + ATH cooldown`);
+        exitMap.set(p.position, `Successful rebound: touched ≤0.500 then recovered to 0.236`);
       }
     }
 
