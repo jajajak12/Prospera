@@ -358,6 +358,24 @@ export async function runManagementCycle({ silent = false } = {}) {
           continue;
         }
       }
+
+      // ── 2h Low Yield Auto-Close ─────────────────────────────────────────────
+      // If position open > 2h AND unclaimed fee < 1% of position value → auto close
+      const LOW_YIELD_HOURS_MS = 2 * 60 * 60 * 1000; // 2 hours
+      const MIN_FEE_PCT = 1.0; // 1%
+      const ageMs = p.age_minutes != null ? p.age_minutes * 60 * 1000 : null;
+      if (ageMs != null && ageMs >= LOW_YIELD_HOURS_MS) {
+        const feesUsd2  = p.unclaimed_fees_usd ?? 0;
+        const totalUsd2 = p.total_value_usd ?? 0;
+        const feePct2   = totalUsd2 > 0 ? (feesUsd2 / totalUsd2) * 100 : 0;
+        if (feePct2 < MIN_FEE_PCT) {
+          const reasonStr = `2h low yield (<${feePct2.toFixed(2)}% fee collected)`;
+          _m("management", `2h low yield: ${p.pair} ${p.age_minutes}m old, fee ${feePct2.toFixed(2)}% < ${MIN_FEE_PCT}% → auto close`);
+          actionMap.set(p.position, { action: "CLOSE", reason: reasonStr });
+          continue;
+        }
+      }
+
       // Build STAY reason: which checks passed
       const pnl = p.pnl_pct ?? 0;
       const inRange = p.in_range ? "in range" : `OOR ${p.minutes_out_of_range ?? 0}m`;
@@ -382,11 +400,16 @@ export async function runManagementCycle({ silent = false } = {}) {
       const act = actionMap.get(p.position);
       _m("management", `EXEC deterministic ${act.action} ${p.pair} (${act.reason})`);
       if (act.action === "CLOSE") {
-        const r = await closePosition({ position_address: p.position }).catch(e => ({ success: false, error: e.message }));
+        const r = await closePosition({ position_address: p.position, reason: act.reason, skip_swap: true }).catch(e => ({ success: false, error: e.message }));
         if (r.success) {
           _m("management", `  → closed ${p.pair}`);
           _closedPoolsHistory.push({ pair: p.pair, pnl_pct: p.pnl_pct ?? 0, closedAt: new Date().toISOString() });
           if (_closedPoolsHistory.length > 50) _closedPoolsHistory.shift();
+          // Notify Telegram with reason (swap handled by dlmm.js Step 3 inside closePosition)
+          if (telegramEnabled()) {
+            const sign = (r.pnl_usd ?? 0) >= 0 ? "+" : "";
+            sendMessage(`🔒 Closed ${r.pool_name || p.pair}\nReason: ${act.reason}\nPnL: ${sign}$${(r.pnl_usd ?? 0).toFixed(2)} (${sign}${(r.pnl_pct ?? 0).toFixed(2)}%)`).catch(() => {});
+          }
         } else _m("error", `  → close failed: ${r.error}`);
       } else if (act.action === "CLAIM") {
         const { executeTool } = await import("./tools/executor.js");
@@ -842,15 +865,20 @@ async function handleTelegram(text) {
       await sendMessage(`Prospera Status\n\nMode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}\nUptime: ${uptime}m\nProvider: ${activeProvider}\nCircuit: ${cb?.isCircuitBroken ? "OPEN (fallback)" : "OK (primary)"}\nLast Screening: ${lastScreen}\nLast Management: ${lastMgmt}\nOpen Positions: ${positions?.total_positions ?? 0}/${config.risk.maxPositions}\nExposure: ${exposurePct}%\nSOL Balance: ${balance?.sol?.toFixed(3) ?? "?"}`);
       return;
     }
-    const closeMatch = text.match(/^\/close\s+(\d+)$/i);
+      const closeMatch = text.match(/^\/close\s+(\d+)$/i);
     if (closeMatch) {
       const idx = parseInt(closeMatch[1]) - 1;
       const { positions } = await getMyPositions({ force: true }).catch(() => ({ positions: [] }));
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number."); return; }
       const pos = positions[idx];
       await sendMessage(`Closing ${pos.pair}...`);
-      const result = await closePosition({ position_address: pos.position });
-      await sendMessage(result.success ? `Closed ${pos.pair}` : `Close failed: ${JSON.stringify(result)}`);
+      const result = await closePosition({ position_address: pos.position, reason: "manual close" });
+      if (result.success) {
+        const sign = (result.pnl_usd ?? 0) >= 0 ? "+" : "";
+        await sendMessage(`🔒 Closed ${pos.pair}\nPnL: ${sign}$${(result.pnl_usd ?? 0).toFixed(2)} (${sign}${(result.pnl_pct ?? 0).toFixed(2)}%)`);
+      } else {
+        await sendMessage(`Close failed: ${JSON.stringify(result)}`);
+      }
       return;
     }
     // ── Free-flow conversation with safety guard ──────────────────────────────
