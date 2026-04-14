@@ -36,7 +36,7 @@ import { getTopCandidates } from "./tools/screening.js";
 import { getCircuitState, shouldSkipNextCycle, getActiveProvider } from "./tools/circuit-breaker.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, notifyClose } from "./telegram.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, getStateSummary } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
@@ -403,8 +403,9 @@ export async function runManagementCycle({ silent = false } = {}) {
         const r = await closePosition({ position_address: p.position, reason: act.reason }).catch(e => ({ success: false, error: e.message }));
         if (r.success) {
           _m("management", `  → closed ${p.pair}`);
-          _closedPoolsHistory.push({ pair: p.pair, pnl_pct: p.pnl_pct ?? 0, closedAt: new Date().toISOString() });
+          _closedPoolsHistory.push({ pair: p.pair, pnl_pct: r.pnl_pct ?? p.pnl_pct ?? 0, closedAt: new Date().toISOString() });
           if (_closedPoolsHistory.length > 50) _closedPoolsHistory.shift();
+          notifyClose({ pair: p.pair, pnlUsd: r.pnl_usd ?? 0, pnlPct: r.pnl_pct ?? 0, reason: act.reason }).catch(() => {});
         } else _m("error", `  → close failed: ${r.error}`);
       } else if (act.action === "CLAIM") {
         const { executeTool } = await import("./tools/executor.js");

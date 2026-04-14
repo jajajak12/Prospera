@@ -676,6 +676,9 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         minutesOOR = Math.floor((Date.now() - new Date(tracked.out_of_range_since).getTime()) / 60000);
       }
 
+      // Snapshot pre-close PnL BEFORE cache invalidation — race-condition-safe fallback
+      const _preCloseSnapshot = _positionsCache?.positions?.find(p => p.position === position_address);
+
       _positionsCacheAt = 0; // invalidate cache so next cycle re-fetches
 
       // Fetch closed PnL from API — authoritative source after withdrawal settles
@@ -704,17 +707,14 @@ export async function closePosition({ position_address, reason, skip_swap = fals
       } catch (e) {
         log("close_warn", `Closed PnL fetch failed: ${e.message}`);
       }
-      // Fallback to pre-close cache snapshot if closed API had no data
-      if (finalValueUsd === 0) {
-        const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
-        if (cachedPos) {
-          pnlUsd        = cachedPos.pnl_usd   ?? 0;
-          pnlPct        = cachedPos.pnl_pct   ?? 0;
-          finalValueUsd = cachedPos.total_value_usd ?? 0;
-          feesUsd       = (cachedPos.collected_fees_usd || 0) + (cachedPos.unclaimed_fees_usd || 0);
-          initialUsd    = tracked.initial_value_usd || (finalValueUsd - pnlUsd) || 0;
-          log("close_warn", `Using pre-close cache snapshot as fallback`);
-        }
+      // Fallback to pre-close snapshot (captured before cache invalidation — avoids race condition)
+      if (finalValueUsd === 0 && _preCloseSnapshot) {
+        pnlUsd        = _preCloseSnapshot.pnl_usd         ?? 0;
+        pnlPct        = _preCloseSnapshot.pnl_pct         ?? 0;
+        finalValueUsd = _preCloseSnapshot.total_value_usd ?? 0;
+        feesUsd       = (_preCloseSnapshot.collected_fees_usd || 0) + (_preCloseSnapshot.unclaimed_fees_usd || 0) || feesUsd;
+        initialUsd    = tracked.initial_value_usd || (finalValueUsd - pnlUsd) || 0;
+        log("close_warn", `Using pre-close snapshot as PnL fallback: pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%)`);
       }
 
       // Fetch SOL price at close from Meteora (native SOL — consistent with SOL-first architecture).
