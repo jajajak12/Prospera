@@ -37,7 +37,7 @@ import { getCircuitState, shouldSkipNextCycle, getActiveProvider } from "./tools
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, notifyClose } from "./telegram.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, getStateSummary } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updateFibTouchState, getStateSummary } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
@@ -320,10 +320,33 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     const positionData = positions.map(p => ({ ...p, recall: recallForPool(p.pool) }));
 
+    // Fetch live prices for Failed Rebound fib tracking (only for positions with stored fib levels)
+    const positionsWithFibLevels = positionData.filter(p => getTrackedPosition(p.position)?.fib_levels_sol != null);
+    const livePriceMap = new Map();
+    if (positionsWithFibLevels.length > 0) {
+      const livePriceResults = await Promise.allSettled(
+        positionsWithFibLevels.map(p => getActiveBin({ pool_address: p.pool }))
+      );
+      for (let i = 0; i < positionsWithFibLevels.length; i++) {
+        const r = livePriceResults[i];
+        if (r.status === 'fulfilled' && r.value?.price != null) {
+          livePriceMap.set(positionsWithFibLevels[i].position, r.value.price);
+        }
+      }
+    }
+
     const exitMap = new Map();
     for (const p of positionData) {
       const exit = updatePnlAndCheckExits(p.position, p, config.management);
-      if (exit) exitMap.set(p.position, exit.reason);
+      if (exit) { exitMap.set(p.position, exit.reason); continue; }
+
+      // Failed Rebound: position touched Fib ≤0.500, then price recovered to ≥0.236 → close
+      const livePrice = livePriceMap.get(p.position) ?? null;
+      const fibState = updateFibTouchState(p.position, livePrice);
+      if (fibState.touched && livePrice != null && fibState.fib236 != null && livePrice >= fibState.fib236) {
+        _m("management", `Failed rebound: ${p.pair} — touched Fib ≤0.500 then recovered ≥0.236 (live=${livePrice.toPrecision(4)} >= fib236=${fibState.fib236.toPrecision(4)}) → closing`);
+        exitMap.set(p.position, `Failed rebound: touched 0.500/0.618 then recovered to 0.236`);
+      }
     }
 
     // positionMeta.json written by executor.js after deploy (ATH bin tracking)

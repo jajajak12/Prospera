@@ -565,25 +565,36 @@ async function runSafetyChecks(name, args) {
       }
 
       // Real-time Fib 0.500 gate — SOL denomination (consistent with OHLCV candles and Fib levels)
+      let _deployMeta = null;
       try {
         const pending = fs.existsSync(PENDING_ATH_PATH)
           ? JSON.parse(fs.readFileSync(PENDING_ATH_PATH, "utf8"))
           : {};
-        const meta = pending[args.pool_address];
-        if (meta?.fib500 != null) {
-          const reliable = await hybridDataProvider.getReliableSOLPrice(meta.tokenMint ?? null, args.pool_address, "solana");
+        _deployMeta = pending[args.pool_address];
+        if (_deployMeta?.fib500 != null) {
+          const reliable = await hybridDataProvider.getReliableSOLPrice(_deployMeta.tokenMint ?? null, args.pool_address, "solana");
           const livePriceSol = reliable?.price ?? null;
           if (livePriceSol == null) {
             // Price unavailable at deploy time — fib500 already verified at screening, allow deploy
-            log.warn("deploy", `Fib deploy-gate: SOL price unavailable → allowing deploy (fib500=${meta.fib500?.toPrecision(4)} SOL verified at screening)`, { pool: args.pool_address });
-          } else if (livePriceSol < meta.fib500) {
+            log.warn("deploy", `Fib deploy-gate: SOL price unavailable → allowing deploy (fib500=${_deployMeta.fib500?.toPrecision(4)} SOL verified at screening)`, { pool: args.pool_address });
+          } else if (livePriceSol < _deployMeta.fib500) {
             return {
               pass: false,
-              reason: `Deploy blocked — live price ${livePriceSol.toPrecision(4)} SOL dropped below Fib 0.500 (${meta.fib500.toPrecision(4)} SOL) since screening.`,
+              reason: `Deploy blocked — live price ${livePriceSol.toPrecision(4)} SOL dropped below Fib 0.500 (${_deployMeta.fib500.toPrecision(4)} SOL) since screening.`,
             };
           }
         }
       } catch { /* non-fatal — if check fails, allow deploy */ }
+
+      // Inject fib levels for Failed Rebound tracking in management cycle
+      if (_deployMeta?.fib500 != null && _deployMeta?.ath != null) {
+        const range = (_deployMeta.ath - _deployMeta.fib500) / 0.500;
+        args.fib_levels_sol = {
+          fib236: _deployMeta.ath - 0.236 * range,
+          fib500: _deployMeta.fib500,
+          fib618: _deployMeta.ath - 0.618 * range,
+        };
+      }
 
       return { pass: true };
     }
