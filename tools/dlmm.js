@@ -424,6 +424,8 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
         in_range:             !!lp.inRange,
         fib_zone:             tracked?.fib_zone ?? null,
         current_fib_level:   null,  // live Fib level vs ATH — expensive to compute every cycle; nullable for future use
+        unclaimed_fees_sol:   Math.round((lp.unCollectedFeeNative ?? 0) * 100_000) / 100_000,
+        total_value_sol:      Math.round((lp.valueNative          ?? 0) * 100_000) / 100_000,
         unclaimed_fees_usd:   _solPrice > 0 ? Math.round((lp.unCollectedFeeNative ?? 0) * _solPrice * 100) / 100 : 0,
         total_value_usd:      _solPrice > 0 ? Math.round((lp.valueNative          ?? 0) * _solPrice * 100) / 100 : 0,
         collected_fees_usd:   _solPrice > 0 ? Math.round((lp.collectedFeeNative   ?? 0) * _solPrice * 100) / 100 : 0,
@@ -488,6 +490,8 @@ export async function getWalletPositions({ wallet_address }) {
         upper_bin:          p?.upperBinId      ?? null,
         active_bin:         p?.poolActiveBinId ?? null,
         in_range:           p ? !p.isOutOfRange : null,
+        unclaimed_fees_sol: null,  // not available from Meteora wallet positions — use LPAgent path
+        total_value_sol:    null,  // not available from Meteora wallet positions — use LPAgent path
         unclaimed_fees_usd: Math.round((p ? (parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)) : 0) * 100) / 100,
         total_value_usd:    Math.round((p ? parseFloat(p.unrealizedPnl?.balances || 0) : 0) * 100) / 100,
         pnl_usd:            Math.round((p?.pnlUsd ?? 0) * 100) / 100,

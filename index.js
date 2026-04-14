@@ -360,15 +360,15 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
 
       // ── 2h Low Yield Auto-Close ─────────────────────────────────────────────
-      // If position open > 2h AND unclaimed fee < 1% of position value → auto close
+      // If position open > 2h AND unclaimed fee < 1% of position value (SOL basis) → auto close
       const LOW_YIELD_HOURS_MS = 2 * 60 * 60 * 1000; // 2 hours
       const MIN_FEE_PCT = 1.0; // 1%
       const ageMs = p.age_minutes != null ? p.age_minutes * 60 * 1000 : null;
       if (ageMs != null && ageMs >= LOW_YIELD_HOURS_MS) {
-        const feesUsd2  = p.unclaimed_fees_usd ?? 0;
-        const totalUsd2 = p.total_value_usd ?? 0;
-        const feePct2   = totalUsd2 > 0 ? (feesUsd2 / totalUsd2) * 100 : 0;
-        if (feePct2 < MIN_FEE_PCT) {
+        const feesSol = p.unclaimed_fees_sol ?? (p.unclaimed_fees_usd != null && solPrice > 0 ? p.unclaimed_fees_usd / solPrice : null);
+        const totalSol = p.total_value_sol ?? (p.total_value_usd != null && solPrice > 0 ? p.total_value_usd / solPrice : null);
+        const feePct2 = (feesSol != null && totalSol != null && totalSol > 0) ? (feesSol / totalSol) * 100 : null;
+        if (feePct2 !== null && feePct2 < MIN_FEE_PCT) {
           const reasonStr = `2h low yield (<${feePct2.toFixed(2)}% fee collected)`;
           _m("management", `2h low yield: ${p.pair} ${p.age_minutes}m old, fee ${feePct2.toFixed(2)}% < ${MIN_FEE_PCT}% → auto close`);
           actionMap.set(p.position, { action: "CLOSE", reason: reasonStr });
@@ -400,16 +400,11 @@ export async function runManagementCycle({ silent = false } = {}) {
       const act = actionMap.get(p.position);
       _m("management", `EXEC deterministic ${act.action} ${p.pair} (${act.reason})`);
       if (act.action === "CLOSE") {
-        const r = await closePosition({ position_address: p.position, reason: act.reason, skip_swap: true }).catch(e => ({ success: false, error: e.message }));
+        const r = await closePosition({ position_address: p.position, reason: act.reason }).catch(e => ({ success: false, error: e.message }));
         if (r.success) {
           _m("management", `  → closed ${p.pair}`);
           _closedPoolsHistory.push({ pair: p.pair, pnl_pct: p.pnl_pct ?? 0, closedAt: new Date().toISOString() });
           if (_closedPoolsHistory.length > 50) _closedPoolsHistory.shift();
-          // Notify Telegram with reason (swap handled by dlmm.js Step 3 inside closePosition)
-          if (telegramEnabled()) {
-            const sign = (r.pnl_usd ?? 0) >= 0 ? "+" : "";
-            sendMessage(`🔒 Closed ${r.pool_name || p.pair}\nReason: ${act.reason}\nPnL: ${sign}$${(r.pnl_usd ?? 0).toFixed(2)} (${sign}${(r.pnl_pct ?? 0).toFixed(2)}%)`).catch(() => {});
-          }
         } else _m("error", `  → close failed: ${r.error}`);
       } else if (act.action === "CLAIM") {
         const { executeTool } = await import("./tools/executor.js");
@@ -701,7 +696,7 @@ RULES:
           agentContent = `(agentLoop error: ${agentErr.message})`;
         }
 
-        screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${freshCandidates.length} candidate(s) passed Fib + RSI + EMA\n\n${agentContent}`;
+        screenReport = `Discovered: ${stats.discovered} | After volume: ${stats.afterVolume} | Meteora pools: ${stats.meteoraPools}\n\n→ ${freshCandidates.length} candidate(s) passed Fib + RSI + EMA\n\n🤖 LLM DECISION:\n${agentContent}`;
       }
     }
   } catch (error) {
