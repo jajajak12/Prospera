@@ -409,6 +409,26 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (p.instruction) { actionMap.set(p.position, { action: "INSTRUCTION" }); continue; }
       if (p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) { actionMap.set(p.position, { action: "CLOSE", reason: "stop loss" }); continue; }
       // Exposure cap temporarily disabled for Phase 3 Stability Test
+      // ── Auto-claim fees: ≥2% of position value AND live price ≥ fib 0.382 ───
+      {
+        const feesUsd  = p.unclaimed_fees_usd ?? 0;
+        const totalUsd = p.total_value_usd ?? 0;
+        const feePct   = totalUsd > 0 ? (feesUsd / totalUsd) * 100 : 0;
+        if (feePct >= 2.0) {
+          const _fibLvl   = getTrackedPosition(p.position)?.fib_levels_sol;
+          const _liveP    = livePriceMap.get(p.position) ?? null;
+          let aboveFib382 = false;
+          if (_fibLvl?.fib236 != null && _fibLvl?.fib500 != null && _liveP != null) {
+            const fib382 = _fibLvl.fib500 + (_fibLvl.fib236 - _fibLvl.fib500) * (0.118 / 0.264);
+            aboveFib382 = _liveP >= fib382;
+          }
+          if (aboveFib382) {
+            _m("management", `Auto-claim: ${p.pair} fees ${feePct.toFixed(1)}% ≥2% AND price above fib0.382 → claim+swap to SOL`);
+            actionMap.set(p.position, { action: "CLAIM" });
+            continue;
+          }
+        }
+      }
       // ── 2h Low Yield Auto-Close ─────────────────────────────────────────────
       // If position open > 2h AND unclaimed fee < 1% of position value (SOL basis) → auto close
       const LOW_YIELD_HOURS_MS = 2 * 60 * 60 * 1000; // 2 hours
