@@ -354,13 +354,14 @@ export async function runManagementCycle({ silent = false } = {}) {
     const ATH_NEW_THRESHOLD = 1.20; // new ATH harus minimal 20% lebih besar dari ATH lama
     let positionMeta = {};
     try { if (fs.existsSync(POSITION_META_PATH)) positionMeta = JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")); } catch { /**/ }
-    const oorPositions = positionData.filter(p => !p.in_range && !exitMap.has(p.position));
-    if (oorPositions.length > 0 && Object.keys(positionMeta).length > 0) {
+    // Cek semua posisi yang ada di positionMeta (tidak filter in_range — LPAgent bisa lag/inaccurate)
+    const athCandidates = positionData.filter(p => !exitMap.has(p.position) && positionMeta[p.position]);
+    if (athCandidates.length > 0 && Object.keys(positionMeta).length > 0) {
       const activeBinResults = await Promise.allSettled(
-        oorPositions.map(p => getActiveBin({ pool_address: p.pool }))
+        athCandidates.map(p => getActiveBin({ pool_address: p.pool }))
       );
-      for (let i = 0; i < oorPositions.length; i++) {
-        const p = oorPositions[i];
+      for (let i = 0; i < athCandidates.length; i++) {
+        const p = athCandidates[i];
         const meta = positionMeta[p.position];
         if (!meta?.athBin || !meta?.ath) continue;
         const res = activeBinResults[i];
