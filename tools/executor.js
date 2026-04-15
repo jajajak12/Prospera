@@ -508,6 +508,16 @@ async function runSafetyChecks(name, args) {
         };
       }
 
+      // Non-refunded (unclaimed) fee guard — must claim fees before deploying new position
+      const posWithUnclaimedFees = positions.positions.filter(p => (p.unclaimed_fees_sol ?? 0) > 0.001);
+      if (posWithUnclaimedFees.length > 0) {
+        const detail = posWithUnclaimedFees.map(p => `${p.pair} (${(p.unclaimed_fees_sol ?? 0).toFixed(4)} SOL unclaimed)`).join(", ");
+        return {
+          pass: false,
+          reason: `Deploy blocked — positions with non-refunded fees must be claimed first: ${detail}`,
+        };
+      }
+
       // Duplicate base token check
       if (args.base_mint) {
         if (positions.positions.some(p => p.base_mint === args.base_mint)) {

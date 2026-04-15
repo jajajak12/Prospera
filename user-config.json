@@ -25,7 +25,7 @@
   "exposureGasReserve": 0.5,
   "minVolume": 150000,
   "minBinStep": 80,
-  "maxBinStep": 125,
+  "maxBinStep": 200,
   "minFeeActiveTvlRatio": 0.05,
   "minTokenAgeHours": 0.5,
   "maxTokenAgeHours": 336,
