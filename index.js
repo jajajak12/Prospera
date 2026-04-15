@@ -549,14 +549,15 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
 
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
-    // ATH OOR recovery close → force rescreen immediately (bypass interval guard)
-    const athOorClosed = positionData.some(p => {
-      const reason = exitMap.get(p.position) ?? "";
-      return reason.startsWith("New ATH detected");
-    });
-    if (athOorClosed) _screeningLastTriggered = 0;
+    // ATH OOR recovery close → force rescreen immediately + bypass RSI slope for those pools
+    const athOorPoolSet = new Set(
+      positionData
+        .filter(p => (exitMap.get(p.position) ?? "").startsWith("New ATH"))
+        .map(p => p.pool)
+    );
+    if (athOorPoolSet.size > 0) _screeningLastTriggered = 0;
     if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > SCREENING_INTERVAL_MS) {
-      runScreeningCycle().catch(e => _m("error", `Screening failed: ${e.message}`));
+      runScreeningCycle({ athOorPools: athOorPoolSet.size > 0 ? athOorPoolSet : null }).catch(e => _m("error", `Screening failed: ${e.message}`));
     }
 
   } catch (error) {
@@ -577,7 +578,7 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
 }
 
 // ── Screening Cycle ────────────────────────────────────────────────────────────
-export async function runScreeningCycle({ silent = false } = {}) {
+export async function runScreeningCycle({ silent = false, athOorPools = null } = {}) {
   const corrId = logCycleStart("screening");
   _lastCorrelationId = corrId;
   const _s = (cat, msg, meta = {}) => logWithId(cat, msg, meta, corrId);
@@ -677,7 +678,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   let freshCandidates = [];
 
   try {
-    const topResult = await getTopCandidates({ limit: 20, correlationId: corrId }).catch(() => null);
+    const topResult = await getTopCandidates({ limit: 20, correlationId: corrId, athOorPools }).catch(() => null);
     const candidates = topResult?.candidates || [];
     stats = {
       discovered: topResult?.total_screened ?? 0,

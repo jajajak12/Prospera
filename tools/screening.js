@@ -538,7 +538,7 @@ async function fetchMeteoraDlmmPoolMap() {
  * @param {object} opts
  * @param {number} opts.limit - Max tokens to fully analyze (default 20)
  */
-export async function getTopCandidates({ limit = 20, correlationId = null } = {}) {
+export async function getTopCandidates({ limit = 20, correlationId = null, athOorPools = null } = {}) {
   const s = config.screening;
 
   // ── Correlation helper: uses existing ID when provided ──────────────────
@@ -986,7 +986,8 @@ export async function getTopCandidates({ limit = 20, correlationId = null } = {}
       if (!binStep) {
         return { signal: "SKIP", reason: "Missing bin_step" };
       }
-      return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? null }, pool.pool);
+      const isAthOor = athOorPools != null && athOorPools.has(pool.pool);
+      return analyzeSignal(token.mint, binStep, currentPrice, s.candleLimit ?? 50, { rsiMin: s.rsiMin ?? null, skipRsiSlope: isAthOor }, pool.pool);
     })
   );
 

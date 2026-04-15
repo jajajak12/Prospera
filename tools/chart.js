@@ -487,7 +487,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
         currentPrice, fib
       );
     }
-    if (rsiSlope < -2.0) { // slope >= -2.0 allowed
+    if (rsiSlope < -2.0 && !opts.skipRsiSlope) { // slope >= -2.0 allowed; bypass for ATH OOR reposition
       return skip(
         `RSI slope declining (${rsiSlope.toFixed(1)} over 5 candles). Need rising momentum for valid entry.`,
         currentPrice, fib
