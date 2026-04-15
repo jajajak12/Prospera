@@ -439,15 +439,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         }
       }
 
-      // ── #1: Fee+PnL combo close (IL > fee rate) ────────────────────────────────
+      // ── #1: Loss ≥3× fees close (IL overwhelming fees) ────────────────────────
       if (ageMs != null && ageMs >= LOW_YIELD_HOURS_MS) {
-        const feesSol2 = p.unclaimed_fees_sol ?? (p.unclaimed_fees_usd != null && solPrice > 0 ? p.unclaimed_fees_usd / solPrice : null);
-        const totalSol2 = p.total_value_sol ?? (p.total_value_usd != null && solPrice > 0 ? p.total_value_usd / solPrice : null);
-        const feePct3 = (feesSol2 != null && totalSol2 != null && totalSol2 > 0) ? (feesSol2 / totalSol2) * 100 : null;
-        const pnlNow = p.pnl_pct ?? 0;
-        if (feePct3 !== null && feePct3 < 3.0 && pnlNow < -5.0) {
-          const reasonStr = `fee-yield insufficient vs IL (fee=${feePct3.toFixed(2)}% < 3%, PnL=${pnlNow.toFixed(2)}%)`;
-          _m("management", `Fee+PnL combo close: ${p.pair} ${p.age_minutes}m old, fee ${feePct3.toFixed(2)}% < 3% AND PnL ${pnlNow.toFixed(2)}% < -5% → close`);
+        const feesUsd2  = p.unclaimed_fees_usd ?? 0;
+        const pnlUsd2   = p.pnl_usd ?? (p.pnl_pct != null && p.total_value_usd != null ? p.total_value_usd * (p.pnl_pct / 100) : null);
+        const lossUsd2  = pnlUsd2 != null ? -pnlUsd2 : null;
+        if (feesUsd2 > 0 && lossUsd2 != null && lossUsd2 >= feesUsd2 * 3) {
+          const reasonStr = `loss $${lossUsd2.toFixed(2)} ≥ 3× fees $${feesUsd2.toFixed(2)}`;
+          _m("management", `Loss≥3×fees close: ${p.pair} loss=$${lossUsd2.toFixed(2)} fees=$${feesUsd2.toFixed(2)} → close`);
           actionMap.set(p.position, { action: "CLOSE", reason: reasonStr });
           continue;
         }
