@@ -69,6 +69,20 @@ async function getPool(poolAddress) {
 
 setInterval(() => poolCache.clear(), 5 * 60 * 1000);
 
+// ─── Estimate bin array initialization fee (non-refundable) ────
+// Returns SOL cost for bin arrays that don't yet exist on-chain.
+export async function estimateBinInitFee(poolAddress, binsBelow, binsAbove) {
+  const { getBinArrayKeysCoverage, BIN_ARRAY_FEE, chunkedGetMultipleAccountInfos } = await import("@meteora-ag/dlmm");
+  const pool = await getPool(poolAddress);
+  const activeBin = await pool.getActiveBin();
+  const minBinId = activeBin.binId - binsBelow;
+  const maxBinId = activeBin.binId + binsAbove;
+  const keys = getBinArrayKeysCoverage(minBinId, maxBinId, pool.pubkey, pool.program.programId);
+  const accounts = await chunkedGetMultipleAccountInfos(getConnection(), keys);
+  const newArrays = accounts.filter(a => a == null).length;
+  return { estimatedFee: newArrays * BIN_ARRAY_FEE, newArrays, totalArrays: keys.length };
+}
+
 // ─── Get Active Bin ────────────────────────────────────────────
 export async function getActiveBin({ pool_address }) {
   pool_address = normalizeMint(pool_address);

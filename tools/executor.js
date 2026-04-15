@@ -15,6 +15,7 @@ import {
   getPositionPnl,
   claimFees,
   closePosition,
+  estimateBinInitFee,
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { getTokenAdvancedInfo, getTokenPriceInfo, getTokenClusterList } from "./okx.js";
@@ -508,23 +509,23 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // Bin initialization fee guard — non-refundable SOL paid to init bin arrays
-      // Each bin array covers 70 bins @ 0.07143744 SOL. Cap at 0.13 SOL.
-      {
-        const BIN_ARRAY_FEE    = 0.07143744;
-        const BINS_PER_ARRAY   = 70;
-        const MAX_INIT_FEE_SOL = 0.13;
+      // Bin initialization fee guard — non-refundable SOL for new bin arrays
+      // Only charges for arrays that don't exist on-chain yet. Cap: 0.13 SOL.
+      try {
         const binsBelow = args.bins_below ?? config.strategy.binsBelow ?? 69;
         const binsAbove = Math.abs(args.bins_above ?? 0);
-        const totalBins = binsBelow + binsAbove;
-        const numArrays = Math.ceil(totalBins / BINS_PER_ARRAY);
-        const estimatedFee = numArrays * BIN_ARRAY_FEE;
-        if (estimatedFee > MAX_INIT_FEE_SOL) {
+        const { estimatedFee, newArrays, totalArrays } = await estimateBinInitFee(args.pool_address, binsBelow, binsAbove);
+        if (estimatedFee > 0.13) {
           return {
             pass: false,
-            reason: `Deploy blocked — bin initialization fee ${estimatedFee.toFixed(5)} SOL (${numArrays} arrays × ${BIN_ARRAY_FEE} SOL) exceeds max 0.13 SOL. Reduce bins_below to ≤${Math.floor(MAX_INIT_FEE_SOL / BIN_ARRAY_FEE) * BINS_PER_ARRAY - binsAbove}.`,
+            reason: `Deploy blocked — bin initialization fee ${estimatedFee.toFixed(5)} SOL (${newArrays}/${totalArrays} new arrays × 0.07143744 SOL) exceeds max 0.13 SOL.`,
           };
         }
+        if (newArrays > 0) {
+          log("safety", `Bin init fee: ${estimatedFee.toFixed(5)} SOL (${newArrays}/${totalArrays} new arrays) — within limit`, { pool: args.pool_address });
+        }
+      } catch (e) {
+        log.warn("safety", `Bin init fee check failed: ${e.message} — allowing deploy`);
       }
 
       // Duplicate base token check
