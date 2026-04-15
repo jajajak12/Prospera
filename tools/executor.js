@@ -397,7 +397,7 @@ export async function executeTool(name, args) {
               const binsDelta = Math.log(entry.ath / entry.entryPrice) / Math.log(1 + entry.binStep / 10000);
               const athBin    = Math.round(entry.activeBinAtScreening + binsDelta);
               const meta      = fs.existsSync(POSITION_META_PATH) ? JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")) : {};
-              meta[result.position] = { athBin, ath: entry.ath, pool: args.pool_address, openedAt: new Date().toISOString() };
+              meta[result.position] = { athBin, ath: entry.ath, peakPrice: entry.ath, pool: args.pool_address, openedAt: new Date().toISOString() };
               fs.writeFileSync(POSITION_META_PATH, JSON.stringify(meta, null, 2));
               log("management", `Saved ATH meta for ${result.position?.slice(0, 8)}: ath=${entry.ath} athBin=${athBin}`);
             }
