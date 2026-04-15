@@ -77,6 +77,7 @@ let _screeningLastTriggered = 0;
 let _exposureHardPausedUntil = 0;
 
 const timers = { managementLastRun: 0, screeningLastRun: 0 };
+const POSITION_META_PATH = path.join(__dirname, "position-meta.json");
 
 // ── Dashboard state (kept for internal tracking) ──────────────────────────────
 let _lastScreeningReport = null;
@@ -349,13 +350,35 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
-    // positionMeta.json written by executor.js after deploy (ATH bin tracking)
-    // RESERVED for future OOR/ATH recovery logic — loaded only when needed, not every cycle
-    // let positionMeta = {};
-    // try { if (fs.existsSync(POSITION_META_PATH)) positionMeta = JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")); } catch { /**/ }
-    // if (Object.keys(positionMeta).length > 0) {
-    //   _m("management", `positionMeta loaded: ${Object.keys(positionMeta).length} entries (reserved for future ATH recovery logic)`);
-    // }
+    // ── ATH OOR Recovery: jika new ATH ≥120% dari ATH lama → close OOR + rescreen ──
+    const ATH_NEW_THRESHOLD = 1.20; // new ATH harus minimal 20% lebih besar dari ATH lama
+    let positionMeta = {};
+    try { if (fs.existsSync(POSITION_META_PATH)) positionMeta = JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")); } catch { /**/ }
+    const oorPositions = positionData.filter(p => !p.in_range && !exitMap.has(p.position));
+    if (oorPositions.length > 0 && Object.keys(positionMeta).length > 0) {
+      const activeBinResults = await Promise.allSettled(
+        oorPositions.map(p => getActiveBin({ pool_address: p.pool }))
+      );
+      for (let i = 0; i < oorPositions.length; i++) {
+        const p = oorPositions[i];
+        const meta = positionMeta[p.position];
+        if (!meta?.athBin || !meta?.ath) continue;
+        const res = activeBinResults[i];
+        if (res.status !== "fulfilled" || res.value?.activeId == null) continue;
+        const currentActiveBin = res.value.activeId;
+        const currentPrice = res.value.price ?? null;
+        // new ATH = activeBin > athBin (harga naik melewati bin ATH lama)
+        if (currentActiveBin > meta.athBin) {
+          // Validasi: current price harus ≥120% dari ath lama
+          if (currentPrice == null || currentPrice < meta.ath * ATH_NEW_THRESHOLD) {
+            _m("management", `ATH OOR skip ${p.pair}: activeBin ${currentActiveBin} > athBin ${meta.athBin} but price ${currentPrice?.toPrecision(4) ?? "?"} < ath*1.20 (${(meta.ath * ATH_NEW_THRESHOLD).toPrecision(4)}) — waiting`);
+            continue;
+          }
+          _m("management", `ATH OOR recovery: ${p.pair} — new ATH detected (activeBin=${currentActiveBin} > athBin=${meta.athBin}, price=${currentPrice.toPrecision(4)} >= ath*1.20=${( meta.ath * ATH_NEW_THRESHOLD).toPrecision(4)}) → closing OOR position + trigger rescreen`);
+          exitMap.set(p.position, `New ATH detected (bin ${currentActiveBin} > athBin ${meta.athBin}, +${(((currentPrice / meta.ath) - 1) * 100).toFixed(0)}% from entry ATH) — reposition`);
+        }
+      }
+    }
 
     // ── LLM zone & report vars — declared outside try, reassign here ──
     mgmtReport = "";
@@ -511,6 +534,12 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
 
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
+    // ATH OOR recovery close → force rescreen immediately (bypass interval guard)
+    const athOorClosed = positionData.some(p => {
+      const reason = exitMap.get(p.position) ?? "";
+      return reason.startsWith("New ATH detected");
+    });
+    if (athOorClosed) _screeningLastTriggered = 0;
     if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > SCREENING_INTERVAL_MS) {
       runScreeningCycle().catch(e => _m("error", `Screening failed: ${e.message}`));
     }
