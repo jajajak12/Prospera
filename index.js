@@ -365,8 +365,8 @@ export async function runManagementCycle({ silent = false } = {}) {
         const meta = positionMeta[p.position];
         if (!meta?.athBin || !meta?.ath) continue;
         const res = activeBinResults[i];
-        if (res.status !== "fulfilled" || res.value?.activeId == null) continue;
-        const currentActiveBin = res.value.activeId;
+        if (res.status !== "fulfilled" || res.value?.binId == null) continue;
+        const currentActiveBin = res.value.binId;
         const currentPrice = res.value.price ?? null;
         // new ATH = activeBin > athBin (harga naik melewati bin ATH lama)
         if (currentActiveBin > meta.athBin) {
