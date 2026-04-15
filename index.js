@@ -409,11 +409,17 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (p.instruction) { actionMap.set(p.position, { action: "INSTRUCTION" }); continue; }
       if (p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) { actionMap.set(p.position, { action: "CLOSE", reason: "stop loss" }); continue; }
       // Exposure cap temporarily disabled for Phase 3 Stability Test
-      // Claim unclaimed fees ONLY if position was deployed in Fib zone .236–.382 (PRIMARY zone)
+      // Claim unclaimed fees ONLY if live price is at/above Fib 0.382 (primary zone)
       // and fees >= 2% of current position value. Then auto-swap to SOL.
-      const isUpperRetracementZone =
-        p.fib_zone === 'PRIMARY' ||
-        (p.current_fib_level != null && p.current_fib_level >= 0.236 && p.current_fib_level <= 0.362);
+      const _trackedPos = getTrackedPosition(p.position);
+      const _fibLevels  = _trackedPos?.fib_levels_sol;
+      const _livePrice  = livePriceMap.get(p.position) ?? null;
+      let isUpperRetracementZone = p.fib_zone === 'PRIMARY';
+      if (!isUpperRetracementZone && _fibLevels?.fib236 != null && _fibLevels?.fib500 != null && _livePrice != null) {
+        // fib382 = fib500 + (fib236 - fib500) * ((0.500 - 0.382) / (0.500 - 0.236))
+        const fib382 = _fibLevels.fib500 + (_fibLevels.fib236 - _fibLevels.fib500) * (0.118 / 0.264);
+        isUpperRetracementZone = _livePrice >= fib382;
+      }
       if (isUpperRetracementZone) {
         const feesUsd   = p.unclaimed_fees_usd ?? 0;
         const totalUsd = p.total_value_usd ?? 0;
