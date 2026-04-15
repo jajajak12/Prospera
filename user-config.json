@@ -19,7 +19,7 @@
   "maxTop10Pct": 30,
   "minTokenFeesSol": 24,
   "athFilterPct": null,
-  "minMcap": 180000,
+  "minMcap": 350000,
   "maxMcap": 5000000,
   "totalExposureCapPct": 0.6,
   "exposureGasReserve": 0.5,
