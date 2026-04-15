@@ -409,19 +409,6 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (p.instruction) { actionMap.set(p.position, { action: "INSTRUCTION" }); continue; }
       if (p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) { actionMap.set(p.position, { action: "CLOSE", reason: "stop loss" }); continue; }
       // Exposure cap temporarily disabled for Phase 3 Stability Test
-      // Claim unclaimed fees when loss is ≥3x the accumulated fees (fees being overwhelmed by IL)
-      // Minimum $0.50 fees to bother claiming.
-      {
-        const feesUsd  = p.unclaimed_fees_usd ?? 0;
-        const pnlUsd   = p.pnl_usd ?? (p.pnl_pct != null && p.total_value_usd != null ? p.total_value_usd * (p.pnl_pct / 100) : null);
-        const lossUsd  = pnlUsd != null ? -pnlUsd : null; // positive = losing
-        if (feesUsd >= 0.5 && lossUsd != null && lossUsd >= feesUsd * 3) {
-          _m("management", `Claiming $${feesUsd.toFixed(2)} fees — loss $${lossUsd.toFixed(2)} is ≥3× fees for ${p.pair} → swapping to SOL`);
-          actionMap.set(p.position, { action: "CLAIM" });
-          continue;
-        }
-      }
-
       // ── 2h Low Yield Auto-Close ─────────────────────────────────────────────
       // If position open > 2h AND unclaimed fee < 1% of position value (SOL basis) → auto close
       const LOW_YIELD_HOURS_MS = 2 * 60 * 60 * 1000; // 2 hours
