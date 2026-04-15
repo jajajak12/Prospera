@@ -36,7 +36,7 @@ import { getTopCandidates } from "./tools/screening.js";
 import { getCircuitState, shouldSkipNextCycle, getActiveProvider } from "./tools/circuit-breaker.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, notifyClose } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, notifyClose, sendWithButtons, registerCallback, unregisterCallback } from "./telegram.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updateFibTouchState, getStateSummary } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
@@ -78,6 +78,11 @@ let _exposureHardPausedUntil = 0;
 
 const timers = { managementLastRun: 0, screeningLastRun: 0 };
 const POSITION_META_PATH = path.join(__dirname, "position-meta.json");
+
+// PnL trend tracking: positionAddress → [pnl1, pnl2, pnl3] (last 3 values)
+const _pnlHistory = new Map();
+// Positions with pending trend alert (suppress re-alert for 30 min)
+const _trendAlertedUntil = new Map();
 
 // ── Dashboard state (kept for internal tracking) ──────────────────────────────
 let _lastScreeningReport = null;
@@ -434,6 +439,58 @@ export async function runManagementCycle({ silent = false } = {}) {
           _m("management", `2h low yield: ${p.pair} ${p.age_minutes}m old, fee ${feePct2.toFixed(2)}% < ${MIN_FEE_PCT}% → auto close`);
           actionMap.set(p.position, { action: "CLOSE", reason: reasonStr });
           continue;
+        }
+      }
+
+      // ── #1: Fee+PnL combo close (IL > fee rate) ────────────────────────────────
+      if (ageMs != null && ageMs >= LOW_YIELD_HOURS_MS) {
+        const feesSol2 = p.unclaimed_fees_sol ?? (p.unclaimed_fees_usd != null && solPrice > 0 ? p.unclaimed_fees_usd / solPrice : null);
+        const totalSol2 = p.total_value_sol ?? (p.total_value_usd != null && solPrice > 0 ? p.total_value_usd / solPrice : null);
+        const feePct3 = (feesSol2 != null && totalSol2 != null && totalSol2 > 0) ? (feesSol2 / totalSol2) * 100 : null;
+        const pnlNow = p.pnl_pct ?? 0;
+        if (feePct3 !== null && feePct3 < 3.0 && pnlNow < -5.0) {
+          const reasonStr = `fee-yield insufficient vs IL (fee=${feePct3.toFixed(2)}% < 3%, PnL=${pnlNow.toFixed(2)}%)`;
+          _m("management", `Fee+PnL combo close: ${p.pair} ${p.age_minutes}m old, fee ${feePct3.toFixed(2)}% < 3% AND PnL ${pnlNow.toFixed(2)}% < -5% → close`);
+          actionMap.set(p.position, { action: "CLOSE", reason: reasonStr });
+          continue;
+        }
+      }
+
+      // ── #2: PnL trend alert — 3 declining cycles & PnL < -8% → Telegram yes/no ─
+      {
+        const pnlNow = p.pnl_pct;
+        if (pnlNow != null) {
+          const hist = _pnlHistory.get(p.position) ?? [];
+          hist.push(pnlNow);
+          if (hist.length > 4) hist.shift();
+          _pnlHistory.set(p.position, hist);
+
+          const suppressedUntil = _trendAlertedUntil.get(p.position) ?? 0;
+          const declining3 = hist.length >= 3
+            && hist[hist.length - 1] < hist[hist.length - 2]
+            && hist[hist.length - 2] < hist[hist.length - 3]
+            && pnlNow < -8.0;
+
+          if (declining3 && Date.now() > suppressedUntil && telegramEnabled()) {
+            _trendAlertedUntil.set(p.position, Date.now() + 30 * 60_000);
+            const cbYes = `trend_close_yes_${p.position}`;
+            const cbNo  = `trend_close_no_${p.position}`;
+            registerCallback(cbYes, async () => {
+              _m("management", `Trend alert: user confirmed close ${p.pair}`);
+              const r = await closePosition({ position_address: p.position, reason: `user confirmed trend close (PnL ${pnlNow.toFixed(2)}%)` }).catch(e => ({ success: false, error: e.message }));
+              if (r.success) notifyClose({ pair: p.pair, pnlUsd: r.pnl_usd ?? 0, pnlPct: r.pnl_pct ?? 0, reason: "trend close confirmed" }).catch(() => {});
+              else sendMessage(`Close failed: ${r.error}`).catch(() => {});
+            });
+            registerCallback(cbNo, async () => {
+              _m("management", `Trend alert: user skipped close ${p.pair}`);
+              sendMessage(`OK, keeping ${p.pair} open. Next alert in 30 min if trend continues.`).catch(() => {});
+            });
+            sendWithButtons(
+              `⚠️ PnL Trend Alert: ${p.pair}\nPnL: ${hist.slice(-3).map(v => v.toFixed(1) + "%").join(" → ")} (3 declining cycles)\nClose position?`,
+              [[{ text: "✅ Yes, close", callback_data: cbYes }, { text: "❌ No, keep", callback_data: cbNo }]]
+            ).catch(() => {});
+            _m("management", `Trend alert sent for ${p.pair}: PnL ${hist.slice(-3).map(v => v.toFixed(1) + "%").join(" → ")}`);
+          }
         }
       }
 

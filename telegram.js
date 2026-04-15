@@ -86,6 +86,48 @@ export async function sendHTML(html) {
 }
 
 
+// ─── Inline keyboard callbacks ───────────────────────────────────
+const _callbackHandlers = new Map(); // callbackData → handler fn
+
+export function registerCallback(callbackData, handler) {
+  _callbackHandlers.set(callbackData, handler);
+}
+
+export function unregisterCallback(callbackData) {
+  _callbackHandlers.delete(callbackData);
+}
+
+async function answerCallbackQuery(callbackQueryId) {
+  if (!TOKEN) return;
+  await fetch(`${BASE}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQueryId }),
+  }).catch(() => {});
+}
+
+export async function sendWithButtons(text, buttons) {
+  // buttons: [[{ text, callback_data }], ...]  (rows of columns)
+  if (!TOKEN || !chatId) return;
+  try {
+    const res = await fetch(`${BASE}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: String(text).slice(0, 4096),
+        reply_markup: { inline_keyboard: buttons },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      log("telegram_error", `sendWithButtons ${res.status}: ${err.slice(0, 100)}`);
+    }
+  } catch (e) {
+    log("telegram_error", `sendWithButtons failed: ${e.message}`);
+  }
+}
+
 // ─── Long polling ────────────────────────────────────────────────
 async function poll(onMessage) {
   while (_polling) {
@@ -98,6 +140,19 @@ async function poll(onMessage) {
       const data = await res.json();
       for (const update of data.result || []) {
         _offset = update.update_id + 1;
+
+        // ── Inline button callback ──
+        const cbq = update.callback_query;
+        if (cbq) {
+          await answerCallbackQuery(cbq.id);
+          const handler = _callbackHandlers.get(cbq.data);
+          if (handler) {
+            _callbackHandlers.delete(cbq.data); // one-shot
+            await handler(cbq.data).catch(e => log("telegram_error", `Callback handler error: ${e.message}`));
+          }
+          continue;
+        }
+
         const msg = update.message;
         if (!msg?.text) continue;
 
