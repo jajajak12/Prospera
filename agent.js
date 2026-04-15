@@ -439,17 +439,23 @@ export async function agentLoop(
  * Lightweight single-turn LLM call — no tools, no agentLoop overhead.
  * Used for background tasks like post-trade chart lesson analysis.
  */
-export async function callLLMDirect(userPrompt, { maxTokens = 200 } = {}) {
+export async function callLLMDirect(userPrompt, { maxTokens = 200, systemPrompt = null } = {}) {
   const { model: usedModel } = getProviderConfig();
   const client = getClient();
   try {
+    const messages = [];
+    if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+    messages.push({ role: "user", content: userPrompt });
     const resp = await client.chat.completions.create({
       model: usedModel,
-      messages: [{ role: "user", content: userPrompt }],
+      messages,
       max_tokens: maxTokens,
       temperature: 0.4,
     });
-    return resp?.choices?.[0]?.message?.content?.trim() ?? null;
+    const content = resp?.choices?.[0]?.message?.content?.trim() ?? null;
+    // Strip <think>...</think> reasoning traces (MiniMax M2.7 style)
+    if (content) return content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || content;
+    return null;
   } catch (e) {
     log("agent", `callLLMDirect failed: ${e.message.slice(0, 80)}`);
     return null;

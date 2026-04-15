@@ -120,8 +120,9 @@ export async function recordPerformance(perf) {
   save(data);
 
   // Chart self-learning: fire-and-forget LLM post-trade analysis (non-blocking)
-  if (outcome !== "neutral") {
-    runChartLessonAnalysis(entry, outcome).catch(e => log("lessons", `Chart analysis error: ${e.message}`));
+  const chartOutcome = pnl_pct >= 5 ? "good" : pnl_pct >= -3 ? "neutral" : "bad";
+  if (chartOutcome !== "neutral") {
+    runChartLessonAnalysis(entry, chartOutcome).catch(e => log("lessons", `Chart analysis error: ${e.message}`));
   }
 
   // Update pool-level memory
@@ -390,58 +391,61 @@ function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
  * Uses dynamic import to avoid circular dependency with agent.js.
  */
 async function runChartLessonAnalysis(perf, outcome) {
-  if (!perf.fib_zone && perf.confluence_score == null && perf.rsi == null) return; // no signal data
+  if (perf.confluence_score == null && perf.rsi == null && !perf.fib_zone) return;
 
   const n  = v => (v != null ? v : '?');
   const b  = v => (v != null ? (v ? 'yes' : 'no') : '?');
-  const pnlStr = `${(perf.pnl_pct ?? 0) >= 0 ? '+' : ''}${(perf.pnl_pct ?? 0).toFixed(2)}%`;
+  const pnlStr  = `${(perf.pnl_pct ?? 0) >= 0 ? '+' : ''}${(perf.pnl_pct ?? 0).toFixed(2)}%`;
   const isProfit = outcome === "good";
-  const label = isProfit ? "PROFIT" : "LOSS";
+  const label    = isProfit ? "PROFIT" : "LOSS";
 
   const context = [
+    `Pair: ${perf.pool_name ?? '?'} | PnL: ${pnlStr} | Result: ${label}`,
     `Zone: ${n(perf.fib_zone)}, conf: ${n(perf.confluence_score?.toFixed(2))}, RSI: ${n(perf.rsi?.toFixed(0))}`,
-    `ATR: ${n(perf.atr_pct?.toFixed(1))}%, depth: ${n(perf.fib_entry_pct?.toFixed(0))}%, range_eff: ${n(perf.range_efficiency?.toFixed(0))}%`,
-    `hidden_div: ${b(perf.has_hidden_divergence)}, smart_wallet: ${b(perf.smart_wallet_present)}, bin_step: ${n(perf.bin_step)}`,
-    `held: ${n(perf.minutes_held)}min, exit: ${perf.close_reason ?? '?'}`,
-  ].join(' | ');
+    `ATR: ${n(perf.atr_pct?.toFixed(1))}%, fib_depth: ${n(perf.fib_entry_pct?.toFixed(0))}%, range_eff: ${n(perf.range_efficiency?.toFixed(0))}%`,
+    `hidden_div: ${b(perf.has_hidden_divergence)}, smart_wallet: ${b(perf.smart_wallet_present)}, bin_step: ${n(perf.bin_step)}, held: ${n(perf.minutes_held)}min`,
+    `exit: ${perf.close_reason ?? '?'}`,
+  ].join('\n');
 
-  const fillIn = isProfit
-    ? `This pattern worked because ___. For future screening, PREFER entries where ___. Be specific (use numbers).`
-    : `This pattern failed because ___. For future screening, AVOID entries where ___. Be specific (use numbers).`;
+  const instruction = isProfit
+    ? `Jelaskan dalam 1 kalimat mengapa sinyal ini menghasilkan profit. Sebutkan faktor spesifik (angka) yang harus DICARI di screening berikutnya.`
+    : `Jelaskan dalam 1 kalimat mengapa sinyal ini menghasilkan loss. Sebutkan faktor spesifik (angka) yang harus DIHINDARI di screening berikutnya.`;
 
   const prompt =
-    `Prospera DLMM LP agent — post-trade chart analysis.\n` +
-    `Pair: ${perf.pool_name ?? '?'} | PnL: ${pnlStr} | Result: ${label}\n` +
+    `Kamu adalah analis DLMM LP Prospera. Analisa hasil trade ini:\n\n` +
     `${context}\n\n` +
-    `Write one sentence starting exactly with "CHART [${label}]:"\n` +
-    `${fillIn}\n` +
-    `Reply ONLY with the sentence. No extra text.`;
+    `${instruction}\n` +
+    `Balas HANYA dengan 1 kalimat. Tanpa penjelasan tambahan.`;
 
   let { callLLMDirect } = await import("./agent.js");
-  const raw = await callLLMDirect(prompt, { maxTokens: 160 });
-  if (!raw) return;
+  // System prompt: suppress MiniMax reasoning traces, force direct answer
+  const sysPrompt = `You are a brief trading analyst. Output ONLY the answer sentence. No thinking, no preamble, no repeating the question.`;
+  const stripped = await callLLMDirect(prompt, { maxTokens: 180, systemPrompt: sysPrompt });
+  if (!stripped || stripped.length < 15) {
+    log("lessons", `Chart analysis: no response for ${perf.pool_name}`);
+    return;
+  }
 
-  // Clean up: ensure it starts with CHART [PROFIT/LOSS]:, truncate at 280 chars
-  const cleaned = raw.replace(/^.*?(CHART\s*\[(?:PROFIT|LOSS)\]:)/i, '$1').slice(0, 280);
-  if (!cleaned.toUpperCase().startsWith("CHART")) return;
+  // Build standardized prefix
+  const rule = `CHART [${label}]: ${stripped.slice(0, 240)}`;
 
   const data = load();
   data.lessons.push({
     id: Date.now(),
-    rule: cleaned,
+    rule,
     tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "screening"],
     outcome: isProfit ? "good" : "bad",
     source: "chart_analysis",
-    pnl_pct: perf.pnl_pct ?? null,
-    pool: perf.pool ?? null,
+    pnl_pct:   perf.pnl_pct   ?? null,
+    pool:      perf.pool      ?? null,
     pool_name: perf.pool_name ?? null,
     created_at: new Date().toISOString(),
   });
   save(data);
 
-  log("lessons", `Chart lesson saved [${label}]: ${cleaned.slice(0, 100)}`);
+  log("lessons", `Chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
   const emoji = isProfit ? "🔍✅" : "🔍❌";
-  sendMessage(`${emoji} Chart Analysis [${perf.pool_name ?? '?'} ${pnlStr}]\n${cleaned}`).catch(() => {});
+  sendMessage(`${emoji} Chart Lesson [${perf.pool_name ?? '?'} ${pnlStr}]\n${rule}`).catch(() => {});
 }
 
 // ─── Manual Lessons ────────────────────────────────────────────

@@ -55,7 +55,10 @@ const FIB_ZONE_SCORE = {
 function load() {
   if (!fs.existsSync(WEIGHTS_FILE)) return { weights: { ...DEFAULT_WEIGHTS }, history: [] };
   try {
-    return JSON.parse(fs.readFileSync(WEIGHTS_FILE, "utf8"));
+    const data = JSON.parse(fs.readFileSync(WEIGHTS_FILE, "utf8"));
+    if (!data.weights)  data.weights  = { ...DEFAULT_WEIGHTS };
+    if (!data.history)  data.history  = [];
+    return data;
   } catch {
     return { weights: { ...DEFAULT_WEIGHTS }, history: [] };
   }
