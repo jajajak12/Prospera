@@ -508,14 +508,23 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // Non-refunded (unclaimed) fee guard — must claim fees before deploying new position
-      const posWithUnclaimedFees = positions.positions.filter(p => (p.unclaimed_fees_sol ?? 0) > 0.001);
-      if (posWithUnclaimedFees.length > 0) {
-        const detail = posWithUnclaimedFees.map(p => `${p.pair} (${(p.unclaimed_fees_sol ?? 0).toFixed(4)} SOL unclaimed)`).join(", ");
-        return {
-          pass: false,
-          reason: `Deploy blocked — positions with non-refunded fees must be claimed first: ${detail}`,
-        };
+      // Bin initialization fee guard — non-refundable SOL paid to init bin arrays
+      // Each bin array covers 70 bins @ 0.07143744 SOL. Cap at 0.13 SOL.
+      {
+        const BIN_ARRAY_FEE    = 0.07143744;
+        const BINS_PER_ARRAY   = 70;
+        const MAX_INIT_FEE_SOL = 0.13;
+        const binsBelow = args.bins_below ?? config.strategy.binsBelow ?? 69;
+        const binsAbove = Math.abs(args.bins_above ?? 0);
+        const totalBins = binsBelow + binsAbove;
+        const numArrays = Math.ceil(totalBins / BINS_PER_ARRAY);
+        const estimatedFee = numArrays * BIN_ARRAY_FEE;
+        if (estimatedFee > MAX_INIT_FEE_SOL) {
+          return {
+            pass: false,
+            reason: `Deploy blocked — bin initialization fee ${estimatedFee.toFixed(5)} SOL (${numArrays} arrays × ${BIN_ARRAY_FEE} SOL) exceeds max 0.13 SOL. Reduce bins_below to ≤${Math.floor(MAX_INIT_FEE_SOL / BIN_ARRAY_FEE) * BINS_PER_ARRAY - binsAbove}.`,
+          };
+        }
       }
 
       // Duplicate base token check
