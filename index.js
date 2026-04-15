@@ -350,11 +350,13 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
-    // ── ATH OOR Recovery: jika new ATH ≥120% dari ATH lama → close OOR + rescreen ──
-    const ATH_NEW_THRESHOLD = 1.20; // new ATH harus minimal 20% lebih besar dari ATH lama
+    // ── ATH OOR Recovery: jika new ATH ≥120% dari ATH lama (pernah terjadi) → close + rescreen ──
+    // peakPrice di-track tiap cycle agar kondisi 20% dievaluasi sepanjang lifetime posisi,
+    // bukan hanya saat management cek (harga bisa sudah retrace saat cek dilakukan)
+    const ATH_NEW_THRESHOLD = 1.20;
     let positionMeta = {};
+    let positionMetaDirty = false;
     try { if (fs.existsSync(POSITION_META_PATH)) positionMeta = JSON.parse(fs.readFileSync(POSITION_META_PATH, "utf8")); } catch { /**/ }
-    // Cek semua posisi yang ada di positionMeta (tidak filter in_range — LPAgent bisa lag/inaccurate)
     const athCandidates = positionData.filter(p => !exitMap.has(p.position) && positionMeta[p.position]);
     if (athCandidates.length > 0 && Object.keys(positionMeta).length > 0) {
       const activeBinResults = await Promise.allSettled(
@@ -368,16 +370,28 @@ export async function runManagementCycle({ silent = false } = {}) {
         if (res.status !== "fulfilled" || res.value?.binId == null) continue;
         const currentActiveBin = res.value.binId;
         const currentPrice = res.value.price ?? null;
-        // new ATH = activeBin > athBin (harga naik melewati bin ATH lama)
+        // Update peakPrice (running max sejak deploy)
+        if (currentPrice != null) {
+          const prevPeak = meta.peakPrice ?? meta.ath;
+          if (currentPrice > prevPeak) {
+            meta.peakPrice = currentPrice;
+            positionMetaDirty = true;
+          }
+        }
+        const peakPrice = meta.peakPrice ?? meta.ath;
+        // Kondisi: activeBin > athBin (harga pernah/sedang di atas ATH lama)
+        // DAN peakPrice pernah mencapai ≥120% dari ath lama (meski sekarang sudah retrace)
         if (currentActiveBin > meta.athBin) {
-          // Validasi: current price harus ≥120% dari ath lama
-          if (currentPrice == null || currentPrice < meta.ath * ATH_NEW_THRESHOLD) {
-            _m("management", `ATH OOR skip ${p.pair}: activeBin ${currentActiveBin} > athBin ${meta.athBin} but price ${currentPrice?.toPrecision(4) ?? "?"} < ath*1.20 (${(meta.ath * ATH_NEW_THRESHOLD).toPrecision(4)}) — waiting`);
+          if (peakPrice < meta.ath * ATH_NEW_THRESHOLD) {
+            _m("management", `ATH OOR skip ${p.pair}: activeBin ${currentActiveBin} > athBin ${meta.athBin} but peakPrice ${peakPrice.toPrecision(4)} < ath*1.20 (${(meta.ath * ATH_NEW_THRESHOLD).toPrecision(4)}) — waiting for stronger ATH`);
             continue;
           }
-          _m("management", `ATH OOR recovery: ${p.pair} — new ATH detected (activeBin=${currentActiveBin} > athBin=${meta.athBin}, price=${currentPrice.toPrecision(4)} >= ath*1.20=${( meta.ath * ATH_NEW_THRESHOLD).toPrecision(4)}) → closing OOR position + trigger rescreen`);
-          exitMap.set(p.position, `New ATH detected (bin ${currentActiveBin} > athBin ${meta.athBin}, +${(((currentPrice / meta.ath) - 1) * 100).toFixed(0)}% from entry ATH) — reposition`);
+          _m("management", `ATH OOR recovery: ${p.pair} — new ATH confirmed (peakPrice=${peakPrice.toPrecision(4)} >= ath*1.20=${(meta.ath * ATH_NEW_THRESHOLD).toPrecision(4)}, activeBin=${currentActiveBin} > athBin=${meta.athBin}) → close + rescreen`);
+          exitMap.set(p.position, `New ATH +${(((peakPrice / meta.ath) - 1) * 100).toFixed(0)}% from entry ATH (peakPrice=${peakPrice.toPrecision(4)}) — reposition`);
         }
+      }
+      if (positionMetaDirty) {
+        try { fs.writeFileSync(POSITION_META_PATH, JSON.stringify(positionMeta, null, 2)); } catch { /**/ }
       }
     }
 
