@@ -396,29 +396,37 @@ async function runChartLessonAnalysis(perf, outcome) {
   const isProfit = outcome === "good";
   const label    = isProfit ? "PROFIT" : "LOSS";
 
-  // Fetch OHLCV so LLM can see actual price shape, not just indicators
+  // Fetch OHLCV focused on PRE-ENTRY price shape (what the chart looked like going in)
   let candleCtx = "";
   try {
     const { hybridDataProvider } = await import("./tools/dataProvider.js");
-    const raw = await hybridDataProvider.getOHLCV(perf.pool, "15m", 60, "solana", perf.base_mint ?? null);
+    // Fetch 80 candles so we have plenty of pre-entry history
+    const raw = await hybridDataProvider.getOHLCV(perf.pool, "15m", 80, "solana", perf.base_mint ?? null);
     if (raw && raw.length >= 10) {
       const candlesHeld = Math.max(1, Math.round((perf.minutes_held ?? 0) / 15));
       const entryIdx    = Math.max(0, raw.length - 1 - candlesHeld);
-      const entryPrice  = raw[entryIdx]?.close ?? raw[0]?.close;
 
-      if (entryPrice > 0) {
-        // 15 candles before entry + all candles during trade
-        const startIdx   = Math.max(0, entryIdx - 15);
-        const slice      = raw.slice(startIdx);
-        const localEntry = entryIdx - startIdx;
+      // Show 40 candles BEFORE entry + 5 after (direction context only)
+      const preStart   = Math.max(0, entryIdx - 40);
+      const postEnd    = Math.min(raw.length - 1, entryIdx + 5);
+      const slice      = raw.slice(preStart, postEnd + 1);
+      const localEntry = entryIdx - preStart;
 
-        const pctArr = slice.map((c, i) => {
-          const pct = ((c.close - entryPrice) / entryPrice * 100).toFixed(1);
-          return i === localEntry ? `[ENTRY:${pct}%]` : `${pct}%`;
-        });
+      // Normalise from window start so full move shape is visible
+      const basePrice = slice[0]?.close ?? 1;
+      const pctArr = slice.map((c, i) => {
+        const pct = ((c.close - basePrice) / basePrice * 100).toFixed(1);
+        if (i === localEntry)  return `[ENTRY:${pct}%]`;
+        if (i > localEntry)    return `(${pct}%)`;   // post-entry in parens
+        return `${pct}%`;
+      });
 
-        candleCtx = `\nClose prices (% dari harga entry, 15m/candle):\n${pctArr.join(" → ")}`;
-      }
+      const moveToEntry = ((slice[localEntry]?.close - basePrice) / basePrice * 100).toFixed(1);
+      const preMinutes  = localEntry * 15;
+      candleCtx =
+        `\nChart SEBELUM entry (% dari candle pertama, 15m/candle, post-entry dalam kurung):\n` +
+        `${pctArr.join(" → ")}\n` +
+        `Total move menuju entry: ${moveToEntry}% dalam ${preMinutes} menit (${localEntry} candles)`;
     }
   } catch (e) {
     log("lessons", `OHLCV fetch for chart analysis failed: ${e.message}`);
@@ -426,22 +434,23 @@ async function runChartLessonAnalysis(perf, outcome) {
 
   const meta = [
     `Pair: ${perf.pool_name ?? '?'} | PnL: ${pnlStr} | Hasil: ${label}`,
-    `Zone: ${n(perf.fib_zone)}, hidden_div: ${perf.has_hidden_divergence ? 'yes' : 'no'}, held: ${n(perf.minutes_held)}min, exit: ${perf.close_reason ?? '?'}`,
+    `Zone: ${n(perf.fib_zone)}, RSI entry: ${n(perf.rsi?.toFixed(0))}, ATR: ${n(perf.atr_pct?.toFixed(1))}%`,
+    `hidden_div: ${perf.has_hidden_divergence ? 'yes' : 'no'}, conf: ${n(perf.confluence_score?.toFixed(2))}, held: ${n(perf.minutes_held)}min, exit: ${perf.close_reason ?? '?'}`,
   ].join('\n');
 
   const instruction = isProfit
-    ? `Sebutkan POLA CHART (bentuk harga) sebelum/saat entry yang menyebabkan profit. Namakan polanya dan ciri khas yang harus DICARI.`
-    : `Sebutkan POLA CHART (bentuk harga) sebelum/saat entry yang menyebabkan loss. Namakan polanya dan ciri khas yang harus DIHINDARI.`;
+    ? `Deskripsikan pola harga SEBELUM entry yang mengindikasikan trade ini akan profit. Fokus pada: kecepatan pump, kedalaman retracement, pola konsolidasi, bentuk chart. RSI/ATR boleh sebagai konteks tambahan.`
+    : `Deskripsikan pola harga SEBELUM entry yang seharusnya jadi WARNING. Fokus pada: tanda exhaustion, tidak ada konsolidasi, pump terlalu cepat/lambat, tidak ada retracement sehat.`;
 
   const prompt =
-    `Kamu adalah analis pola chart untuk DLMM LP agent.\n\n` +
+    `Kamu adalah analis pola chart DLMM LP.\n\n` +
     `${meta}${candleCtx}\n\n` +
     `${instruction}\n` +
-    `Balas HANYA 1 kalimat tentang BENTUK/POLA harga (bukan RSI/ATR/indikator).`;
+    `Balas HANYA 1 kalimat. Prioritaskan bentuk harga (kecepatan pump, kedalaman pullback, pola konsolidasi) — indikator hanya konteks pendukung.`;
 
   let { callLLMDirect } = await import("./agent.js");
-  const sysPrompt = `You are a chart pattern analyst. Output ONE sentence describing the price shape pattern (V-reversal, double bottom, flag, breakdown, consolidation, etc.). No indicators (RSI/ATR). No thinking. No preamble.`;
-  const stripped = await callLLMDirect(prompt, { maxTokens: 200, systemPrompt: sysPrompt });
+  const sysPrompt = `You are a chart pattern analyst for a crypto LP agent. Describe the PRE-ENTRY price action in ONE sentence, focusing on price movement shape (e.g. "sharp pump +180% in 8 candles then healthy 38% retracement consolidating for 12 candles before entry" or "slow grind up +40% over 30 candles with no retracement signalling exhaustion at entry"). Mention RSI/ATR only as supporting detail. No thinking. No preamble.`;
+  const stripped = await callLLMDirect(prompt, { maxTokens: 220, systemPrompt: sysPrompt });
   if (!stripped || stripped.length < 15) {
     log("lessons", `Chart analysis: no response for ${perf.pool_name}`);
     return;
