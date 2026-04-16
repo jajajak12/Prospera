@@ -54,6 +54,16 @@ export async function getTokenAdvancedInfo(mint) {
   const riskNames = risks.map(r => (r.name ?? r.type ?? "").toLowerCase());
   const honeypot = d.rugged === true || riskNames.some(n => n.includes("honeypot"));
 
+  // Locked supply %: sum pct of topHolders whose address appears in lockers dict
+  const lockerAddrs = new Set(Object.keys(d.lockers ?? {}));
+  const topHolders = Array.isArray(d.topHolders) ? d.topHolders : [];
+  const lockedPct = parseFloat(
+    topHolders
+      .filter(h => lockerAddrs.has(h.address))
+      .reduce((sum, h) => sum + (h.pct ?? 0), 0)
+      .toFixed(2)
+  );
+
   return {
     bundlePct:     parseFloat(bundlePct.toFixed(2)),
     sniperPct:     0,   // not available from RugCheck
@@ -65,6 +75,7 @@ export async function getTokenAdvancedInfo(mint) {
     honeypot,
     devRugCount:   0,   // not available from RugCheck
     creator:       d.creator ?? null,
+    lockedPct,
     // RugCheck extras (not used by hard filters but passed through for logging)
     rugScore:      d.score ?? null,
     rugged:        d.rugged ?? false,

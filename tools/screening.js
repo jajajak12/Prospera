@@ -818,9 +818,15 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
         log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — not indexed by Jupiter (feesSOL unknown, treated as 0 < min ${s.minTokenFeesSol ?? 23})`);
         return false;
       }
-      if (jup.top10Pct != null && jup.top10Pct > (s.maxTop10Pct ?? 20)) {
-        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — top10 ${jup.top10Pct}% > max ${s.maxTop10Pct ?? 20}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
-        return false;
+      if (jup.top10Pct != null) {
+        const lockedPct = t._okx?.lockedPct ?? 0;
+        const effectiveTop10 = Math.max(0, jup.top10Pct - lockedPct);
+        const maxTop10 = s.maxTop10Pct ?? 20;
+        if (effectiveTop10 > maxTop10) {
+          const lockNote = lockedPct > 0 ? ` (locked=${lockedPct}%, effective=${effectiveTop10.toFixed(2)}%)` : "";
+          log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — top10 ${jup.top10Pct}%${lockNote} > max ${maxTop10}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
+          return false;
+        }
       }
       if (jup.botHoldersPct != null && jup.botHoldersPct > (s.maxBotHoldersPct ?? 30)) {
         log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
@@ -833,7 +839,9 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
         return false;
       }
       t._jup = jup;
-      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): OK — top10=${jup.top10Pct ?? "?"}%, bots=${jup.botHoldersPct ?? "?"}%, fees=${jup.feesSOL ?? "?"} SOL${t._source === "jupiter" ? " [rocket-scan]" : ""}`);
+      const _lockedPct = t._okx?.lockedPct ?? 0;
+      const _lockNote = _lockedPct > 0 ? `, locked=${_lockedPct}%` : "";
+      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): OK — top10=${jup.top10Pct ?? "?"}%${_lockNote}, bots=${jup.botHoldersPct ?? "?"}%, fees=${jup.feesSOL ?? "?"} SOL${t._source === "jupiter" ? " [rocket-scan]" : ""}`);
       return true;
     });
     _s("screening", `Jupiter filter: ${eligible.length}/${before} passed`);
