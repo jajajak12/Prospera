@@ -832,8 +832,8 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
         log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
-      // feesSOL: >$1M mcap → 80 SOL, ≤$1M mcap → 23 SOL
-      const feeThreshold = (t.mcap > 1_000_000) ? (s.minTokenFeesSolHighMcap ?? 80) : (s.minTokenFeesSol ?? 23);
+      // feesSOL: flat threshold for all tokens (current mcap unreliable — token may have ATH'd above $1M then retraced)
+      const feeThreshold = s.minTokenFeesSol ?? 80;
       if (jup.feesSOL != null && jup.feesSOL < feeThreshold) {
         log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL.toFixed(4)} SOL < min ${feeThreshold} SOL | mcap=${(t.mcap/1e6).toFixed(1)}M`);
         return false;
