@@ -282,6 +282,7 @@ async function discoverTokensFromDexscreener() {
           mcap:   parseFloat(pair.fdv ?? pair.marketCap) || null,
           _volH1: Math.round(volH1),
           _mcapAtDiscovery: parseFloat(pair.fdv ?? pair.marketCap) || null,
+          _priceChangeH24: parseFloat(pair.priceChange?.h24) || null,
           token_age_hours: pairAgeHours,
         });
       } else {
@@ -832,10 +833,17 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
         log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — bot holders ${jup.botHoldersPct}% > max ${s.maxBotHoldersPct ?? 30}% | 1h vol=${t._volH1 ? "$" + t._volH1 : "?"}`);
         return false;
       }
-      // feesSOL: flat threshold for all tokens (current mcap unreliable — token may have ATH'd above $1M then retraced)
-      const feeThreshold = s.minTokenFeesSol ?? 80;
+      // feesSOL: if token ATH'd > $1M mcap (estimated via 24h price change) → 80 SOL, else minTokenFeesSol
+      // Reason: current mcap unreliable — token may have pumped past $1M then retraced below it
+      const curMcap = t.mcap ?? 0;
+      const priceChg24h = t._priceChangeH24 ?? 0;
+      const estHighMcap24h = priceChg24h < 0 && curMcap > 0
+        ? curMcap / (1 + priceChg24h / 100)
+        : curMcap;
+      const peakMcap = Math.max(curMcap, estHighMcap24h);
+      const feeThreshold = peakMcap > 1_000_000 ? (s.minTokenFeesSolHighMcap ?? 80) : (s.minTokenFeesSol ?? 24);
       if (jup.feesSOL != null && jup.feesSOL < feeThreshold) {
-        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL.toFixed(4)} SOL < min ${feeThreshold} SOL | mcap=${(t.mcap/1e6).toFixed(1)}M`);
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL.toFixed(4)} SOL < min ${feeThreshold} SOL | curMcap=${(curMcap/1e6).toFixed(2)}M peakMcap24h=${(peakMcap/1e6).toFixed(2)}M`);
         return false;
       }
       t._jup = jup;
