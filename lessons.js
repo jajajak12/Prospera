@@ -120,7 +120,7 @@ export async function recordPerformance(perf) {
   save(data);
 
   // Chart self-learning: fire-and-forget LLM post-trade analysis (non-blocking)
-  const chartOutcome = pnl_pct >= 5 ? "good" : pnl_pct >= -3 ? "neutral" : "bad";
+  const chartOutcome = pnl_pct >= 5 ? "good" : pnl_pct <= -5 ? "bad" : "neutral";
   if (chartOutcome !== "neutral") {
     runChartLessonAnalysis(entry, chartOutcome).catch(e => log("lessons", `Chart analysis error: ${e.message}`));
   }
@@ -173,9 +173,8 @@ export async function recordPerformance(perf) {
  */
 function derivLesson(perf) {
   const outcome = perf.pnl_pct >= 5 ? "good"
-    : perf.pnl_pct >= -3 ? "neutral"
-    : perf.pnl_pct >= -10 ? "poor"
-    : "bad";
+    : perf.pnl_pct <= -5 ? "bad"
+    : "neutral";
 
   if (outcome === "neutral") return null;
 
