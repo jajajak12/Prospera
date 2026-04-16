@@ -186,10 +186,17 @@ Backtest replay OHLCV historis dari GeckoTerminal. Simulasi entry/exit Fibonacci
 |---------|------|
 | PnL <= -20% | Stop loss — wajib tutup |
 | PnL >= 25% | Auto take-profit — wajib tutup |
+| PnL 10–25% | Partial harvest — tutup |
 | OOR > 10 menit AND active bin > 20 bin keluar | Tutup — keluar Fib zone |
 | Fee/TVL < 1% setelah 60 menit | Tutup — yield rendah |
-| PnL 5%–10% | LLM decision zone — tahan atau tutup |
-| PnL apapun di atas stop loss | LLM bisa tutup kalau ada sinyal deteriorasi |
+| Loss >= 3× unclaimed fees setelah 2 jam | Tutup — IL overtaking fees |
+| PnL 5%–25% | LLM decision zone — tahan atau tutup |
+
+### Auto-Claim Fees
+
+Unclaimed fees di-claim otomatis ketika:
+- Fees >= 2% dari total position value, **DAN**
+- Harga saat ini >= Fib 0.382 (harga masih di zona valid)
 
 ### After Close
 
@@ -202,6 +209,18 @@ Base token di-swap kembali ke SOL via Jupiter (lewat token < $0.10).
 ### Darwinian Signal Weighting
 
 Track sinyal entry yang historically menghasilkan trade profitable. Bobot sinyal adaptif (min 0.3, max 2.5). Disimpan di `signal-weights.json`. LLM secara otomatis memprioritaskan sinyal ⬆ saat memilih antar kandidat.
+
+Signals tracked: `organic_score`, `fee_tvl_ratio`, `volume_5m`, `confluence_score`, `fib_zone`, `bin_step`, `volatility`.
+Update trigger: setelah 6+ posisi ditutup. Lift analysis win vs loss.
+
+### Chart Lesson Analysis
+
+Setelah setiap posisi ditutup, LLM mengevaluasi **mengapa** trade berhasil atau gagal berdasarkan chart signals (Fib zone, RSI, ATR, hidden divergence, smart wallet). Insight disimpan ke `lessons.json` dengan tag `chart_lesson` dan diinjeksikan ke SCREENER prompt untuk memperbaiki keputusan entry di masa depan.
+
+Outcome classification:
+- PnL >= 5% → `CHART [PROFIT]`
+- PnL >= -3% → `CHART [NEUTRAL]`  
+- PnL < -3% → `CHART [LOSS]`
 
 ### Smart Wallet Tracker
 

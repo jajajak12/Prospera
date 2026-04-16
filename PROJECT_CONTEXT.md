@@ -84,6 +84,8 @@ All early-returns: `_releaseAndSkip()` · `finally` always releases both locks
 | PnL 10–25% | CLOSE (partial harvest) |
 | OOR >10m + bins>20 | CLOSE |
 | fee/TVL <1% after 60m | CLOSE |
+| loss ≥3× unclaimed fees after 2h | CLOSE (IL > fees) |
+| fees ≥2% position value AND price ≥ fib382 | CLAIM FEES |
 
 LLM zone: 5–25%.
 
@@ -107,6 +109,10 @@ Cap: 60% wallet · Gas reserve: 0.5 SOL
 - [x] File-based screening lock (no double screening)
 - [x] Telegram unified format
 - [x] Tiered sizing + 60% cap · Partial harvest · RPC failover
+- [x] Chart lesson analysis — LLM evaluates why trade succeeded/failed, saves to lessons.json
+- [x] Signal weights defensive load — handles missing/corrupt history field
+- [x] Auto-claim fees — triggers when fees ≥2% position value AND price ≥ fib382
+- [x] Exit rule — close when loss ≥3× unclaimed fees after 2h (IL overtaking fees)
 - [ ] Darwinian weights: need 6+ closed positions
 - [ ] Monitor entry rate
 
