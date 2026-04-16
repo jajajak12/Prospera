@@ -391,43 +391,63 @@ function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
  * Uses dynamic import to avoid circular dependency with agent.js.
  */
 async function runChartLessonAnalysis(perf, outcome) {
-  if (perf.confluence_score == null && perf.rsi == null && !perf.fib_zone) return;
-
-  const n  = v => (v != null ? v : '?');
-  const b  = v => (v != null ? (v ? 'yes' : 'no') : '?');
+  const n = v => (v != null ? v : '?');
   const pnlStr  = `${(perf.pnl_pct ?? 0) >= 0 ? '+' : ''}${(perf.pnl_pct ?? 0).toFixed(2)}%`;
   const isProfit = outcome === "good";
   const label    = isProfit ? "PROFIT" : "LOSS";
 
-  const context = [
-    `Pair: ${perf.pool_name ?? '?'} | PnL: ${pnlStr} | Result: ${label}`,
-    `Zone: ${n(perf.fib_zone)}, conf: ${n(perf.confluence_score?.toFixed(2))}, RSI: ${n(perf.rsi?.toFixed(0))}`,
-    `ATR: ${n(perf.atr_pct?.toFixed(1))}%, fib_depth: ${n(perf.fib_entry_pct?.toFixed(0))}%, range_eff: ${n(perf.range_efficiency?.toFixed(0))}%`,
-    `hidden_div: ${b(perf.has_hidden_divergence)}, smart_wallet: ${b(perf.smart_wallet_present)}, bin_step: ${n(perf.bin_step)}, held: ${n(perf.minutes_held)}min`,
-    `exit: ${perf.close_reason ?? '?'}`,
+  // Fetch OHLCV so LLM can see actual price shape, not just indicators
+  let candleCtx = "";
+  try {
+    const { hybridDataProvider } = await import("./tools/dataProvider.js");
+    const raw = await hybridDataProvider.getOHLCV(perf.pool, "15m", 60, "solana", perf.base_mint ?? null);
+    if (raw && raw.length >= 10) {
+      const candlesHeld = Math.max(1, Math.round((perf.minutes_held ?? 0) / 15));
+      const entryIdx    = Math.max(0, raw.length - 1 - candlesHeld);
+      const entryPrice  = raw[entryIdx]?.close ?? raw[0]?.close;
+
+      if (entryPrice > 0) {
+        // 15 candles before entry + all candles during trade
+        const startIdx   = Math.max(0, entryIdx - 15);
+        const slice      = raw.slice(startIdx);
+        const localEntry = entryIdx - startIdx;
+
+        const pctArr = slice.map((c, i) => {
+          const pct = ((c.close - entryPrice) / entryPrice * 100).toFixed(1);
+          return i === localEntry ? `[ENTRY:${pct}%]` : `${pct}%`;
+        });
+
+        candleCtx = `\nClose prices (% dari harga entry, 15m/candle):\n${pctArr.join(" → ")}`;
+      }
+    }
+  } catch (e) {
+    log("lessons", `OHLCV fetch for chart analysis failed: ${e.message}`);
+  }
+
+  const meta = [
+    `Pair: ${perf.pool_name ?? '?'} | PnL: ${pnlStr} | Hasil: ${label}`,
+    `Zone: ${n(perf.fib_zone)}, hidden_div: ${perf.has_hidden_divergence ? 'yes' : 'no'}, held: ${n(perf.minutes_held)}min, exit: ${perf.close_reason ?? '?'}`,
   ].join('\n');
 
   const instruction = isProfit
-    ? `Jelaskan dalam 1 kalimat mengapa sinyal ini menghasilkan profit. Sebutkan faktor spesifik (angka) yang harus DICARI di screening berikutnya.`
-    : `Jelaskan dalam 1 kalimat mengapa sinyal ini menghasilkan loss. Sebutkan faktor spesifik (angka) yang harus DIHINDARI di screening berikutnya.`;
+    ? `Sebutkan POLA CHART (bentuk harga) sebelum/saat entry yang menyebabkan profit. Namakan polanya dan ciri khas yang harus DICARI.`
+    : `Sebutkan POLA CHART (bentuk harga) sebelum/saat entry yang menyebabkan loss. Namakan polanya dan ciri khas yang harus DIHINDARI.`;
 
   const prompt =
-    `Kamu adalah analis DLMM LP Prospera. Analisa hasil trade ini:\n\n` +
-    `${context}\n\n` +
+    `Kamu adalah analis pola chart untuk DLMM LP agent.\n\n` +
+    `${meta}${candleCtx}\n\n` +
     `${instruction}\n` +
-    `Balas HANYA dengan 1 kalimat. Tanpa penjelasan tambahan.`;
+    `Balas HANYA 1 kalimat tentang BENTUK/POLA harga (bukan RSI/ATR/indikator).`;
 
   let { callLLMDirect } = await import("./agent.js");
-  // System prompt: suppress MiniMax reasoning traces, force direct answer
-  const sysPrompt = `You are a brief trading analyst. Output ONLY the answer sentence. No thinking, no preamble, no repeating the question.`;
-  const stripped = await callLLMDirect(prompt, { maxTokens: 180, systemPrompt: sysPrompt });
+  const sysPrompt = `You are a chart pattern analyst. Output ONE sentence describing the price shape pattern (V-reversal, double bottom, flag, breakdown, consolidation, etc.). No indicators (RSI/ATR). No thinking. No preamble.`;
+  const stripped = await callLLMDirect(prompt, { maxTokens: 200, systemPrompt: sysPrompt });
   if (!stripped || stripped.length < 15) {
     log("lessons", `Chart analysis: no response for ${perf.pool_name}`);
     return;
   }
 
-  // Build standardized prefix
-  const rule = `CHART [${label}]: ${stripped.slice(0, 240)}`;
+  const rule = `CHART [${label}]: ${stripped.slice(0, 260)}`;
 
   const data = load();
   data.lessons.push({
