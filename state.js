@@ -319,9 +319,11 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
       return null;
     }
     const now = Date.now();
-    const lastCheck = pos.last_low_yield_check_at ? new Date(pos.last_low_yield_check_at).getTime() : 0;
+    const baseline = pos.last_low_yield_check_at
+      ? new Date(pos.last_low_yield_check_at).getTime()
+      : (pos.opened_at ? new Date(pos.opened_at).getTime() : now);
     const minInterval = (mgmtConfig.lowYieldCheckIntervalMin ?? 120) * 60 * 1000;
-    if (now - lastCheck < minInterval) {
+    if (now - baseline < minInterval) {
       // Skip this cycle — not enough time since last check
       return null;
     }
