@@ -446,8 +446,12 @@ export async function callLLMDirect(userPrompt, { maxTokens = 200, systemPrompt 
       temperature: 0.4,
     });
     const content = resp?.choices?.[0]?.message?.content?.trim() ?? null;
-    // Strip <think>...</think> reasoning traces (MiniMax M2.7 style)
-    if (content) return content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || content;
+    // Strip <think>...</think> reasoning traces (complete + incomplete blocks cut by maxTokens)
+    if (content) {
+      let clean = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      clean = clean.replace(/<think>[\s\S]*/gi, '').trim();
+      return clean.length >= 5 ? clean : null;
+    }
     return null;
   } catch (e) {
     log("agent", `callLLMDirect failed: ${e.message.slice(0, 80)}`);
