@@ -322,13 +322,6 @@ export function checkExposureCap(currentExposureSol, walletSol, proposedAmountSo
 }
 
 /**
- * @deprecated Gunakan getPositionSizing(). Wrapper untuk backward compatibility.
- */
-export function computeDeployAmount(walletSol) {
-  return getPositionSizing(walletSol);
-}
-
-/**
  * Reload user-config.json and apply updated screening thresholds to the
  * in-memory config object. Called after threshold evolution so the next
  * agent cycle uses the evolved values without a restart.

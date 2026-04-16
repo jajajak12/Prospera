@@ -420,13 +420,6 @@ export async function agentLoop(
 
     } catch (error) {
       log("error", `Agent loop error at step ${step}: ${error.message}`);
-
-      if (error.status === 429) {
-        log("agent", "Rate limited, waiting 30s...");
-        await sleep(30000);
-        continue;
-      }
-
       throw error;
     }
   }
@@ -462,6 +455,3 @@ export async function callLLMDirect(userPrompt, { maxTokens = 200, systemPrompt 
   }
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}

@@ -18,7 +18,6 @@ import { analyzeSignal } from "./chart.js";
 import { hybridDataProvider } from "./dataProvider.js";
 import { getTokenAdvancedInfo, getTokenPriceInfo } from "./okx.js";
 import { batchGetTokenVolumeH1, getJupiterTokenInfo } from "./token.js";
-import { checkSmartWalletActivity } from "../smart-wallets.js";
 import { isPoolOnATHCooldown } from "../pool-memory.js";
 import fs from "fs";
 import path from "path";

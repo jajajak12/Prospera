@@ -41,7 +41,7 @@ import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositi
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
-import { config, computeDeployAmount, getPositionSizing, calculateCurrentExposure, calculateCurrentExposureSol, canOpenNewPosition, checkExposureCap } from "./config.js";
+import { config, getPositionSizing, calculateCurrentExposure, calculateCurrentExposureSol, canOpenNewPosition, checkExposureCap } from "./config.js";
 
 // ── Startup validation ─────────────────────────────────────────────────────────
 const lpKey     = process.env.LPAGENT_API_KEY;
@@ -84,17 +84,11 @@ const _pnlHistory = new Map();
 // Positions with pending trend alert (suppress re-alert for 30 min)
 const _trendAlertedUntil = new Map();
 
-// ── Dashboard state (kept for internal tracking) ──────────────────────────────
-let _lastScreeningReport = null;
-let _closedPoolsHistory = [];
-let _lastLlmZoneCount = 0;
 
 // ── Health Server ──────────────────────────────────────────────────────────────
 let _healthServer = null;
-let _healthPort = 3000;
 
 function startHealthServer(port = 3000) {
-  _healthPort = port;
   if (_healthServer) return;
   _healthServer = http.createServer(async (req, res) => {
     try {
@@ -529,8 +523,6 @@ export async function runManagementCycle({ silent = false } = {}) {
         const r = await closePosition({ position_address: p.position, reason: act.reason }).catch(e => ({ success: false, error: e.message }));
         if (r.success) {
           _m("management", `  → closed ${p.pair}`);
-          _closedPoolsHistory.push({ pair: p.pair, pnl_pct: r.pnl_pct ?? p.pnl_pct ?? 0, closedAt: new Date().toISOString() });
-          if (_closedPoolsHistory.length > 50) _closedPoolsHistory.shift();
           notifyClose({ pair: p.pair, pnlUsd: r.pnl_usd ?? 0, pnlPct: r.pnl_pct ?? 0, reason: act.reason }).catch(() => {});
         } else _m("error", `  → close failed: ${r.error}`);
       } else if (act.action === "CLAIM") {
@@ -631,7 +623,6 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
   } finally {
     _managementBusy = false;
     _managementLastCompleted = Date.now();
-    _lastLlmZoneCount = llmZone.length;
 
     if (lockAcquired) completeManagementLock();
     if (!silent && telegramEnabled() && mgmtReport) {
@@ -838,26 +829,6 @@ RULES:
     screenReport = `Failed: ${error.message}`;
   } finally {
     _release();
-    _lastScreeningReport = {
-      discovered: stats?.discovered ?? 0,
-      afterVolume: stats?.afterVolume ?? 0,
-      meteoraPools: stats?.meteoraPools ?? 0,
-      fibPassed: stats?.fibPassed ?? 0,
-      candidates: (freshCandidates || []).map(c => ({
-        name: c?.name ?? "unknown",
-        symbol: c?.symbol ?? c?.name ?? "unknown",
-        pool: c?.pool ?? c?.poolAddress ?? null,
-        price: c?.price ?? null,
-        volume_1h: c?.volume_h1 ?? c?.volume_1h ?? null,
-        market_cap: c?.mcap ?? c?.market_cap ?? null,
-        tvl: c?.active_tvl ?? null,
-        signal: c?.fib_signal?.signal ?? null,
-        confluence: c?.fib_signal?.confluenceScore ?? null,
-        binsBelow: c?.fib_signal?.binsBelow ?? null,
-        binsAbove: c?.fib_signal?.binsAbove ?? 0,
-      })),
-      content: screenReport,
-    };
     if (!silent && telegramEnabled() && screenReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
       sendMessage(`🔍 Fibonacci Screening [${ts}] ID: ${corrId}\n${stripThink(screenReport)}`).catch(() => {});
@@ -982,7 +953,6 @@ async function handleTelegram(text) {
     }
     if (text === "/status") {
       const cb = getCircuitState();
-      const { getActiveProvider } = await import("./tools/circuit-breaker.js");
       const activeProvider = getActiveProvider();
       const positions = await getMyPositions({ force: true }).catch(() => null);
       const balance = await getWalletBalances().catch(() => null);
