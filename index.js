@@ -264,7 +264,11 @@ export async function runManagementCycle({ silent = false } = {}) {
   // Also blocks if a previous cycle died without clearing the flag (failsafe).
   if (_managementBusy) { _m("management", "Cycle busy — skipped"); return null; }
   const _screeningStuck = _screeningBusy && (Date.now() - _screeningBusySince) > 5 * 60_000;
-  if (_screeningBusy && !_screeningStuck) { _m("management", "Screening running — skipped"); return null; }
+  if (_screeningStuck) {
+    _m("management", "Screening stuck >5m — force-clearing busy flag");
+    _screeningBusy = false;
+  }
+  if (_screeningBusy) { _m("management", "Screening running — skipped"); return null; }
 
   // ── Fast path: cek posisi dulu sebelum acquire lock / busy flag ─────────────
   // Jika 0 posisi → skip secepat mungkin, tidak perlu lock, tidak perlu LPAgent call
@@ -431,6 +435,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
       // ── 2h Low Yield Auto-Close ─────────────────────────────────────────────
       // If position open > 2h AND unclaimed fee < 1% of position value (SOL basis) → auto close
+      const solPrice = preBalance?.sol_price ?? 0;
       const LOW_YIELD_HOURS_MS = 2 * 60 * 60 * 1000; // 2 hours
       const MIN_FEE_PCT = 1.0; // 1%
       const ageMs = p.age_minutes != null ? p.age_minutes * 60 * 1000 : null;

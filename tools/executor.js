@@ -285,7 +285,7 @@ const toolMap = {
 
     // Apply to live config immediately
     for (const [key, val] of Object.entries(applied)) {
-      const [section, field] = CONFIG_MAP[key];
+      const [section, field] = CONFIG_MAP[key] ?? CONFIG_MAP_LOWER[key.toLowerCase()]?.[1];
       const before = config[section][field];
       config[section][field] = val;
       log("config", `update_config: config.${section}.${field} ${before} → ${val}`);

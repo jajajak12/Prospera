@@ -290,7 +290,7 @@ export async function deployPosition({
     });
 
     const actualBinStep = pool.lbPair.binStep;
-    const activePrice = parseFloat(activeBin.price);
+    const activePrice = parseFloat(pool.fromPricePerLamport(Number(activeBin.price)));
     const minPrice = activePrice * Math.pow(1 + actualBinStep / 10000, minBinId - activeBin.binId);
     const maxPrice = activePrice * Math.pow(1 + actualBinStep / 10000, maxBinId - activeBin.binId);
 
