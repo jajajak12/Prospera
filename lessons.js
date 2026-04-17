@@ -445,13 +445,20 @@ async function runChartLessonAnalysis(perf, outcome) {
         fibCtx = `\nFibonacci levels (% dari candle pertama): ${parts.join(' | ')}`;
       }
 
+      // Compute normalized volume (relative to median of whole slice) so LLM has real vol data
+      const vols = slice.map(c => c.volume ?? 0);
+      const sortedVols = [...vols].sort((a, b) => a - b);
+      const medianVol  = sortedVols[Math.floor(sortedVols.length / 2)] || 1;
       const pctArr = slice.map((c, i) => {
-        const pct = ((c.close - basePrice) / basePrice * 100).toFixed(1);
-        if (i === localDeploy) return `[DEPLOY:${pct}%]`;
-        if (i === localClose)  return `[CLOSE:${pct}%]`;
-        if (i > localDeploy && i < localClose) return `(${pct}%)`;   // during hold
-        if (i > localClose) return `{${pct}%}`;                       // post-close
-        return `${pct}%`;                                              // pre-deploy context
+        const pct    = ((c.close - basePrice) / basePrice * 100).toFixed(1);
+        const volRel = medianVol > 0 ? (((c.volume ?? 0) / medianVol)).toFixed(1) : null;
+        const volTag = volRel != null ? `v${volRel}x` : '';
+        const tag = volTag ? `${pct}%/${volTag}` : `${pct}%`;
+        if (i === localDeploy) return `[DEPLOY:${tag}]`;
+        if (i === localClose)  return `[CLOSE:${tag}]`;
+        if (i > localDeploy && i < localClose) return `(${tag})`;
+        if (i > localClose) return `{${tag}}`;
+        return tag;
       });
 
       const deployPct = ((slice[localDeploy]?.close - basePrice) / basePrice * 100).toFixed(1);
@@ -462,7 +469,8 @@ async function runChartLessonAnalysis(perf, outcome) {
 
       candleCtx =
         `\nChart full lifecycle (% dari candle pertama, 15m/candle):` +
-        `\n  Format: sebelum deploy | [DEPLOY] (selama hold) [CLOSE] {setelah close}` +
+        `\n  Format: price%/vNx = price change / volume vs median (e.g. v2.1x = 2.1× median volume)` +
+        `\n  Sections: sebelum deploy | [DEPLOY] (selama hold) [CLOSE] {setelah close}` +
         `\nChart: ${pctArr.join(" → ")}` +
         fibCtx +
         `\nSummary: deploy@${deployPct}% → hold range [${holdMin}%..${holdMax}%] → close@${closePct}% | held ${minutesHeld}min (${candlesHeld} candles)`;
@@ -496,7 +504,7 @@ async function runChartLessonAnalysis(perf, outcome) {
     `3. Apakah ada pola volume dry-up atau reversal yang bisa jadi exit signal?\n` +
     `Balas MAKSIMAL 3 kalimat singkat. Format: [MANAGEMENT] <observasi>`;
 
-  const managerSys = `You are a crypto position management analyst for DLMM LP. Analyze the HOLD period chart (between [DEPLOY] and [CLOSE]) and identify: early exit signals missed, whether fib500 was broken too quickly, volume patterns suggesting reversal. Max 3 sentences. Be specific (candle counts, % moves). No preamble.`;
+  const managerSys = `You are a crypto position management analyst for DLMM LP. Analyze the HOLD period chart (between [DEPLOY] and [CLOSE]) and identify: early exit signals missed, whether fib500 was broken too quickly, volume spikes/drops (use vNx values — only comment on volume if vNx data is present). Max 3 sentences. Be specific (candle counts, % moves, vNx values). ONLY state what the data shows — do not invent observations not supported by the chart data.`;
 
   let { callLLMDirect } = await import("./agent.js");
 
