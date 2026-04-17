@@ -87,6 +87,12 @@ export function completeScreeningLock() {
   writeScreeningLock("completed");
 }
 
+export function resetScreeningLockForRescreen() {
+  try {
+    fs.writeFileSync(SCREENING_LOCK_PATH, JSON.stringify({ ts: 0, pid: process.pid, status: "completed" }), { flag: "w" });
+  } catch { /* non-fatal */ }
+}
+
 // ── Management lock ──────────────────────────────────────────────────────────
 export function readManagementLock() {
   return readLock(MANAGEMENT_LOCK_PATH, "management");

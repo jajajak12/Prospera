@@ -25,7 +25,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import cron from "node-cron";
 
 // ── Imports ────────────────────────────────────────────────────────────────────
-import { acquireScreeningLock, completeScreeningLock, acquireManagementLock, completeManagementLock } from "./tools/lock-manager.js";
+import { acquireScreeningLock, completeScreeningLock, acquireManagementLock, completeManagementLock, resetScreeningLockForRescreen } from "./tools/lock-manager.js";
 import { agentLoop, probeLLMProviders } from "./agent.js";
 import http from "http";
 import { log } from "./logger.js";
@@ -612,7 +612,7 @@ RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
         .filter(p => (exitMap.get(p.position) ?? "").startsWith("New ATH"))
         .map(p => p.pool)
     );
-    if (athOorPoolSet.size > 0) _screeningLastTriggered = 0;
+    if (athOorPoolSet.size > 0) { _screeningLastTriggered = 0; resetScreeningLockForRescreen(); }
     if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > SCREENING_INTERVAL_MS) {
       runScreeningCycle({ athOorPools: athOorPoolSet.size > 0 ? athOorPoolSet : null }).catch(e => _m("error", `Screening failed: ${e.message}`));
     }
