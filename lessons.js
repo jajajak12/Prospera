@@ -385,8 +385,8 @@ function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
 // ─── Chart Self-Learning ───────────────────────────────────────
 
 /**
- * Post-trade LLM analysis. Runs async/fire-and-forget after a position closes.
- * Builds a chart lesson from entry signals + outcome and saves to lessons.json.
+ * Post-trade LLM analysis. Full lifecycle chart study: pre-deploy → hold → close.
+ * Generates TWO lessons: one for SCREENER (entry pattern), one for MANAGER (hold/exit pattern).
  * Uses dynamic import to avoid circular dependency with agent.js.
  */
 async function runChartLessonAnalysis(perf, outcome) {
@@ -395,85 +395,134 @@ async function runChartLessonAnalysis(perf, outcome) {
   const isProfit = outcome === "good";
   const label    = isProfit ? "PROFIT" : "LOSS";
 
-  // Fetch OHLCV focused on PRE-ENTRY price shape (what the chart looked like going in)
+  // ── Build full-lifecycle chart context ─────────────────────────────────────
   let candleCtx = "";
+  let fibCtx    = "";
   try {
     const { hybridDataProvider } = await import("./tools/dataProvider.js");
-    // Fetch 80 candles so we have plenty of pre-entry history
-    const raw = await hybridDataProvider.getOHLCV(perf.pool, "15m", 80, "solana", perf.base_mint ?? null);
+    const minutesHeld   = perf.minutes_held ?? 0;
+    const candlesHeld   = Math.max(1, Math.round(minutesHeld / 15));
+    const preDeployCtx  = 20;  // candles before deploy for momentum context
+    const postCloseCtx  = 5;   // candles after close to confirm direction
+    const totalNeeded   = preDeployCtx + candlesHeld + postCloseCtx;
+
+    const raw = await hybridDataProvider.getOHLCV(perf.pool, "15m", Math.min(totalNeeded + 10, 150), "solana", perf.base_mint ?? null);
     if (raw && raw.length >= 10) {
-      const candlesHeld = Math.max(1, Math.round((perf.minutes_held ?? 0) / 15));
-      const entryIdx    = Math.max(0, raw.length - 1 - candlesHeld);
+      // Estimate deploy position in candle array
+      const closeIdx  = raw.length - 1 - postCloseCtx;
+      const deployIdx = Math.max(0, closeIdx - candlesHeld);
+      const preStart  = Math.max(0, deployIdx - preDeployCtx);
 
-      // Show 40 candles BEFORE entry + 5 after (direction context only)
-      const preStart   = Math.max(0, entryIdx - 40);
-      const postEnd    = Math.min(raw.length - 1, entryIdx + 5);
-      const slice      = raw.slice(preStart, postEnd + 1);
-      const localEntry = entryIdx - preStart;
+      const slice      = raw.slice(preStart, raw.length);
+      const localDeploy = deployIdx - preStart;
+      const localClose  = closeIdx  - preStart;
+      const basePrice  = slice[0]?.close ?? 1;
 
-      // Normalise from window start so full move shape is visible
-      const basePrice = slice[0]?.close ?? 1;
+      // Fibonacci level annotations (if available)
+      const fibs = perf.fib_levels_sol;
+      const deployPrice = slice[localDeploy]?.close;
+      const fibLabels = fibs && deployPrice ? (() => {
+        const ref = basePrice;
+        const fib500pct = ((fibs.fib500 - ref) / ref * 100).toFixed(1);
+        const fib618pct = fibs.fib618 != null ? ((fibs.fib618 - ref) / ref * 100).toFixed(1) : null;
+        const fib236pct = fibs.fib236 != null ? ((fibs.fib236 - ref) / ref * 100).toFixed(1) : null;
+        return { fib500: fib500pct, fib618: fib618pct, fib236: fib236pct };
+      })() : null;
+
+      if (fibLabels) {
+        fibCtx = `\nFibonacci levels (% dari candle pertama):` +
+          (fibLabels.fib618 ? ` fib618=${fibLabels.fib618}%` : '') +
+          ` fib500=${fibLabels.fib500}%` +
+          (fibLabels.fib236 ? ` fib236=${fibLabels.fib236}%` : '');
+      }
+
       const pctArr = slice.map((c, i) => {
         const pct = ((c.close - basePrice) / basePrice * 100).toFixed(1);
-        if (i === localEntry)  return `[ENTRY:${pct}%]`;
-        if (i > localEntry)    return `(${pct}%)`;   // post-entry in parens
-        return `${pct}%`;
+        if (i === localDeploy) return `[DEPLOY:${pct}%]`;
+        if (i === localClose)  return `[CLOSE:${pct}%]`;
+        if (i > localDeploy && i < localClose) return `(${pct}%)`;   // during hold
+        if (i > localClose) return `{${pct}%}`;                       // post-close
+        return `${pct}%`;                                              // pre-deploy context
       });
 
-      const moveToEntry = ((slice[localEntry]?.close - basePrice) / basePrice * 100).toFixed(1);
-      const preMinutes  = localEntry * 15;
+      const deployPct = ((slice[localDeploy]?.close - basePrice) / basePrice * 100).toFixed(1);
+      const closePct  = ((slice[localClose]?.close  - basePrice) / basePrice * 100).toFixed(1);
+      const holdMoves = slice.slice(localDeploy, localClose + 1).map(c => ((c.close - basePrice) / basePrice * 100).toFixed(1));
+      const holdMin   = Math.min(...holdMoves.map(Number)).toFixed(1);
+      const holdMax   = Math.max(...holdMoves.map(Number)).toFixed(1);
+
       candleCtx =
-        `\nChart SEBELUM entry (% dari candle pertama, 15m/candle, post-entry dalam kurung):\n` +
-        `${pctArr.join(" → ")}\n` +
-        `Total move menuju entry: ${moveToEntry}% dalam ${preMinutes} menit (${localEntry} candles)`;
+        `\nChart full lifecycle (% dari candle pertama, 15m/candle):` +
+        `\n  Format: sebelum deploy | [DEPLOY] (selama hold) [CLOSE] {setelah close}` +
+        `\nChart: ${pctArr.join(" → ")}` +
+        fibCtx +
+        `\nSummary: deploy@${deployPct}% → hold range [${holdMin}%..${holdMax}%] → close@${closePct}% | held ${minutesHeld}min (${candlesHeld} candles)`;
     }
   } catch (e) {
     log("lessons", `OHLCV fetch for chart analysis failed: ${e.message}`);
   }
 
-  const meta = [
-    `Pair: ${perf.pool_name ?? '?'} | PnL: ${pnlStr} | Hasil: ${label}`,
-    `Zone: ${n(perf.fib_zone)}, RSI entry: ${n(perf.rsi?.toFixed(0))}, ATR: ${n(perf.atr_pct?.toFixed(1))}%`,
-    `hidden_div: ${perf.has_hidden_divergence ? 'yes' : 'no'}, conf: ${n(perf.confluence_score?.toFixed(2))}, held: ${n(perf.minutes_held)}min, exit: ${perf.close_reason ?? '?'}`,
-  ].join('\n');
+  const meta =
+    `Pair: ${perf.pool_name ?? '?'} | PnL: ${pnlStr} | Hasil: ${label}\n` +
+    `Zone: ${n(perf.fib_zone)}, RSI entry: ${n(perf.rsi?.toFixed(0))}, ATR: ${n(perf.atr_pct?.toFixed(1))}%, conf: ${n(perf.confluence_score?.toFixed(2))}\n` +
+    `held: ${n(perf.minutes_held)}min | exit reason: ${perf.close_reason ?? '?'} | hidden_div: ${perf.has_hidden_divergence ? 'yes' : 'no'}`;
 
-  const instruction = isProfit
-    ? `Deskripsikan pola harga SEBELUM entry yang mengindikasikan trade ini akan profit. Fokus pada: kecepatan pump, kedalaman retracement, pola konsolidasi, bentuk chart. RSI/ATR boleh sebagai konteks tambahan.`
-    : `Deskripsikan pola harga SEBELUM entry yang seharusnya jadi WARNING. Fokus pada: tanda exhaustion, tidak ada konsolidasi, pump terlalu cepat/lambat, tidak ada retracement sehat.`;
-
-  const prompt =
-    `Kamu adalah analis pola chart DLMM LP.\n\n` +
+  // ── SCREENER lesson: pre-deploy entry pattern ──────────────────────────────
+  const screenerPrompt =
+    `Kamu adalah analis pola chart DLMM LP untuk ENTRY SCREENING.\n\n` +
     `${meta}${candleCtx}\n\n` +
-    `${instruction}\n` +
-    `Balas HANYA 1 kalimat. Prioritaskan bentuk harga (kecepatan pump, kedalaman pullback, pola konsolidasi) — indikator hanya konteks pendukung.`;
+    `Analisa pola harga SEBELUM deploy ([DEPLOY] marker) yang mengindikasikan apakah entry ini ${isProfit ? 'layak diambil' : 'seharusnya di-skip'}.\n` +
+    `Fokus pada: kecepatan pump sebelum entry, kedalaman retracement, apakah Fib 0.500 dijaga atau ditembus, konsolidasi sebelum entry.\n` +
+    `Balas MAKSIMAL 2 kalimat. Format: [SCREENING] <observasi>`;
+
+  const screenerSys = `You are a crypto chart pattern analyst specializing in DLMM LP entry signals. Analyze the PRE-DEPLOY chart section and describe: (1) what the price action showed BEFORE entry, (2) whether fib500 held or was breached, (3) whether entry timing was good or bad. Max 2 sentences. Be specific about candle counts and percentage moves. No preamble.`;
+
+  // ── MANAGER lesson: hold + exit pattern ───────────────────────────────────
+  const managerPrompt =
+    `Kamu adalah analis pola chart DLMM LP untuk POSITION MANAGEMENT.\n\n` +
+    `${meta}${candleCtx}\n\n` +
+    `Analisa pola harga SELAMA hold (antara [DEPLOY] dan [CLOSE]) untuk mengidentifikasi:\n` +
+    `1. Apakah ada sinyal untuk close lebih awal atau lebih lama dari yang dilakukan?\n` +
+    `2. Apakah Fib 0.500 ditembus terlalu cepat (red flag)? Jika ya, berapa candle setelah deploy?\n` +
+    `3. Apakah ada pola volume dry-up atau reversal yang bisa jadi exit signal?\n` +
+    `Balas MAKSIMAL 3 kalimat singkat. Format: [MANAGEMENT] <observasi>`;
+
+  const managerSys = `You are a crypto position management analyst for DLMM LP. Analyze the HOLD period chart (between [DEPLOY] and [CLOSE]) and identify: early exit signals missed, whether fib500 was broken too quickly, volume patterns suggesting reversal. Max 3 sentences. Be specific (candle counts, % moves). No preamble.`;
 
   let { callLLMDirect } = await import("./agent.js");
-  const sysPrompt = `You are a chart pattern analyst for a crypto LP agent. Describe the PRE-ENTRY price action in ONE sentence, focusing on price movement shape (e.g. "sharp pump +180% in 8 candles then healthy 38% retracement consolidating for 12 candles before entry" or "slow grind up +40% over 30 candles with no retracement signalling exhaustion at entry"). Mention RSI/ATR only as supporting detail. No thinking. No preamble.`;
-  const stripped = await callLLMDirect(prompt, { maxTokens: 220, systemPrompt: sysPrompt });
-  if (!stripped || stripped.length < 15) {
-    log("lessons", `Chart analysis: no response for ${perf.pool_name}`);
-    return;
-  }
 
-  const rule = `CHART [${label}]: ${stripped.slice(0, 260)}`;
+  const [screenerResp, managerResp] = await Promise.all([
+    callLLMDirect(screenerPrompt, { maxTokens: 280, systemPrompt: screenerSys }).catch(() => null),
+    callLLMDirect(managerPrompt,  { maxTokens: 350, systemPrompt: managerSys  }).catch(() => null),
+  ]);
 
   const data = load();
-  data.lessons.push({
-    id: Date.now(),
-    rule,
-    tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "screening"],
-    outcome: isProfit ? "good" : "bad",
-    source: "chart_analysis",
-    pnl_pct:   perf.pnl_pct   ?? null,
-    pool:      perf.pool      ?? null,
-    pool_name: perf.pool_name ?? null,
-    created_at: new Date().toISOString(),
-  });
+  const now  = new Date().toISOString();
+  const base = { outcome: isProfit ? "good" : "bad", source: "chart_analysis", pnl_pct: perf.pnl_pct ?? null, pool: perf.pool ?? null, pool_name: perf.pool_name ?? null };
+
+  if (screenerResp && screenerResp.length >= 15) {
+    const rule = `CHART [${label}][SCREENING]: ${screenerResp.slice(0, 320)}`;
+    data.lessons.push({ id: Date.now(), rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "screening", "entry"], ...base, created_at: now });
+    log("lessons", `Screening chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+  }
+
+  if (managerResp && managerResp.length >= 15) {
+    const rule = `CHART [${label}][MANAGEMENT]: ${managerResp.slice(0, 400)}`;
+    data.lessons.push({ id: Date.now() + 1, rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "management", "hold", "close"], ...base, created_at: now });
+    log("lessons", `Management chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+  }
+
   save(data);
 
-  log("lessons", `Chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
-  const emoji = isProfit ? "🔍✅" : "🔍❌";
-  sendMessage(`${emoji} Chart Lesson [${perf.pool_name ?? '?'} ${pnlStr}]\n${rule}`).catch(() => {});
+  if (screenerResp || managerResp) {
+    const emoji = isProfit ? "🔍✅" : "🔍❌";
+    const msg = [
+      `${emoji} Chart Lesson [${perf.pool_name ?? '?'} ${pnlStr}]`,
+      screenerResp ? `📊 Entry: ${screenerResp.slice(0, 200)}` : null,
+      managerResp  ? `⚙️ Hold: ${managerResp.slice(0, 250)}`   : null,
+    ].filter(Boolean).join('\n');
+    sendMessage(msg).catch(() => {});
+  }
 }
 
 // ─── Manual Lessons ────────────────────────────────────────────
@@ -568,7 +617,7 @@ export function clearPerformance() {
 
 const ROLE_TAGS = {
   SCREENER: ["screening", "strategy", "deployment", "fib_entry", "entry", "volume", "chart_lesson"],
-  MANAGER:  ["management", "risk", "oor", "fees", "position", "hold", "close", "pnl", "stop_loss"],
+  MANAGER:  ["management", "risk", "oor", "fees", "position", "hold", "close", "pnl", "stop_loss", "chart_lesson"],
   GENERAL:  [],
 };
 
@@ -581,9 +630,9 @@ export function getLessonsForPrompt(opts = {}) {
 
   const isAutoCycle = agentType === "SCREENER" || agentType === "MANAGER";
   const isManager   = agentType === "MANAGER";
-  const PINNED_CAP  = isManager ? 3 : (isAutoCycle ? 5  : 10);
-  const ROLE_CAP    = isManager ? 3 : (isAutoCycle ? 6  : 15);
-  const RECENT_CAP  = maxLessons ?? (isManager ? 0 : (isAutoCycle ? 10 : 35));
+  const PINNED_CAP  = isManager ? 3  : (isAutoCycle ? 5  : 10);
+  const ROLE_CAP    = isManager ? 6  : (isAutoCycle ? 6  : 15);  // manager gets 6 to include chart_lessons
+  const RECENT_CAP  = maxLessons ?? (isManager ? 3 : (isAutoCycle ? 10 : 35));  // manager gets 3 recent
 
   const outcomePriority = { bad: 0, poor: 1, failed: 1, good: 2, worked: 2, manual: 1, neutral: 3, evolution: 2 };
   const byPriority = (a, b) => (outcomePriority[a.outcome] ?? 3) - (outcomePriority[b.outcome] ?? 3);

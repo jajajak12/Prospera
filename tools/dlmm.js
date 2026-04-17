@@ -787,6 +787,9 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         close_reason: reason || "agent decision",
         ath_price: athPriceAtClose,
         ath_price_sol: athPriceSolAtClose,
+        fib_levels_sol: tracked.fib_levels_sol ?? null,
+        deployed_at: tracked.deployed_at ?? null,
+        base_mint: pool.lbPair.tokenXMint.toString(),
       });
 
       return { success: true, position: position_address, pool: poolAddress, pool_name: tracked.pool_name || null, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, base_mint: pool.lbPair.tokenXMint.toString(), close_reason: reason || "agent decision" };

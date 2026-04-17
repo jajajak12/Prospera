@@ -582,26 +582,52 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     mgmtReport = `Positions: ${positionData.length} | Total Exposure: ${exposurePct}% | LLM zone: ${llmZone.length}\n\n${reportLines.join("\n")}`;
 
-    if (llmZone.length > 0) {
-      const allBlocks = llmZone.map(p => {
-        const act = actionMap.get(p.position);
-        return `POSITION: ${p.pair}\n  pnl: ${p.pnl_pct}% | fees: $${p.unclaimed_fees_usd} | in_range: ${p.in_range}`;
-      }).join("\n\n");
+    // Always call LLM every management cycle (MiniMax limits are large enough)
+    // Builds rich context: all STAY positions with Fibonacci state + chart lesson context
+    {
+      const stayPositions = positionData.filter(p => actionMap.get(p.position)?.action === "STAY");
 
-      let agentContent = "";
-      try {
-        const result = await agentLoop(`
-MANAGEMENT REVIEW — ${llmZone.length} position(s) need LLM judgment
-${allBlocks}
-RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment.
-      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 512, corrId);
-        agentContent = result?.content ?? "";
-      } catch (agentErr) {
-        _m("error", `agentLoop crashed: ${agentErr.message} | stack: ${(agentErr.stack || "").slice(0, 500)}`);
-        agentContent = `(agentLoop error: ${agentErr.message})`;
+      if (stayPositions.length > 0) {
+        const allBlocks = stayPositions.map(p => {
+          const act     = actionMap.get(p.position);
+          const tracked = getTrackedPosition(p.position);
+          const fibs    = tracked?.fib_levels_sol;
+          const age     = tracked?.deployed_at ? Math.round((Date.now() - new Date(tracked.deployed_at).getTime()) / 60000) : (p.age_minutes ?? '?');
+          const fibLine = fibs
+            ? `  fib: fib618=${fibs.fib618?.toPrecision(4) ?? '?'} fib500=${fibs.fib500?.toPrecision(4) ?? '?'} fib236=${fibs.fib236?.toPrecision(4) ?? '?'}`
+            : '';
+          const inLLMZone = llmZone.some(lp => lp.position === p.position);
+          return [
+            `POSITION: ${p.pair} ${inLLMZone ? '[NEEDS JUDGMENT]' : '[MONITORING]'}`,
+            `  pnl: ${p.pnl_pct ?? '?'}% | fees: $${p.unclaimed_fees_usd ?? 0} | in_range: ${p.in_range} | age: ${age}min`,
+            fibLine,
+          ].filter(Boolean).join('\n');
+        }).join("\n\n");
+
+        const deterministicSummary = counts.CLOSE > 0 || counts.CLAIM > 0
+          ? `\nDeterministic actions already executed this cycle: CLOSE×${counts.CLOSE} CLAIM×${counts.CLAIM}`
+          : '';
+
+        let agentContent = "";
+        try {
+          const result = await agentLoop(`
+MANAGEMENT REVIEW — ${stayPositions.length} position(s) open | LLM judgment needed: ${llmZone.length}
+${allBlocks}${deterministicSummary}
+
+TASK: Review all positions above.
+- [NEEDS JUDGMENT]: evaluate dan execute close/claim jika perlu
+- [MONITORING]: review chart pattern, bandingkan dengan lessons, catat observasi via set_position_note
+- Fokus: apakah ada Fib 0.500 breach? Volume dry-up? Exit signal yang terlewat?
+RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment based on chart lessons.
+          `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 600, corrId);
+          agentContent = result?.content ?? "";
+        } catch (agentErr) {
+          _m("error", `agentLoop crashed: ${agentErr.message} | stack: ${(agentErr.stack || "").slice(0, 500)}`);
+          agentContent = `(agentLoop error: ${agentErr.message})`;
+        }
+
+        mgmtReport += `\n\n${agentContent}`;
       }
-
-      mgmtReport += `\n\n${agentContent}`;
     }
 
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
