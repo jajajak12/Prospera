@@ -420,20 +420,29 @@ async function runChartLessonAnalysis(perf, outcome) {
 
       // Fibonacci level annotations (if available)
       const fibs = perf.fib_levels_sol;
-      const deployPrice = slice[localDeploy]?.close;
-      const fibLabels = fibs && deployPrice ? (() => {
+      const fibLabels = fibs ? (() => {
         const ref = basePrice;
-        const fib500pct = ((fibs.fib500 - ref) / ref * 100).toFixed(1);
-        const fib618pct = fibs.fib618 != null ? ((fibs.fib618 - ref) / ref * 100).toFixed(1) : null;
-        const fib236pct = fibs.fib236 != null ? ((fibs.fib236 - ref) / ref * 100).toFixed(1) : null;
-        return { fib500: fib500pct, fib618: fib618pct, fib236: fib236pct };
+        const pct = v => v != null ? ((v - ref) / ref * 100).toFixed(1) : null;
+        return {
+          fib236: pct(fibs.fib236),
+          fib326: pct(fibs.fib326),
+          fib382: pct(fibs.fib382),
+          fib500: pct(fibs.fib500),
+          fib618: pct(fibs.fib618),
+          fib786: pct(fibs.fib786),
+        };
       })() : null;
 
       if (fibLabels) {
-        fibCtx = `\nFibonacci levels (% dari candle pertama):` +
-          (fibLabels.fib618 ? ` fib618=${fibLabels.fib618}%` : '') +
-          ` fib500=${fibLabels.fib500}%` +
-          (fibLabels.fib236 ? ` fib236=${fibLabels.fib236}%` : '');
+        const parts = [
+          fibLabels.fib236 != null ? `fib236=${fibLabels.fib236}%` : null,
+          fibLabels.fib326 != null ? `fib326=${fibLabels.fib326}%` : null,
+          fibLabels.fib382 != null ? `fib382=${fibLabels.fib382}%` : null,
+          fibLabels.fib500 != null ? `fib500=${fibLabels.fib500}%` : null,
+          fibLabels.fib618 != null ? `fib618=${fibLabels.fib618}%` : null,
+          fibLabels.fib786 != null ? `fib786=${fibLabels.fib786}%` : null,
+        ].filter(Boolean);
+        fibCtx = `\nFibonacci levels (% dari candle pertama): ${parts.join(' | ')}`;
       }
 
       const pctArr = slice.map((c, i) => {

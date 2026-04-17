@@ -102,6 +102,7 @@ export function calcFibLevels(swingHigh, swingLow) {
   return {
     fib0:   swingHigh,
     fib236: swingHigh - 0.236 * range,
+    fib326: swingHigh - 0.326 * range,
     fib382: swingHigh - 0.382 * range,
     fib500: swingHigh - 0.500 * range,
     fib618: swingHigh - 0.618 * range,

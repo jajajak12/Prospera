@@ -611,8 +611,11 @@ async function runSafetyChecks(name, args) {
         const range = (_deployMeta.ath - _deployMeta.fib500) / 0.500;
         args.fib_levels_sol = {
           fib236: _deployMeta.ath - 0.236 * range,
+          fib326: _deployMeta.ath - 0.326 * range,
+          fib382: _deployMeta.ath - 0.382 * range,
           fib500: _deployMeta.fib500,
           fib618: _deployMeta.ath - 0.618 * range,
+          fib786: _deployMeta.ath - 0.786 * range,
         };
       }
 
