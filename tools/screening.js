@@ -719,13 +719,17 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
   // Final pass: volume filter using the highest volume found across all layers
   {
     const before = eligible.length;
+    const bigMcapThresholdVol = s.bigMcapThreshold ?? 5_000_000;
+    const minVolBigMcap       = s.minVolBigMcap    ?? 1_000_000;
     eligible = eligible.filter(t => {
       const volH1 = t._volH1 ?? 0;
-      if (volH1 >= s.minVolume) {
+      const mcap  = t.mcap   ?? 0;
+      const volMin = mcap > bigMcapThresholdVol ? minVolBigMcap : s.minVolume;
+      if (volH1 >= volMin) {
         t._volH1 = Math.round(volH1);
         return true;
       }
-      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — vol $${Math.round(volH1)} < min $${s.minVolume} [${t._volH1Source ?? "dexscreener"}] | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
+      log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — vol $${Math.round(volH1)} < min $${volMin}${mcap > bigMcapThresholdVol ? " (big-mcap)" : ""} [${t._volH1Source ?? "dexscreener"}] | mcap=${t.mcap ? "$" + Math.round(t.mcap) : "?"}`);
       return false;
     });
     log.screening(`Step 2 — Volume filter: ${eligible.length}/${before} passed (3-layer chain exhausted)`);

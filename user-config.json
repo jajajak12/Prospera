@@ -23,6 +23,7 @@
   "maxMcap": 10000000,
   "bigMcapThreshold": 5000000,
   "minTokenFeesSolBigMcap": 400,
+  "minVolBigMcap": 1000000,
   "totalExposureCapPct": 0.6,
   "exposureGasReserve": 0.5,
   "minVolume": 150000,
