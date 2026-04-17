@@ -20,10 +20,12 @@ thresholds: SL=${config.management.stopLossPct}% | TP=${config.management.takePr
 
 RULES:
 - MANDATORY (pre-flagged): execute CLOSE/CLAIM immediately, no judgment needed
-- EVALUATE: close if Fib level broken / volume collapsed / OOR building; hold if Fib support intact
+- EVALUATE: base decision on fib_status + pnl + in_range data provided. If volume needed: call get_pool_detail first.
+- NEVER invent chart patterns, volume, or RSI observations — only use data from tool results or position blocks.
+- Lessons below are CONTEXT, not triggers — only apply if position data directly matches the lesson's conditions.
 - After close: swap_token MANDATORY for token >= $0.10
 
-${lessons ? `LESSONS:\n${lessons}\n` : ""}Output: one line per position.`;
+${lessons ? `LESSONS (context only — match conditions before applying):\n${lessons}\n` : ""}Output: one line per position.`;
   }
 
   const baseState = `

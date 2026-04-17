@@ -597,10 +597,22 @@ export async function runManagementCycle({ silent = false } = {}) {
             ? `  fib: fib618=${fibs.fib618?.toPrecision(4) ?? '?'} fib500=${fibs.fib500?.toPrecision(4) ?? '?'} fib236=${fibs.fib236?.toPrecision(4) ?? '?'}`
             : '';
           const inLLMZone = llmZone.some(lp => lp.position === p.position);
+          const livePrice = livePriceMap.get(p.position);
+          const livePriceLine = livePrice != null ? `  live_price: ${livePrice.toPrecision(5)}` : '';
+          // Compute fib status from stored levels + live price (no hallucination needed)
+          let fibStatus = '';
+          if (fibs && livePrice != null) {
+            if (livePrice < fibs.fib618)      fibStatus = '  fib_status: BELOW fib618 — BREACH (stop zone)';
+            else if (livePrice < fibs.fib500) fibStatus = '  fib_status: BELOW fib500 — weak (monitor closely)';
+            else if (livePrice < fibs.fib326) fibStatus = '  fib_status: fib500–fib326 zone (acceptable)';
+            else                               fibStatus = '  fib_status: ABOVE fib326 — strong';
+          }
           return [
             `POSITION: ${p.pair} ${inLLMZone ? '[NEEDS JUDGMENT]' : '[MONITORING]'}`,
             `  pnl: ${p.pnl_pct ?? '?'}% | fees: $${p.unclaimed_fees_usd ?? 0} | in_range: ${p.in_range} | age: ${age}min`,
             fibLine,
+            livePriceLine,
+            fibStatus,
           ].filter(Boolean).join('\n');
         }).join("\n\n");
 
@@ -614,11 +626,11 @@ export async function runManagementCycle({ silent = false } = {}) {
 MANAGEMENT REVIEW — ${stayPositions.length} position(s) open | LLM judgment needed: ${llmZone.length}
 ${allBlocks}${deterministicSummary}
 
-TASK: Review all positions above.
-- [NEEDS JUDGMENT]: evaluate dan execute close/claim jika perlu
-- [MONITORING]: review chart pattern, bandingkan dengan lessons, catat observasi via set_position_note
-- Fokus: apakah ada Fib 0.500 breach? Volume dry-up? Exit signal yang terlewat?
-RULES: MANDATORY close/claim execute immediately. EVALUATE use judgment based on chart lessons.
+TASK: Review all positions above. Base ALL decisions on the data above — DO NOT invent chart patterns or volume observations.
+- [NEEDS JUDGMENT]: evaluate dan execute close/claim berdasarkan fib_status + pnl. Close jika fib_status BREACH atau BELOW fib500 + pnl memburuk.
+- [MONITORING]: bandingkan live_price vs fib levels. Catat status via set_position_note HANYA jika ada anomali nyata (fib breach, OOR memanjang). Jangan karang observasi.
+- Jika butuh data tambahan (volume, pool fee): call get_pool_detail dulu sebelum memutuskan.
+RULES: MANDATORY close/claim execute immediately. EVALUATE: gunakan fib_status + pnl — bukan asumsi.
           `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 600, corrId);
           agentContent = result?.content ?? "";
         } catch (agentErr) {
