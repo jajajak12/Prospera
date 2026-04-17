@@ -492,21 +492,24 @@ async function runChartLessonAnalysis(perf, outcome) {
     `Fokus pada: kecepatan pump sebelum entry, kedalaman retracement, apakah Fib 0.500 dijaga atau ditembus, konsolidasi sebelum entry.\n` +
     `Balas MAKSIMAL 2 kalimat. Format: [SCREENING] <observasi>`;
 
-  const screenerSys = `You are a crypto chart pattern analyst specializing in DLMM LP entry signals. Analyze the PRE-DEPLOY chart section and describe: (1) what the price action showed BEFORE entry, (2) whether fib500 held or was breached, (3) whether entry timing was good or bad. Max 2 sentences. Be specific about candle counts and percentage moves. No preamble.`;
+  const screenerSys = `You are a crypto chart pattern analyst specializing in DLMM LP entry signals. Analyze the PRE-DEPLOY chart section and describe: (1) what the price action showed BEFORE entry, (2) whether fib500 held or was breached, (3) whether entry timing was good or bad. Max 2 sentences. Be specific about candle counts and percentage moves. No preamble. IMPORTANT: Reply in English ONLY. Do not use Chinese or any non-Latin characters.`;
 
   // ── MANAGER lesson: hold + exit pattern ───────────────────────────────────
   const managerPrompt =
-    `Kamu adalah analis pola chart DLMM LP untuk POSITION MANAGEMENT.\n\n` +
+    `You are a DLMM LP position management chart analyst.\n\n` +
     `${meta}${candleCtx}\n\n` +
-    `Analisa pola harga SELAMA hold (antara [DEPLOY] dan [CLOSE]) untuk mengidentifikasi:\n` +
-    `1. Apakah ada sinyal untuk close lebih awal atau lebih lama dari yang dilakukan?\n` +
-    `2. Apakah Fib 0.500 ditembus terlalu cepat (red flag)? Jika ya, berapa candle setelah deploy?\n` +
-    `3. Apakah ada pola volume dry-up atau reversal yang bisa jadi exit signal?\n` +
-    `Balas MAKSIMAL 3 kalimat singkat. Format: [MANAGEMENT] <observasi>`;
+    `Analyze the price action DURING the hold period (between [DEPLOY] and [CLOSE]) and identify:\n` +
+    `1. Were there early exit signals that were missed?\n` +
+    `2. Was fib500 breached too quickly (red flag)? If yes, how many candles after deploy?\n` +
+    `3. Any volume spike/drop (use vNx values) that could signal a reversal?\n` +
+    `Reply MAX 3 short sentences. Format: [MANAGEMENT] <observation>`;
 
-  const managerSys = `You are a crypto position management analyst for DLMM LP. Analyze the HOLD period chart (between [DEPLOY] and [CLOSE]) and identify: early exit signals missed, whether fib500 was broken too quickly, volume spikes/drops (use vNx values — only comment on volume if vNx data is present). Max 3 sentences. Be specific (candle counts, % moves, vNx values). ONLY state what the data shows — do not invent observations not supported by the chart data.`;
+  const managerSys = `You are a crypto position management analyst for DLMM LP. Analyze the HOLD period chart (between [DEPLOY] and [CLOSE]) and identify: early exit signals missed, whether fib500 was broken too quickly, volume spikes/drops (use vNx values — only comment on volume if vNx data is present). Max 3 sentences. Be specific (candle counts, % moves, vNx values). ONLY state what the data shows — do not invent observations not supported by the chart data. IMPORTANT: Reply in English ONLY. Do not use Chinese or any non-Latin characters.`;
 
   let { callLLMDirect } = await import("./agent.js");
+
+  // CJK block: U+4E00–U+9FFF (CJK Unified), U+3400–U+4DBF (Extension A), U+F900–U+FAFF (Compat)
+  const hasCJK = str => /[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]/.test(str);
 
   const [screenerResp, managerResp] = await Promise.all([
     callLLMDirect(screenerPrompt, { maxTokens: 280, systemPrompt: screenerSys }).catch(() => null),
@@ -518,15 +521,23 @@ async function runChartLessonAnalysis(perf, outcome) {
   const base = { outcome: isProfit ? "good" : "bad", source: "chart_analysis", pnl_pct: perf.pnl_pct ?? null, pool: perf.pool ?? null, pool_name: perf.pool_name ?? null };
 
   if (screenerResp && screenerResp.length >= 15) {
-    const rule = `CHART [${label}][SCREENING]: ${screenerResp.slice(0, 320)}`;
-    data.lessons.push({ id: Date.now(), rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "screening", "entry"], ...base, created_at: now });
-    log("lessons", `Screening chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+    if (hasCJK(screenerResp)) {
+      log("lessons", `Screening chart lesson DISCARDED — contains CJK characters (language leak): ${screenerResp.slice(0, 60)}`);
+    } else {
+      const rule = `CHART [${label}][SCREENING]: ${screenerResp.slice(0, 320)}`;
+      data.lessons.push({ id: Date.now(), rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "screening", "entry"], ...base, created_at: now });
+      log("lessons", `Screening chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+    }
   }
 
   if (managerResp && managerResp.length >= 15) {
-    const rule = `CHART [${label}][MANAGEMENT]: ${managerResp.slice(0, 400)}`;
-    data.lessons.push({ id: Date.now() + 1, rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "management", "hold", "close"], ...base, created_at: now });
-    log("lessons", `Management chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+    if (hasCJK(managerResp)) {
+      log("lessons", `Management chart lesson DISCARDED — contains CJK characters (language leak): ${managerResp.slice(0, 60)}`);
+    } else {
+      const rule = `CHART [${label}][MANAGEMENT]: ${managerResp.slice(0, 400)}`;
+      data.lessons.push({ id: Date.now() + 1, rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "management", "hold", "close"], ...base, created_at: now });
+      log("lessons", `Management chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+    }
   }
 
   save(data);
