@@ -838,6 +838,13 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
         log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — fees ${jup.feesSOL.toFixed(4)} SOL < min ${feeThreshold} SOL | mcap=${((t.mcap ?? 0)/1e6).toFixed(2)}M`);
         return false;
       }
+      // Big mcap gate: mcap > $5M requires fees >= 400 SOL
+      const bigMcapThreshold = s.bigMcapThreshold ?? 5_000_000;
+      const bigMcapFeeMin    = s.minTokenFeesSolBigMcap ?? 400;
+      if ((t.mcap ?? 0) > bigMcapThreshold && jup.feesSOL != null && jup.feesSOL < bigMcapFeeMin) {
+        log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — mcap $${((t.mcap)/1e6).toFixed(2)}M > $${(bigMcapThreshold/1e6).toFixed(0)}M but fees ${jup.feesSOL.toFixed(2)} SOL < ${bigMcapFeeMin} SOL`);
+        return false;
+      }
       t._jup = jup;
       const _lockedPct = t._okx?.lockedPct ?? 0;
       const _lockNote = _lockedPct > 0 ? `, locked=${_lockedPct}%` : "";

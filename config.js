@@ -40,6 +40,8 @@ export const config = {
     maxTop10Pct:          u.maxTop10Pct          ?? 22,
     minTokenFeesSol:           u.minTokenFeesSol           ?? 23,
     minTokenFeesSolHighMcap:  u.minTokenFeesSolHighMcap  ?? 80,  // fee min for mcap > $1M
+    bigMcapThreshold:         u.bigMcapThreshold         ?? 5_000_000,  // mcap threshold for big-mcap fee gate
+    minTokenFeesSolBigMcap:   u.minTokenFeesSolBigMcap   ?? 400, // fee min for mcap > bigMcapThreshold
     athFilterPct:            u.athFilterPct            ?? null,
     minMcap:       u.minMcap       ?? 200_000,
     maxMcap:       u.maxMcap       ?? 5_000_000,
@@ -353,6 +355,8 @@ export function reloadScreeningThresholds() {
     if (fresh.maxTop10Pct           !== undefined) s.maxTop10Pct      = fresh.maxTop10Pct;
     if (fresh.minTokenFeesSol           !== undefined) s.minTokenFeesSol          = fresh.minTokenFeesSol;
     if (fresh.minTokenFeesSolHighMcap   !== undefined) s.minTokenFeesSolHighMcap  = fresh.minTokenFeesSolHighMcap;
+    if (fresh.bigMcapThreshold          != null)       s.bigMcapThreshold         = fresh.bigMcapThreshold;
+    if (fresh.minTokenFeesSolBigMcap    != null)       s.minTokenFeesSolBigMcap   = fresh.minTokenFeesSolBigMcap;
     if (fresh.athFilterPct              !== undefined) s.athFilterPct             = fresh.athFilterPct;
     if (fresh.autoBacktest          !== undefined) s.autoBacktest      = fresh.autoBacktest;
     if (fresh.minBacktestWinRate    != null)       s.minBacktestWinRate = fresh.minBacktestWinRate;

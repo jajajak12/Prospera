@@ -1,1 +1,131 @@
-{}
+{
+  "weights": {
+    "organic_score": 1,
+    "fee_tvl_ratio": 1,
+    "volume_5m": 1,
+    "confluence_score": 1,
+    "fib_zone": 0.95,
+    "bin_step": 1,
+    "volatility": 1
+  },
+  "history": [
+    {
+      "win": true,
+      "ts": "2026-04-15T16:11:27.858Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.5,
+        "fib_zone": "ATH_ZONE",
+        "bin_step": 100,
+        "volatility": null
+      }
+    },
+    {
+      "win": true,
+      "ts": "2026-04-15T16:13:51.877Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.5,
+        "fib_zone": "ATH_ZONE",
+        "bin_step": 100,
+        "volatility": null
+      }
+    },
+    {
+      "win": true,
+      "ts": "2026-04-15T16:19:56.119Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.5,
+        "fib_zone": "ATH_ZONE",
+        "bin_step": 100,
+        "volatility": null
+      }
+    },
+    {
+      "win": true,
+      "ts": "2026-04-15T16:21:41.453Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.5,
+        "fib_zone": "ATH_ZONE",
+        "bin_step": 100,
+        "volatility": null
+      }
+    },
+    {
+      "win": true,
+      "ts": "2026-04-15T16:23:35.282Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.5,
+        "fib_zone": "ATH_ZONE",
+        "bin_step": 100,
+        "volatility": null
+      }
+    },
+    {
+      "win": true,
+      "ts": "2026-04-15T17:01:18.116Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.5,
+        "fib_zone": "ATH_ZONE",
+        "bin_step": 100,
+        "volatility": null
+      }
+    },
+    {
+      "win": true,
+      "ts": "2026-04-15T17:07:54.172Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.5,
+        "fib_zone": "ATH_ZONE",
+        "bin_step": 100,
+        "volatility": null
+      }
+    },
+    {
+      "win": false,
+      "ts": "2026-04-16T12:45:25.778Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.42,
+        "fib_zone": "PRIMARY",
+        "bin_step": 100,
+        "volatility": null
+      }
+    },
+    {
+      "win": false,
+      "ts": "2026-04-17T04:20:18.035Z",
+      "signals": {
+        "organic_score": null,
+        "fee_tvl_ratio": null,
+        "volume_5m": null,
+        "confluence_score": 0.75,
+        "fib_zone": "PRIMARY",
+        "bin_step": 100,
+        "volatility": null
+      }
+    }
+  ],
+  "lastUpdated": "2026-04-17T04:20:18.036Z"
+}
