@@ -119,11 +119,7 @@ const openrouterClient = new OpenAI({
 let _probeResult = null; // "minimax" | "openrouter" | "none"
 
 function getClient() {
-  // After probe: use confirmed provider
-  if (_probeResult === "minimax") return minimaxClient;
-  if (_probeResult === "openrouter") return openrouterClient;
-  // Before probe or probe not run: fall back to circuit-breaker state
-  if (!_minimaxKeyPresent || getActiveProvider() === "openrouter") return openrouterClient;
+  // Always use MiniMax — no OpenRouter fallback at runtime
   return minimaxClient;
 }
 

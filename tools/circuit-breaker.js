@@ -44,16 +44,10 @@ const PROVIDERS = {
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Returns current active provider: 'openrouter' if circuit broken, else 'minimax'.
+ * Returns current active provider: always 'minimax' — no OpenRouter fallback.
+ * Circuit breaker skips cycles on failure but never switches provider.
  */
 export function getActiveProvider() {
-  if (isCircuitBroken && Date.now() < fallbackUntil) {
-    return "openrouter";
-  }
-  // Half-open: circuit was broken but cooldown expired — try minimax again
-  if (isCircuitBroken) {
-    return "minimax";
-  }
   return "minimax";
 }
 
@@ -161,7 +155,7 @@ export function recordFailure(error, corrId = null) {
 
     // Telegram alert — fire and forget
     if (telegramEnabled()) {
-      sendMessage(`🔧 Circuit Breaker TRIPPED — 3 consecutive LLM failures\n⏭ Skip cycles for ${COOLDOWN_MS / 60_000} min (until ${new Date(skipUntil).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false })})\n📋 Last error: ${lastError?.slice(0, 120) ?? "unknown"}\n♻️ Auto-resumes when cooldown expires`).catch(() => {});
+      sendMessage(`🔧 Circuit Breaker TRIPPED — 3 consecutive MiniMax failures\n⏭ Skip cycles for ${COOLDOWN_MS / 60_000} min (until ${new Date(skipUntil).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false })})\n📋 Last error: ${lastError?.slice(0, 120) ?? "unknown"}\n♻️ Retry MiniMax otomatis setelah cooldown`).catch(() => {});
     }
 
     return true;
