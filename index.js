@@ -298,14 +298,16 @@ function computeRetraceSnapshot(candles, fibs) {
   // Classify retrace character
   let retraceType;
   const latestClose = recent[recent.length - 1].close;
-  if (fibs?.fib618 != null && latestClose < fibs.fib618 && volOnRed > 1.5) {
-    retraceType = 'BREAKDOWN';   // below fib618 + high sell volume
+  if (fibs?.fib786 != null && latestClose < fibs.fib786) {
+    retraceType = 'BREAKDOWN_786'; // below fib786 — real breakdown, no support below
+  } else if (fibs?.fib618 != null && latestClose < fibs.fib618) {
+    retraceType = 'DIP_618';       // below fib618 but above fib786 — possible support/bounce zone
   } else if (dumpVelocity > 5 || (volOnRed > 2.0 && consecutiveRed >= 3)) {
-    retraceType = 'AGGRESSIVE';  // fast dump or heavy volume sell
+    retraceType = 'AGGRESSIVE';    // fast dump or heavy volume sell (still above fib618)
   } else if (rangeNarrowing && consecutiveRed < 2) {
-    retraceType = 'STABILIZING'; // candles shrinking, selling slowing
+    retraceType = 'STABILIZING';   // candles shrinking, selling slowing — bounce potential
   } else {
-    retraceType = 'HEALTHY';     // slow drift, expected retrace
+    retraceType = 'HEALTHY';       // slow drift, expected retrace
   }
 
   return { retraceType, dumpVelocity, volOnRed, consecutiveRed, priceChangePct, candlesSinceFib500Breach, rangeNarrowing };
@@ -689,10 +691,11 @@ export async function runManagementCycle({ silent = false } = {}) {
 
           let fibStatus = '';
           if (fibs && livePrice != null) {
-            if (livePrice < fibs.fib618)      fibStatus = '  fib_status: BELOW fib618 — BREACH (stop zone)';
-            else if (livePrice < fibs.fib500) fibStatus = '  fib_status: BELOW fib500 — weak (monitor closely)';
-            else if (livePrice < fibs.fib326) fibStatus = '  fib_status: fib500–fib326 zone (acceptable)';
-            else                               fibStatus = '  fib_status: ABOVE fib326 — strong';
+            if (livePrice < (fibs.fib786 ?? 0))  fibStatus = '  fib_status: BELOW fib786 — real breakdown, no support';
+            else if (livePrice < fibs.fib618)     fibStatus = '  fib_status: fib618–fib786 zone — possible bounce/support';
+            else if (livePrice < fibs.fib500)     fibStatus = '  fib_status: BELOW fib500 — weak (monitor closely)';
+            else if (livePrice < fibs.fib326)     fibStatus = '  fib_status: fib500–fib326 zone (acceptable)';
+            else                                   fibStatus = '  fib_status: ABOVE fib326 — strong';
           }
 
           // Retrace snapshot line
@@ -728,12 +731,13 @@ ${allBlocks}${deterministicSummary}
 
 TASK: Review all positions above. Base ALL decisions on the data provided.
 - [NEEDS JUDGMENT]: evaluate dan execute close/claim berdasarkan fib_status + retrace + pnl.
-  • retrace=BREAKDOWN → close immediately
+  • retrace=BREAKDOWN_786 → close (no support below fib786)
+  • retrace=AGGRESSIVE + fib500_breach <= 3 candles ago → dump terlalu cepat setelah entry, close
   • retrace=AGGRESSIVE + fib_status BELOW fib500 → strong close signal
-  • retrace=AGGRESSIVE + fib500_breach <= 3 candles ago → dump terlalu cepat setelah entry, consider close
+  • retrace=DIP_618 → HOLD dan monitor — fib618–fib786 adalah bounce/support zone, jangan close hanya karena dip
   • retrace=STABILIZING atau HEALTHY → hold, retrace normal
-- [MONITORING]: catat via set_position_note HANYA jika ada anomali (BREAKDOWN/AGGRESSIVE + fib breach).
-- Jika butuh data tambahan (volume, pool fee): call get_pool_detail dulu.
+- [MONITORING]: catat via set_position_note HANYA jika ada anomali nyata (BREAKDOWN_786 atau AGGRESSIVE + fib500 breach).
+- Jika butuh data tambahan: call get_pool_detail dulu.
 RULES: DO NOT invent observations. ONLY use data in position blocks above.
           `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 600, corrId);
           agentContent = result?.content ?? "";
