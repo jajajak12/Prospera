@@ -14,7 +14,10 @@ const POOL_MEMORY_FILE = "./pool-memory.json";
 function load() {
   if (!fs.existsSync(POOL_MEMORY_FILE)) return {};
   try {
-    return JSON.parse(fs.readFileSync(POOL_MEMORY_FILE, "utf8"));
+    const parsed = JSON.parse(fs.readFileSync(POOL_MEMORY_FILE, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    log("pool-memory", `pool-memory.json corrupted (not object) — resetting`);
+    return {};
   } catch {
     return {};
   }
