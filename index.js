@@ -42,6 +42,7 @@ import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
 import { config, getPositionSizing, calculateCurrentExposure, calculateCurrentExposureSol, canOpenNewPosition, checkExposureCap } from "./config.js";
+import { hybridDataProvider } from "./tools/dataProvider.js";
 
 // ── Startup validation ─────────────────────────────────────────────────────────
 const lpKey     = process.env.LPAGENT_API_KEY;
@@ -241,6 +242,73 @@ async function runPnLPoll() {
 function stripThink(text) {
   if (!text) return text;
   return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+}
+
+// ── Retrace Snapshot ───────────────────────────────────────────────────────────
+// Compute deterministic retrace character from OHLCV — no LLM, pure math.
+// Used to inject chart context into management goal so LLM can apply chart lessons.
+function computeRetraceSnapshot(candles, fibs) {
+  if (!candles || candles.length < 3) return null;
+
+  const recent = candles.slice(-10);
+  const vols = recent.map(c => c.volume ?? 0).sort((a, b) => a - b);
+  const median = vols[Math.floor(vols.length / 2)] || 1;
+
+  // Red/green per candle
+  const isRed = c => c.close < c.open;
+
+  // Dump velocity: avg % drop per red candle
+  const redCandles = recent.filter(isRed);
+  const dumpVelocity = redCandles.length > 0
+    ? redCandles.reduce((s, c) => s + Math.abs((c.close - c.open) / c.open * 100), 0) / redCandles.length
+    : 0;
+
+  // Avg volume on red candles vs median
+  const volOnRed = redCandles.length > 0
+    ? (redCandles.reduce((s, c) => s + (c.volume ?? 0), 0) / redCandles.length) / median
+    : 0;
+
+  // Consecutive red from latest candle
+  let consecutiveRed = 0;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    if (isRed(recent[i])) consecutiveRed++;
+    else break;
+  }
+
+  // Price change % over all recent candles
+  const priceChangePct = ((recent[recent.length - 1].close - recent[0].close) / recent[0].close * 100);
+
+  // Range narrowing (last 3 candles): high-low getting smaller = stabilizing
+  const ranges = recent.slice(-3).map(c => c.open > 0 ? (c.high - c.low) / c.open * 100 : 0);
+  const rangeNarrowing = ranges.length === 3 && ranges[2] < ranges[0] * 0.6;
+
+  // Candles since fib500 was last above (= when did breach start)
+  let candlesSinceFib500Breach = null;
+  if (fibs?.fib500 != null) {
+    for (let i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].close >= fibs.fib500) {
+        candlesSinceFib500Breach = recent.length - 1 - i;
+        break;
+      }
+    }
+    // All candles already below fib500
+    if (candlesSinceFib500Breach === null) candlesSinceFib500Breach = recent.length;
+  }
+
+  // Classify retrace character
+  let retraceType;
+  const latestClose = recent[recent.length - 1].close;
+  if (fibs?.fib618 != null && latestClose < fibs.fib618 && volOnRed > 1.5) {
+    retraceType = 'BREAKDOWN';   // below fib618 + high sell volume
+  } else if (dumpVelocity > 5 || (volOnRed > 2.0 && consecutiveRed >= 3)) {
+    retraceType = 'AGGRESSIVE';  // fast dump or heavy volume sell
+  } else if (rangeNarrowing && consecutiveRed < 2) {
+    retraceType = 'STABILIZING'; // candles shrinking, selling slowing
+  } else {
+    retraceType = 'HEALTHY';     // slow drift, expected retrace
+  }
+
+  return { retraceType, dumpVelocity, volOnRed, consecutiveRed, priceChangePct, candlesSinceFib500Breach, rangeNarrowing };
 }
 
 // ── Management Cycle ───────────────────────────────────────────────────────────
@@ -588,8 +656,27 @@ export async function runManagementCycle({ silent = false } = {}) {
       const stayPositions = positionData.filter(p => actionMap.get(p.position)?.action === "STAY");
 
       if (stayPositions.length > 0) {
+        // Fetch OHLCV for all stay positions in parallel → retrace snapshot
+        const retraceMap = new Map();
+        {
+          const snapResults = await Promise.allSettled(
+            stayPositions.map(p => {
+              const tracked = getTrackedPosition(p.position);
+              const baseMint = tracked?.base_mint ?? null;
+              const fibs = tracked?.fib_levels_sol ?? null;
+              return hybridDataProvider.getOHLCV(p.pool, "5m", 12, "solana", baseMint)
+                .then(candles => ({ position: p.position, candles, fibs }));
+            })
+          );
+          for (const r of snapResults) {
+            if (r.status === 'fulfilled' && r.value?.candles?.length >= 3) {
+              const snap = computeRetraceSnapshot(r.value.candles, r.value.fibs);
+              if (snap) retraceMap.set(r.value.position, snap);
+            }
+          }
+        }
+
         const allBlocks = stayPositions.map(p => {
-          const act     = actionMap.get(p.position);
           const tracked = getTrackedPosition(p.position);
           const fibs    = tracked?.fib_levels_sol;
           const age     = tracked?.deployed_at ? Math.round((Date.now() - new Date(tracked.deployed_at).getTime()) / 60000) : (p.age_minutes ?? '?');
@@ -599,7 +686,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           const inLLMZone = llmZone.some(lp => lp.position === p.position);
           const livePrice = livePriceMap.get(p.position);
           const livePriceLine = livePrice != null ? `  live_price: ${livePrice.toPrecision(5)}` : '';
-          // Compute fib status from stored levels + live price (no hallucination needed)
+
           let fibStatus = '';
           if (fibs && livePrice != null) {
             if (livePrice < fibs.fib618)      fibStatus = '  fib_status: BELOW fib618 — BREACH (stop zone)';
@@ -607,12 +694,25 @@ export async function runManagementCycle({ silent = false } = {}) {
             else if (livePrice < fibs.fib326) fibStatus = '  fib_status: fib500–fib326 zone (acceptable)';
             else                               fibStatus = '  fib_status: ABOVE fib326 — strong';
           }
+
+          // Retrace snapshot line
+          let retraceLine = '';
+          const snap = retraceMap.get(p.position);
+          if (snap) {
+            const breachNote = snap.candlesSinceFib500Breach != null && snap.candlesSinceFib500Breach > 0
+              ? ` | fib500_breach=${snap.candlesSinceFib500Breach}c ago`
+              : '';
+            const narrowNote = snap.rangeNarrowing ? ' | range_narrowing=YES' : '';
+            retraceLine = `  retrace: ${snap.retraceType} | dump_vel=${snap.dumpVelocity.toFixed(1)}%/c | vol_red=${snap.volOnRed.toFixed(1)}x | consec_red=${snap.consecutiveRed} | Δprice=${snap.priceChangePct.toFixed(1)}%${breachNote}${narrowNote}`;
+          }
+
           return [
             `POSITION: ${p.pair} ${inLLMZone ? '[NEEDS JUDGMENT]' : '[MONITORING]'}`,
             `  pnl: ${p.pnl_pct ?? '?'}% | fees: $${p.unclaimed_fees_usd ?? 0} | in_range: ${p.in_range} | age: ${age}min`,
             fibLine,
             livePriceLine,
             fibStatus,
+            retraceLine,
           ].filter(Boolean).join('\n');
         }).join("\n\n");
 
@@ -626,11 +726,15 @@ export async function runManagementCycle({ silent = false } = {}) {
 MANAGEMENT REVIEW — ${stayPositions.length} position(s) open | LLM judgment needed: ${llmZone.length}
 ${allBlocks}${deterministicSummary}
 
-TASK: Review all positions above. Base ALL decisions on the data above — DO NOT invent chart patterns or volume observations.
-- [NEEDS JUDGMENT]: evaluate dan execute close/claim berdasarkan fib_status + pnl. Close jika fib_status BREACH atau BELOW fib500 + pnl memburuk.
-- [MONITORING]: bandingkan live_price vs fib levels. Catat status via set_position_note HANYA jika ada anomali nyata (fib breach, OOR memanjang). Jangan karang observasi.
-- Jika butuh data tambahan (volume, pool fee): call get_pool_detail dulu sebelum memutuskan.
-RULES: MANDATORY close/claim execute immediately. EVALUATE: gunakan fib_status + pnl — bukan asumsi.
+TASK: Review all positions above. Base ALL decisions on the data provided.
+- [NEEDS JUDGMENT]: evaluate dan execute close/claim berdasarkan fib_status + retrace + pnl.
+  • retrace=BREAKDOWN → close immediately
+  • retrace=AGGRESSIVE + fib_status BELOW fib500 → strong close signal
+  • retrace=AGGRESSIVE + fib500_breach <= 3 candles ago → dump terlalu cepat setelah entry, consider close
+  • retrace=STABILIZING atau HEALTHY → hold, retrace normal
+- [MONITORING]: catat via set_position_note HANYA jika ada anomali (BREAKDOWN/AGGRESSIVE + fib breach).
+- Jika butuh data tambahan (volume, pool fee): call get_pool_detail dulu.
+RULES: DO NOT invent observations. ONLY use data in position blocks above.
           `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 600, corrId);
           agentContent = result?.content ?? "";
         } catch (agentErr) {
