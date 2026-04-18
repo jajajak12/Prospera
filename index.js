@@ -617,20 +617,9 @@ export async function runManagementCycle({ silent = false } = {}) {
       const act = actionMap.get(p.position);
       if (act.action !== "STAY") return false;
       const pnl = p.pnl_pct ?? 0;
-      // Core LLM zone: PnL 5%–takeProfitMaxPct and in range
-      const tpMax = config.management.takeProfitMaxPct ?? 20;
-      if (pnl >= 5 && pnl < tpMax && p.in_range) return true;
-      // Expanded zone: PnL null/0–5% and OOR — needs monitoring, not auto-close
-      if (pnl < 5 && !p.in_range) {
-        _m("management", `LLM blind-spot: ${p.pair} PnL ${pnl.toFixed(2)}% OOR ${p.minutes_out_of_range ?? 0}m — added to LLM zone`);
-        return true;
-      }
-      // Expanded zone: PnL null/0–5% and near stop loss boundary
-      if (pnl < 5 && p.in_range && p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct + 3) {
-        _m("management", `LLM blind-spot: ${p.pair} PnL ${pnl.toFixed(2)}% near stop loss boundary — added to LLM zone`);
-        return true;
-      }
-      return false;
+      // All positions → NEEDS JUDGMENT (LLM can close based on chart at any PnL)
+      if (!p.in_range) _m("management", `LLM zone: ${p.pair} PnL ${pnl.toFixed(2)}% OOR ${p.minutes_out_of_range ?? 0}m`);
+      return true;
     });
 
     if (llmZone.length > 0) {
