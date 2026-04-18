@@ -481,6 +481,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (exitMap.has(p.position)) { actionMap.set(p.position, { action: "CLOSE", reason: exitMap.get(p.position) }); continue; }
       if (p.instruction) { actionMap.set(p.position, { action: "INSTRUCTION" }); continue; }
       if (p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) { actionMap.set(p.position, { action: "CLOSE", reason: "stop loss" }); continue; }
+      if (p.pnl_pct != null && config.management.takeProfitMaxPct != null && p.pnl_pct >= config.management.takeProfitMaxPct) { actionMap.set(p.position, { action: "CLOSE", reason: `Hard TP: PnL ${p.pnl_pct.toFixed(1)}% ≥ ${config.management.takeProfitMaxPct}%` }); continue; }
       // Exposure cap temporarily disabled for Phase 3 Stability Test
       // ── Auto-claim fees: ≥2% of position value AND live price ≥ fib 0.382 ───
       {
@@ -616,8 +617,9 @@ export async function runManagementCycle({ silent = false } = {}) {
       const act = actionMap.get(p.position);
       if (act.action !== "STAY") return false;
       const pnl = p.pnl_pct ?? 0;
-      // Core LLM zone: PnL 5%–25% and in range
-      if (pnl >= 5 && pnl <= 25 && p.in_range) return true;
+      // Core LLM zone: PnL 5%–takeProfitMaxPct and in range
+      const tpMax = config.management.takeProfitMaxPct ?? 20;
+      if (pnl >= 5 && pnl < tpMax && p.in_range) return true;
       // Expanded zone: PnL null/0–5% and OOR — needs monitoring, not auto-close
       if (pnl < 5 && !p.in_range) {
         _m("management", `LLM blind-spot: ${p.pair} PnL ${pnl.toFixed(2)}% OOR ${p.minutes_out_of_range ?? 0}m — added to LLM zone`);

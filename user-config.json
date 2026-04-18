@@ -35,7 +35,7 @@
   "blockedLaunchpads": [],
   "stopLossPct": -20,
   "takeProfitFeePct": 5,
-  "takeProfitMaxPct": 25,
+  "takeProfitMaxPct": 20,
   "minFeePerTvl24h": 1,
   "outOfRangeBinsToClose": 20,
   "outOfRangeWaitMinutes": 10,
