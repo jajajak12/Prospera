@@ -178,33 +178,52 @@ function derivLesson(perf) {
 
   if (outcome === "neutral") return null;
 
-  const fibEntryStr = perf.fib_entry_pct != null ? `, fib_entry=${perf.fib_entry_pct.toFixed(0)}%` : "";
+  // fib_entry_pct: 0% = at fib236 (top of zone), 100% = at fib618 (bottom of zone)
+  const fibEntryLabel = perf.fib_entry_pct != null
+    ? `, entry_depth=${perf.fib_entry_pct.toFixed(0)}% into fib zone (0%=fib236 top, 100%=fib618 bottom)`
+    : "";
+  const signalCtx = [
+    perf.fib_zone ? `fib_zone=${perf.fib_zone}` : null,
+    perf.rsi != null ? `rsi=${perf.rsi}` : null,
+    perf.confluence_score != null ? `confluence=${perf.confluence_score}` : null,
+    perf.has_hidden_divergence ? `hidden_div=YES` : null,
+    perf.fee_tvl_ratio != null ? `fee_tvl=${perf.fee_tvl_ratio}` : null,
+  ].filter(Boolean).join(", ");
+
   const context = [
     `${perf.pool_name}`,
     `strategy=${perf.strategy}`,
     `bin_step=${perf.bin_step}`,
     `volatility=${perf.volatility}`,
-    `bin_range=${typeof perf.bin_range === "object" ? JSON.stringify(perf.bin_range) : perf.bin_range}`,
-    fibEntryStr ? fibEntryStr.slice(2) : null,
+    signalCtx || null,
+    fibEntryLabel ? fibEntryLabel.slice(2) : null,
   ].filter(Boolean).join(", ");
 
   let rule = "";
   const tags = [];
 
   if (outcome === "bad" && perf.range_efficiency < 30) {
-    rule = `AVOID: ${perf.pool_name}-type pools (bin_step=${perf.bin_step}, volatility=${perf.volatility}) with strategy="${perf.strategy}" — went OOR ${100 - perf.range_efficiency}% of time.${fibEntryStr}`;
-    tags.push("oor", perf.strategy, `volatility_${Math.round(perf.volatility)}`);
-  } else if (outcome === "good" && perf.range_efficiency > 80) {
-    rule = `PREFER: ${perf.pool_name}-type pools (bin_step=${perf.bin_step}) — ${perf.range_efficiency}% in-range, PnL +${perf.pnl_pct}%.${fibEntryStr}`;
-    tags.push("efficient", "fib_entry");
+    rule = `AVOID: ${perf.pool_name}-type pools (bin_step=${perf.bin_step}, volatility=${perf.volatility}) — went OOR ${(100 - perf.range_efficiency).toFixed(0)}% of time, PnL ${perf.pnl_pct}%.${fibEntryLabel}`;
+    tags.push("oor", perf.strategy, `volatility_${Math.round(perf.volatility ?? 0)}`);
+  } else if (outcome === "bad" && perf.range_efficiency >= 70 && perf.close_reason?.includes("stop loss")) {
+    // Directional dump while IN range — most dangerous pattern
+    rule = `DIRECTIONAL DUMP: ${perf.pool_name} — range_efficiency=${perf.range_efficiency}% (stayed IN range) but PnL ${perf.pnl_pct}% (token dumped directionally). Signal context: ${signalCtx || "none"}. Entry zone was ${perf.fib_zone ?? "?"}.${fibEntryLabel} — not an OOR issue, token direction was wrong from entry.`;
+    tags.push("stop_loss", "directional_loss", "fib_entry");
   } else if (outcome === "bad" && perf.close_reason?.includes("stop loss")) {
-    rule = `FAILED: ${context} → PnL ${perf.pnl_pct}%, hit stop loss. Consider tighter Fib zone entry or lower stopLossPct threshold.`;
+    rule = `STOP LOSS: ${perf.pool_name} — PnL ${perf.pnl_pct}%, range_efficiency=${perf.range_efficiency}%. Context: ${signalCtx || "none"}.${fibEntryLabel}`;
     tags.push("stop_loss", "fib_entry");
+  } else if (outcome === "good" && perf.range_efficiency > 80) {
+    const extras = [
+      perf.has_hidden_divergence ? "hidden_div=YES" : null,
+      perf.fee_tvl_ratio != null ? `fee_tvl=${perf.fee_tvl_ratio}` : null,
+    ].filter(Boolean).join(", ");
+    rule = `PREFER: ${perf.pool_name}-type pools (bin_step=${perf.bin_step}) — ${perf.range_efficiency}% in-range, PnL +${perf.pnl_pct}%, close_reason="${perf.close_reason}". Signal: ${signalCtx || "none"}${extras ? ". Key factors: " + extras : ""}.${fibEntryLabel}`;
+    tags.push("efficient", "fib_entry");
   } else if (outcome === "good") {
-    rule = `WORKED: ${context} → PnL +${perf.pnl_pct}%, range efficiency ${perf.range_efficiency}%.`;
+    rule = `WORKED: ${perf.pool_name} — PnL +${perf.pnl_pct}%, range_efficiency=${perf.range_efficiency}%, close_reason="${perf.close_reason}". Context: ${signalCtx || "none"}.${fibEntryLabel}`;
     tags.push("worked", "fib_entry");
   } else {
-    rule = `FAILED: ${context} → PnL ${perf.pnl_pct}%, range efficiency ${perf.range_efficiency}%. Reason: ${perf.close_reason}.`;
+    rule = `FAILED: ${perf.pool_name} — PnL ${perf.pnl_pct}%, range_efficiency=${perf.range_efficiency}%, close_reason="${perf.close_reason}". Context: ${signalCtx || "none"}.${fibEntryLabel}`;
     tags.push("failed");
   }
 
@@ -524,7 +543,7 @@ async function runChartLessonAnalysis(perf, outcome) {
     if (hasCJK(screenerResp)) {
       log("lessons", `Screening chart lesson DISCARDED — contains CJK characters (language leak): ${screenerResp.slice(0, 60)}`);
     } else {
-      const rule = `CHART [${label}][SCREENING]: ${screenerResp.slice(0, 320)}`;
+      const rule = `CHART [${label}][SCREENING]: ${screenerResp.slice(0, 500)}`;
       data.lessons.push({ id: Date.now(), rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "screening", "entry"], ...base, created_at: now });
       log("lessons", `Screening chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
     }
@@ -534,7 +553,7 @@ async function runChartLessonAnalysis(perf, outcome) {
     if (hasCJK(managerResp)) {
       log("lessons", `Management chart lesson DISCARDED — contains CJK characters (language leak): ${managerResp.slice(0, 60)}`);
     } else {
-      const rule = `CHART [${label}][MANAGEMENT]: ${managerResp.slice(0, 400)}`;
+      const rule = `CHART [${label}][MANAGEMENT]: ${managerResp.slice(0, 600)}`;
       data.lessons.push({ id: Date.now() + 1, rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "management", "hold", "close"], ...base, created_at: now });
       log("lessons", `Management chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
     }
