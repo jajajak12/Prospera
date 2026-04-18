@@ -397,6 +397,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     // Fetch live prices for Successful Rebound fib tracking (only for positions with stored fib levels)
     const positionsWithFibLevels = positionData.filter(p => getTrackedPosition(p.position)?.fib_levels_sol != null);
     const livePriceMap = new Map();
+    const candleHighMap = new Map(); // max candle HIGH over last 12×5m — catches rebounds between cycles
     if (positionsWithFibLevels.length > 0) {
       const livePriceResults = await Promise.allSettled(
         positionsWithFibLevels.map(p => getActiveBin({ pool_address: p.pool }))
@@ -407,6 +408,23 @@ export async function runManagementCycle({ silent = false } = {}) {
           livePriceMap.set(positionsWithFibLevels[i].position, r.value.price);
         }
       }
+      // For touched positions, also fetch 5m candle HIGHs to catch rebounds that happened between cycles
+      const touchedPositions = positionsWithFibLevels.filter(p => getTrackedPosition(p.position)?.touched_lower_fib);
+      if (touchedPositions.length > 0) {
+        const candleResults = await Promise.allSettled(
+          touchedPositions.map(p => {
+            const tracked = getTrackedPosition(p.position);
+            return hybridDataProvider.getOHLCV(p.pool, "5m", 12, "solana", tracked?.base_mint ?? null);
+          })
+        );
+        for (let i = 0; i < touchedPositions.length; i++) {
+          const r = candleResults[i];
+          if (r.status === 'fulfilled' && Array.isArray(r.value) && r.value.length > 0) {
+            const maxHigh = Math.max(...r.value.map(c => c.high ?? 0));
+            if (maxHigh > 0) candleHighMap.set(touchedPositions[i].position, maxHigh);
+          }
+        }
+      }
     }
 
     const exitMap = new Map();
@@ -415,15 +433,20 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (exit) { exitMap.set(p.position, exit.reason); continue; }
 
       // Successful Rebound: position touched Fib ≤0.500, then price recovered to ≥0.236 → close + ATH cooldown
-      const livePrice = livePriceMap.get(p.position) ?? null;
+      // effectiveHigh = max(livePrice, candle HIGH over last hour) — catches rebounds between cycles
+      const livePrice  = livePriceMap.get(p.position) ?? null;
+      const candleHigh = candleHighMap.get(p.position) ?? null;
+      const effectiveHigh = (livePrice != null || candleHigh != null) ? Math.max(livePrice ?? 0, candleHigh ?? 0) : null;
       const fibState = updateFibTouchState(p.position, livePrice);
-      if (fibState.touched && livePrice != null && fibState.fib236 != null && livePrice >= fibState.fib236) {
-        _m("management", `Successful rebound: ${p.pair} — touched Fib ≤0.500 then recovered ≥0.236 (live=${livePrice.toPrecision(4)} >= fib236=${fibState.fib236.toPrecision(4)}) → closing + ATH cooldown`);
+      if (fibState.touched && effectiveHigh != null && fibState.fib236 != null && effectiveHigh >= fibState.fib236) {
+        const src = (candleHigh != null && candleHigh >= fibState.fib236 && (livePrice == null || livePrice < fibState.fib236)) ? "candle high" : "live";
+        _m("management", `Successful rebound: ${p.pair} — touched Fib ≤0.500 then recovered ≥0.236 (${src}=${effectiveHigh.toPrecision(4)} >= fib236=${fibState.fib236.toPrecision(4)}) → closing + ATH cooldown`);
         exitMap.set(p.position, `Successful rebound: touched ≤0.500 then recovered to 0.236`);
       }
       // Rebound from .618 + profit ≥10%: touched Fib .618, recovered to ≥.500 → early exit
-      if (!exitMap.has(p.position) && fibState.touched618 && livePrice != null && fibState.fib500 != null && livePrice >= fibState.fib500 && p.pnl_pct != null && p.pnl_pct >= 10) {
-        _m("management", `618 rebound+profit: ${p.pair} — touched ≤.618 then recovered ≥.500 (live=${livePrice.toPrecision(4)} >= fib500=${fibState.fib500.toPrecision(4)}) pnl=${p.pnl_pct.toFixed(1)}% ≥10% → closing`);
+      if (!exitMap.has(p.position) && fibState.touched618 && effectiveHigh != null && fibState.fib500 != null && effectiveHigh >= fibState.fib500 && p.pnl_pct != null && p.pnl_pct >= 10) {
+        const src = (candleHigh != null && candleHigh >= fibState.fib500 && (livePrice == null || livePrice < fibState.fib500)) ? "candle high" : "live";
+        _m("management", `618 rebound+profit: ${p.pair} — touched ≤.618 then recovered ≥.500 (${src}=${effectiveHigh.toPrecision(4)} >= fib500=${fibState.fib500.toPrecision(4)}) pnl=${p.pnl_pct.toFixed(1)}% ≥10% → closing`);
         exitMap.set(p.position, `Rebound .618→.500 with profit ${p.pnl_pct.toFixed(1)}%`);
       }
     }
