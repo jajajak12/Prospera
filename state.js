@@ -98,6 +98,7 @@ export function trackPosition({
     smart_wallet_present,
     deployed_at: new Date().toISOString(),
     out_of_range_since: null,
+    total_minutes_oor: 0,
     last_claim_at: null,
     total_fees_claimed_usd: 0,
     rebalance_count: 0,
@@ -128,9 +129,11 @@ export function markInRange(position_address) {
   const pos = state.positions[position_address];
   if (!pos) return;
   if (pos.out_of_range_since) {
+    const elapsed = Math.floor((Date.now() - new Date(pos.out_of_range_since).getTime()) / 60000);
+    pos.total_minutes_oor = (pos.total_minutes_oor || 0) + elapsed;
     pos.out_of_range_since = null;
     save(state);
-    log("state", `Position ${position_address} back in range`);
+    log("state", `Position ${position_address} back in range (+${elapsed}m OOR, total=${pos.total_minutes_oor}m)`);
   }
 }
 
@@ -269,9 +272,11 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     changed = true;
     log("state", `Position ${position_address} marked out of range`);
   } else if (in_range === true && pos.out_of_range_since) {
+    const elapsed = Math.floor((Date.now() - new Date(pos.out_of_range_since).getTime()) / 60000);
+    pos.total_minutes_oor = (pos.total_minutes_oor || 0) + elapsed;
     pos.out_of_range_since = null;
     changed = true;
-    log("state", `Position ${position_address} back in range`);
+    log("state", `Position ${position_address} back in range (+${elapsed}m OOR, total=${pos.total_minutes_oor}m)`);
   }
 
   if (changed) save(state);

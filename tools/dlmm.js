@@ -687,9 +687,10 @@ export async function closePosition({ position_address, reason, skip_swap = fals
       const deployedAt = new Date(tracked.deployed_at).getTime();
       const minutesHeld = Math.floor((Date.now() - deployedAt) / 60000);
 
-      let minutesOOR = 0;
+      // Cumulative OOR: total_minutes_oor (past streaks) + current streak if still OOR
+      let minutesOOR = tracked.total_minutes_oor || 0;
       if (tracked.out_of_range_since) {
-        minutesOOR = Math.floor((Date.now() - new Date(tracked.out_of_range_since).getTime()) / 60000);
+        minutesOOR += Math.floor((Date.now() - new Date(tracked.out_of_range_since).getTime()) / 60000);
       }
 
       // Snapshot pre-close PnL BEFORE cache invalidation — race-condition-safe fallback
