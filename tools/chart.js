@@ -560,7 +560,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   //   Position starts all-in SOL (passive bid); earns fees as price falls to fib236.
 
   const atrBuffer     = atr ?? (fib.fib618 * binStepPct / 100);
-  const supportTarget = nearestSupport ?? fib.fib786;
+  const supportTarget = nearestSupport ?? fib.fib618;
   const supportPrice  = Math.max(supportTarget - atrBuffer, fib.fib786);
 
   let binsBelow, binsAbove;
