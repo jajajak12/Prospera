@@ -455,7 +455,38 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   // binStep is in basis points (e.g. 100 = 1% per bin)
   const binStepPct = binStep / 100;
 
-  // ── Check 1: Price must be in ATH zone or Primary zone ───────────────────
+  // ── Check 1: Pre-entry pump gate — blowoff top detection ─────────────────
+  // Skip if recent candles show large pump (>80% from low) without any correction.
+  // A healthy entry needs at least 1 correction candle after the pump peak.
+  {
+    const lookback = Math.min(candles.length, 10);
+    const recent   = candles.slice(-lookback);
+    // Find peak high and its index within recent window
+    let peakHigh = -Infinity, peakIdx = 0;
+    for (let i = 0; i < recent.length; i++) {
+      if (recent[i].high > peakHigh) { peakHigh = recent[i].high; peakIdx = i; }
+    }
+    // Find lowest low BEFORE the peak (the base of the pump)
+    let baseLow = Infinity;
+    for (let i = 0; i <= peakIdx; i++) {
+      if (recent[i].low < baseLow) baseLow = recent[i].low;
+    }
+    const pumpPct = baseLow > 0 ? (peakHigh - baseLow) / baseLow * 100 : 0;
+    // Candles AFTER the peak
+    const postPeak = recent.slice(peakIdx + 1);
+    // Correction = any red candle OR >5% pullback from peak
+    const hasCorrection = postPeak.some(c => c.close < c.open)
+      || (postPeak.length > 0 && (peakHigh - postPeak[postPeak.length - 1].close) / peakHigh > 0.05);
+
+    if (pumpPct >= 80 && !hasCorrection) {
+      return skip(
+        `Blowoff top: +${pumpPct.toFixed(0)}% pump in last ${peakIdx + 1} candle(s) with no correction — skip entry`,
+        currentPrice, fib
+      );
+    }
+  }
+
+  // ── Check 2: Price must be in ATH zone or Primary zone ───────────────────
   const inPrimaryZone = currentPrice >= fib.fib382 && currentPrice <= fib.fib236;
   const inAthZone     = currentPrice > fib.fib236;
   const inEntryRange  = inPrimaryZone || inAthZone;
@@ -467,7 +498,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     );
   }
 
-  // ── Check 2: EMA Trend Filter ──────────────────────────────────────────────
+  // ── Check 3: EMA Trend Filter ──────────────────────────────────────────────
   // If EMA20/EMA50 not yet formed (insufficient candles for that period),
   // skip EMA filter — rely on RSI only for momentum confirmation.
   if (ema20 != null && ema50 != null) {
@@ -479,7 +510,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     }
   }
 
-  // ── Check 3: RSI Momentum ─────────────────────────────────────────────────
+  // ── Check 4: RSI Momentum ─────────────────────────────────────────────────
   const rsiMin = (opts.rsiMin != null ? opts.rsiMin : (inAthZone ? 40 : 45)); // ATH zone: leniency 40, otherwise 45
   if (rsi != null) {
     if (rsi < rsiMin) {

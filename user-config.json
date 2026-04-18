@@ -57,6 +57,7 @@
   "binsByStep": {},
   "candleLimit": 100,
   "fibConfluenceRequired": true,
+  "minConfluenceScore": 0.50,
   "maxTechnicalAnalysisCandidates": 10,
   "autoBacktest": false,
   "minBacktestWinRate": 0.5,
