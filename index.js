@@ -421,6 +421,11 @@ export async function runManagementCycle({ silent = false } = {}) {
         _m("management", `Successful rebound: ${p.pair} — touched Fib ≤0.500 then recovered ≥0.236 (live=${livePrice.toPrecision(4)} >= fib236=${fibState.fib236.toPrecision(4)}) → closing + ATH cooldown`);
         exitMap.set(p.position, `Successful rebound: touched ≤0.500 then recovered to 0.236`);
       }
+      // Rebound from .618 + profit ≥10%: touched Fib .618, recovered to ≥.500 → early exit
+      if (!exitMap.has(p.position) && fibState.touched618 && livePrice != null && fibState.fib500 != null && livePrice >= fibState.fib500 && p.pnl_pct != null && p.pnl_pct >= 10) {
+        _m("management", `618 rebound+profit: ${p.pair} — touched ≤.618 then recovered ≥.500 (live=${livePrice.toPrecision(4)} >= fib500=${fibState.fib500.toPrecision(4)}) pnl=${p.pnl_pct.toFixed(1)}% ≥10% → closing`);
+        exitMap.set(p.position, `Rebound .618→.500 with profit ${p.pnl_pct.toFixed(1)}%`);
+      }
     }
 
     // ── ATH OOR Recovery: jika new ATH ≥120% dari ATH lama (pernah terjadi) → close + rescreen ──

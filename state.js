@@ -91,6 +91,7 @@ export function trackPosition({
     fib_zone,
     fib_levels_sol,
     touched_lower_fib: false,
+    touched_fib618: false,
     rsi,
     atr_pct,
     in_primary_zone,
@@ -354,21 +355,34 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
 /**
  * Update Fib touch state for a position.
  * Sets touched_lower_fib=true when price <= fib500.
- * Returns { touched, fib236 } for the management cycle to check successful rebound.
+ * Sets touched_fib618=true when price <= fib618.
+ * Returns { touched, fib236, touched618, fib500 } for the management cycle.
  */
 export function updateFibTouchState(position_address, livePriceSol) {
-  if (livePriceSol == null) return { touched: false, fib236: null };
+  if (livePriceSol == null) return { touched: false, fib236: null, touched618: false, fib500: null };
   const state = load();
   const pos = state.positions[position_address];
-  if (!pos || pos.closed || !pos.fib_levels_sol) return { touched: false, fib236: null };
+  if (!pos || pos.closed || !pos.fib_levels_sol) return { touched: false, fib236: null, touched618: false, fib500: null };
 
+  let dirty = false;
   if (!pos.touched_lower_fib && livePriceSol <= pos.fib_levels_sol.fib500) {
     pos.touched_lower_fib = true;
-    save(state);
+    dirty = true;
     log("state", `Position ${position_address} touched Fib ≤0.500 (price ${livePriceSol.toPrecision(4)} <= fib500 ${pos.fib_levels_sol.fib500.toPrecision(4)}) — watching for successful rebound to 0.236`);
   }
+  if (!pos.touched_fib618 && pos.fib_levels_sol.fib618 != null && livePriceSol <= pos.fib_levels_sol.fib618) {
+    pos.touched_fib618 = true;
+    dirty = true;
+    log("state", `Position ${position_address} touched Fib ≤0.618 (price ${livePriceSol.toPrecision(4)} <= fib618 ${pos.fib_levels_sol.fib618.toPrecision(4)}) — watching for rebound to 0.500`);
+  }
+  if (dirty) save(state);
 
-  return { touched: !!pos.touched_lower_fib, fib236: pos.fib_levels_sol?.fib236 ?? null };
+  return {
+    touched: !!pos.touched_lower_fib,
+    fib236: pos.fib_levels_sol?.fib236 ?? null,
+    touched618: !!pos.touched_fib618,
+    fib500: pos.fib_levels_sol?.fib500 ?? null,
+  };
 }
 
 // ─── Briefing Tracking ─────────────────────────────────────────
