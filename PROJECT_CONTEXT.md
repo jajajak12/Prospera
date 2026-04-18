@@ -5,7 +5,7 @@
 ## Stack
 
 Node.js ES modules · PM2 ID 0 · Solana/Meteora DLMM
-LLM: deepseek-v3.2 (management) · qwen3.5-flash (screening)
+LLM: MiniMax-M2.7 (management + screening + general)
 
 ---
 
@@ -42,11 +42,13 @@ Dexscreener boosts/profiles (SOL pair)
 
 ```
 calcFibLevels()
-→ HARD GATE: price < fib500 → skip "below Fib 0.500 — no entry allowed"
-→ Zone: ATH (>fib236) or PRIMARY (fib236–fib382)
-→ EMA20 > EMA50
-→ RSI > 48 AND slope > 0
+→ Check 1: Blowoff top gate — pump ≥80% in last 10 candles with no correction → skip
+→ Check 2: HARD GATE price < fib500 → skip; Zone ATH (>fib236) or PRIMARY (fib236–fib382)
+→ Check 3: EMA20 > EMA50
+→ Check 4: RSI > 48 AND slope > 0
 ```
+
+`minConfluenceScore`: 0.50 (raised from 0.30) — filters weak signals before deploy.
 
 ---
 
@@ -113,6 +115,13 @@ Cap: 60% wallet · Gas reserve: 0.5 SOL
 - [x] Signal weights defensive load — handles missing/corrupt history field
 - [x] Auto-claim fees — triggers when fees ≥2% position value AND price ≥ fib382
 - [x] Exit rule — close when loss ≥3× unclaimed fees after 2h (IL overtaking fees)
+- [x] Blowoff top gate — skip entry if pump ≥80% in 10 candles with no correction candle
+- [x] minConfluenceScore raised 0.30 → 0.50 — filters low-quality signals
+- [x] Retrace snapshot — deterministic HEALTHY/STABILIZING/AGGRESSIVE/DIP_618/BREAKDOWN_786 injected per management cycle
+- [x] CJK leakage filter — lessons with Chinese chars discarded (MiniMax model guard)
+- [x] DIRECTIONAL DUMP lesson category — range_efficiency=100% + SL = dump pattern, not OOR failure
+- [x] Cumulative OOR tracking — `total_minutes_oor` accumulates across all OOR streaks; range_efficiency now accurate
+- [x] Hallucination prevention — management prompt guards + pre-computed fib_status/retrace data injection
 - [ ] Darwinian weights: need 6+ closed positions
 - [ ] Monitor entry rate
 
