@@ -12,17 +12,18 @@
  *   Birdeye hanya sebagai last fallback (jarang dipakai)
  *
  * - OHLCV (USD-consistent untuk Technical Analysis):
- *   GeckoTerminal (primary) → Birdeye (fallback) → skip candidate
+ *   GeckoTerminal (primary) → Birdeye (fallback) → Dexscreener chart (last resort) → skip candidate
  *
  * Tujuan: Menghemat Birdeye API quota (30k/bulan).
  * Birdeye sekarang hanya dipakai sebagai fallback untuk OHLCV.
- * Jika GeckoTerminal dan Birdeye gagal → skip kandidat (jangan pakai TA yang degraded).
+ * Jika semua source gagal → skip kandidat + notif Telegram dengan token address + alasan error.
  *
  * Fallback triggers: timeout > 3s, HTTP 429, any thrown error.
  * Each source: 1 retry on 429 before falling back to next.
  */
 
 import { log } from "../logger.js";
+import { sendHTML as telegramSendHTML } from "../telegram.js";
 
 const DEXSCREENER_BASE   = "https://api.dexscreener.com";
 const BIRDEYE_BASE       = "https://public-api.birdeye.so";
@@ -327,6 +328,10 @@ async function jupiterQuotePrice(tokenMint, chain = "solana") {
   });
 }
 
+// Dedup map for OHLCV failure Telegram notifications — max 1 notif per token per 30 minutes
+const _ohlcvFailNotified = new Map(); // tokenMint → lastNotifiedAtMs
+const OHLCV_NOTIF_COOLDOWN_MS = 30 * 60 * 1000;
+
 // Cache SOL/USD price for 60s — shared across all getOHLCV calls within a screening cycle
 let _solPriceCache = null;
 let _solPriceCachedAt = 0;
@@ -485,14 +490,13 @@ export class HybridDataProvider {
    * OHLCV candles. Oldest-first. ALL PRICES IN SOL DENOMINATION.
    *
    * Priority:
-   *   GeckoTerminal (primary, native SOL for TOKEN/SOL pools) → Birdeye USD ÷ solPrice (fallback) → throw (skip candidate)
+   *   GeckoTerminal (primary, native SOL for TOKEN/SOL pools)
+   *   → Birdeye USD ÷ solPrice (fallback)
+   *   → Dexscreener chart USD ÷ solPrice (last resort)
+   *   → throw (skip candidate) + Telegram notif
    *
    * GeckoTerminal returns TOKEN/SOL prices natively — no conversion needed.
-   * Birdeye returns USD → divided by solPrice to normalize to SOL.
-   * Dexscreener OHLCV is SKIPPED — unreliable denomination handling.
-   *
-   * Birdeye is last-resort fallback to conserve its 30k/month API quota.
-   * If both GeckoTerminal AND Birdeye fail for a candidate → throw (skip, do NOT use degraded TA).
+   * Birdeye + Dexscreener return USD → divided by solPrice to normalize to SOL.
    *
    * @param {string} poolAddress
    * @param {string} [timeframe="5m"]
@@ -502,14 +506,13 @@ export class HybridDataProvider {
    */
   async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana", tokenMint = null) {
     const MIN_CANDLES = 6;
+    const errors = {};
 
     // ── GeckoTerminal primary — native SOL denomination ──────────────────────
-    // Pool OHLCV from GeckoTerminal returns TOKEN price in SOL (quote currency).
-    // No conversion needed — we keep SOL denomination end-to-end.
     if (poolAddress) {
       try {
         const rawCandles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
-        const candles = rawCandles; // native SOL — TOKEN/SOL pools return SOL-denominated prices
+        const candles = rawCandles;
         log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles, SOL-native)`, { pool: poolAddress });
 
         if (candles.length >= MIN_CANDLES) return candles;
@@ -531,9 +534,13 @@ export class HybridDataProvider {
           }
         }
         if (candles.length > 0) return candles; // thin but better than nothing
+        errors.gt = "empty (0 candles)";
       } catch (err) {
+        errors.gt = err.message;
         log.warn("screening", `getOHLCV: GeckoTerminal failed → Birdeye (${err.message})`, { pool: poolAddress });
       }
+    } else {
+      errors.gt = "no poolAddress";
     }
 
     // ── Birdeye fallback (USD ÷ solPrice → SOL, quota-limited — only when GT fails) ──
@@ -554,12 +561,66 @@ export class HybridDataProvider {
         log.debug("screening", `getOHLCV: Birdeye token OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: tokenMint });
         return candles;
       } catch (err) {
+        errors.birdeye = err.message;
         log.warn("screening", `getOHLCV: Birdeye fallback failed (${err.message})`, { token: tokenMint });
       }
+    } else {
+      errors.birdeye = "no tokenMint";
     }
 
-    // ── Both failed → skip candidate ─────────────────────────────────────────
-    throw new Error(`getOHLCV: all sources failed for ${tokenMint ?? poolAddress} — candidate skipped`);
+    // ── Dexscreener chart fallback (USD ÷ solPrice → SOL) ────────────────────
+    if (poolAddress) {
+      try {
+        const [usdCandles, solPrice] = await Promise.all([
+          dexscreenerOHLCV(poolAddress, chain, timeframe, limit),
+          jupiterSolPrice(),
+        ]);
+        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable for DS→SOL conversion");
+        const toSOL = c => ({
+          timestamp: c.timestamp,
+          open: c.open / solPrice, high: c.high / solPrice,
+          low:  c.low  / solPrice, close: c.close / solPrice,
+          volume: c.volume,
+        });
+        const candles = usdCandles.map(toSOL);
+        if (candles.length >= MIN_CANDLES) {
+          log.debug("screening", `getOHLCV: Dexscreener OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { pool: poolAddress });
+          return candles;
+        }
+        errors.dexscreener = `thin (${candles.length} candles)`;
+        log.warn("screening", `getOHLCV: Dexscreener thin (${candles.length} candles)`, { pool: poolAddress });
+      } catch (err) {
+        errors.dexscreener = err.message;
+        log.warn("screening", `getOHLCV: Dexscreener fallback failed (${err.message})`, { pool: poolAddress });
+      }
+    } else {
+      errors.dexscreener = "no poolAddress";
+    }
+
+    // ── All sources failed → Telegram notif + skip ───────────────────────────
+    const key = tokenMint ?? poolAddress;
+    const now = Date.now();
+    const lastNotified = _ohlcvFailNotified.get(key) ?? 0;
+    if (now - lastNotified > OHLCV_NOTIF_COOLDOWN_MS) {
+      _ohlcvFailNotified.set(key, now);
+      const dsLink = tokenMint ? `https://dexscreener.com/solana/${tokenMint}` : `https://dexscreener.com/solana/${poolAddress}`;
+      const msg = [
+        `⚠️ <b>OHLCV Gagal — Kandidat Di-skip</b>`,
+        ``,
+        `<b>Token:</b> <code>${tokenMint ?? "—"}</code>`,
+        `<b>Pool:</b> <code>${poolAddress ?? "—"}</code>`,
+        ``,
+        `<b>Error per source:</b>`,
+        `• GeckoTerminal: ${errors.gt ?? "—"}`,
+        `• Birdeye: ${errors.birdeye ?? "—"}`,
+        `• Dexscreener: ${errors.dexscreener ?? "—"}`,
+        ``,
+        `<b>Chart:</b> <a href="${dsLink}">Dexscreener</a>`,
+      ].join("\n");
+      telegramSendHTML(msg).catch(() => {}); // fire-and-forget, non-blocking
+    }
+
+    throw new Error(`getOHLCV: all sources failed for ${key} — candidate skipped`);
   }
 
   /**
