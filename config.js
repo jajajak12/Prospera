@@ -149,7 +149,7 @@ export function getPositionSizing(totalSol) {
   const capPct     = config.risk.totalExposureCapPct ?? 0.60;
 
   const exposurableBalance = Math.max(0, totalSol - gasReserve);
-  if (exposurableBalance < 1.0) return 0;
+  if (exposurableBalance < 0.1) return 0;
 
   let perPosition = 0.1;
 
