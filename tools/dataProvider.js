@@ -110,9 +110,9 @@ async function dexscreenerPoolData(poolAddress, chain) {
   });
 }
 
-// Dexscreener OHLCV via priceHistory from pair or token endpoint
-// /dex/candles/ is not a valid public API endpoint (always 404) — use pair/token instead.
-async function dexscreenerOHLCV(poolAddress, chain, tokenMint = null) {
+// Dexscreener OHLCV via priceHistory from pair or token endpoint.
+// poolCandidates: array of pool addresses to try in order (lowercase first per DS convention).
+async function dexscreenerOHLCV(primaryPool, chain, tokenMint = null, poolCandidates = []) {
   return withRetry(async () => {
     const parseBars = (bars) => bars
       .filter(b => b && (b.t || b.time))
@@ -121,22 +121,25 @@ async function dexscreenerOHLCV(poolAddress, chain, tokenMint = null) {
         open: Number(b.o), high: Number(b.h), low: Number(b.l), close: Number(b.c), volume: Number(b.v) || 0,
       }));
 
-    // Attempt 1: pair endpoint using pool address
-    if (poolAddress) {
+    const allPools = [...new Set([
+      ...(poolCandidates.length ? poolCandidates : [primaryPool]),
+    ].filter(Boolean))];
+
+    // Try each pool candidate against DS pair endpoint
+    for (const addr of allPools) {
       const res = await fetch(
-        `${DEXSCREENER_BASE}/latest/dex/pairs/${chain}/${poolAddress}`,
+        `${DEXSCREENER_BASE}/latest/dex/pairs/${chain}/${addr}`,
         { signal: sig(TIMEOUT_MS) }
       );
       if (res.status === 429) throw new Error("Dexscreener 429");
-      if (res.ok) {
-        const data = await res.json();
-        const pair = data?.pair ?? data?.pairs?.[0];
-        const bars = pair?.priceHistory;
-        if (bars && bars.length > 0) return parseBars(bars);
-      }
+      if (!res.ok) continue;
+      const data = await res.json();
+      const pair = data?.pair ?? data?.pairs?.[0];
+      const bars = pair?.priceHistory;
+      if (bars && bars.length > 0) return parseBars(bars);
     }
 
-    // Attempt 2: token endpoint (returns multiple pairs — pick highest volume)
+    // Fallback: token endpoint — pick highest-volume pair
     if (tokenMint) {
       const res = await fetch(
         `${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`,
@@ -145,15 +148,16 @@ async function dexscreenerOHLCV(poolAddress, chain, tokenMint = null) {
       if (res.status === 429) throw new Error("Dexscreener 429");
       if (res.ok) {
         const data = await res.json();
-        const pairs = data?.pairs ?? [];
-        // Pick pair with most 24h volume
-        const best = pairs.sort((a, b) => (Number(b.volume?.h24) || 0) - (Number(a.volume?.h24) || 0))[0];
-        const bars = best?.priceHistory;
-        if (bars && bars.length > 0) return parseBars(bars);
+        const pairs = (data?.pairs ?? [])
+          .sort((a, b) => (Number(b.volume?.h24) || 0) - (Number(a.volume?.h24) || 0));
+        for (const pair of pairs.slice(0, 3)) {
+          const bars = pair?.priceHistory;
+          if (bars && bars.length > 0) return parseBars(bars);
+        }
       }
     }
 
-    throw new Error("Dexscreener OHLCV error: no priceHistory from pair or token endpoint");
+    throw new Error("Dexscreener OHLCV: no priceHistory from any pool or token endpoint");
   });
 }
 
@@ -595,95 +599,92 @@ export class HybridDataProvider {
     const MIN_CANDLES = 6;
     const errors = {};
 
-    // ── GeckoTerminal primary — native SOL denomination ──────────────────────
-    // Helper: try GT OHLCV for a specific pool, return candles or null
-    const tryGeckoPool = async (addr) => {
+    // ── Step 0: Resolve canonical pool via GT token info ─────────────────────
+    // pump.fun pool address ≠ Meteora pool address.
+    // GT/DS need the pump.fun pool. geckoTokenInfo returns GT's indexed top pool.
+    let canonicalPool = null;
+    if (tokenMint) {
       try {
-        const c = await geckoOHLCV(addr, chain, timeframe, limit);
-        if (c.length > 0) return c;
-      } catch (_) {}
-      return null;
-    };
+        const tokenData = await geckoTokenInfo(tokenMint, chain);
+        const topPoolId = tokenData?.data?.relationships?.top_pools?.data?.[0]?.id;
+        canonicalPool = topPoolId?.split("_")[1] ?? null;
+        if (canonicalPool) {
+          log.debug("screening", `getOHLCV: canonical pool = ${canonicalPool}`, { token: tokenMint });
+        }
+      } catch (err) {
+        log.warn("screening", `getOHLCV: GT token info failed (${err.message}) — using Meteora pool`, { token: tokenMint });
+      }
+    }
+    // Fallback to Meteora pool if GT token info failed
+    const gtPool = canonicalPool ?? poolAddress;
 
-    if (poolAddress || tokenMint) {
+    // ── 1. GeckoTerminal PRIMARY — native SOL denomination ───────────────────
+    if (gtPool) {
       try {
-        let candles = null;
-
-        // 1. GT token info FIRST — get GT's canonical top pools for this token
-        //    (Meteora pool address ≠ GT pool address for same token)
-        if (tokenMint) {
-          try {
-            const tokenData = await geckoTokenInfo(tokenMint, chain);
-            const topPools = tokenData?.data?.relationships?.top_pools?.data ?? [];
-            for (const p of topPools.slice(0, 3)) {
-              const topAddr = p?.id?.split("_")[1];
-              if (!topAddr) continue;
-              const topCandles = await tryGeckoPool(topAddr);
-              if (topCandles && topCandles.length >= MIN_CANDLES) {
-                log.debug("screening", `getOHLCV: GT token-info pool OK (${topCandles.length} candles)`, { pool: topAddr });
-                candles = topCandles;
-                break;
-              }
-            }
-          } catch (err) {
-            log.warn("screening", `getOHLCV: GT token info failed (${err.message})`, { token: tokenMint });
-          }
-        }
-
-        // 2. Fallback: try Meteora pool address directly (if GT token info missed it)
-        if ((!candles || candles.length < MIN_CANDLES) && poolAddress) {
-          const meteraCandles = await tryGeckoPool(poolAddress);
-          if (meteraCandles && meteraCandles.length > (candles?.length ?? 0)) candles = meteraCandles;
-        }
-
-        if (candles && candles.length >= MIN_CANDLES) {
-          log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles, SOL-native)`);
+        const candles = await geckoOHLCV(gtPool, chain, timeframe, limit);
+        if (candles.length >= MIN_CANDLES) {
+          log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles, SOL-native)`, { pool: gtPool });
           return candles;
         }
-        if (candles && candles.length > 0) return candles; // thin but better than nothing
-        errors.gt = "empty after primary + top-pool retry";
+        if (candles.length > 0) {
+          errors.gt = `thin (${candles.length})`;
+          log.warn("screening", `getOHLCV: GT thin (${candles.length}) → DS`, { pool: gtPool });
+        } else {
+          errors.gt = "empty";
+        }
       } catch (err) {
         errors.gt = err.message;
-        log.warn("screening", `getOHLCV: GeckoTerminal failed (${err.message})`, { pool: poolAddress });
+        log.warn("screening", `getOHLCV: GeckoTerminal failed → DS (${err.message})`, { pool: gtPool });
         if (err.message?.includes("429")) await new Promise(r => setTimeout(r, 2000));
       }
     } else {
-      errors.gt = "no poolAddress and no tokenMint";
+      errors.gt = "no pool resolved";
     }
 
-    // ── Birdeye fallback (USD ÷ solPrice → SOL, quota-limited — only when GT fails) ──
+    // ── 2. Dexscreener SECONDARY — USD ÷ solPrice → SOL ─────────────────────
+    // DS uses lowercase pool address. Try canonical pool first, then Meteora pool.
+    const dsPools = [...new Set([
+      canonicalPool?.toLowerCase(),
+      canonicalPool,
+      poolAddress?.toLowerCase(),
+      poolAddress,
+    ].filter(Boolean))];
+
+    if (dsPools.length > 0 || tokenMint) {
+      try {
+        const [usdCandles, solPrice] = await Promise.all([
+          dexscreenerOHLCV(dsPools[0] ?? null, chain, tokenMint, dsPools),
+          jupiterSolPrice(),
+        ]);
+        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable");
+        const toSOL = c => ({
+          timestamp: c.timestamp,
+          open: c.open / solPrice, high: c.high / solPrice,
+          low:  c.low  / solPrice, close: c.close / solPrice,
+          volume: c.volume,
+        });
+        const candles = usdCandles.map(toSOL);
+        if (candles.length >= MIN_CANDLES) {
+          log.debug("screening", `getOHLCV: Dexscreener OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`);
+          return candles;
+        }
+        errors.dexscreener = `thin (${candles.length})`;
+      } catch (err) {
+        errors.dexscreener = err.message;
+        log.warn("screening", `getOHLCV: Dexscreener failed (${err.message})`);
+      }
+    } else {
+      errors.dexscreener = "no pool";
+    }
+
+    // ── 3. Birdeye FALLBACK — USD ÷ solPrice → SOL ───────────────────────────
     if (tokenMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
           birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain),
           jupiterSolPrice(),
         ]);
-        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable for Birdeye→SOL conversion");
-        const toSOL = c => ({
-          timestamp: c.timestamp,
-          open: c.open / solPrice, high: c.high / solPrice,
-          low:  c.low  / solPrice, close: c.close / solPrice,
-          volume: c.volume,
-        });
-        const candles = usdCandles.map(toSOL);
-        log.debug("screening", `getOHLCV: Birdeye token OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: tokenMint });
-        return candles;
-      } catch (err) {
-        errors.birdeye = err.message;
-        log.warn("screening", `getOHLCV: Birdeye fallback failed (${err.message})`, { token: tokenMint });
-      }
-    } else {
-      errors.birdeye = "no tokenMint";
-    }
-
-    // ── Dexscreener fallback (priceHistory from pair/token endpoint, USD ÷ solPrice → SOL) ──
-    if (poolAddress || tokenMint) {
-      try {
-        const [usdCandles, solPrice] = await Promise.all([
-          dexscreenerOHLCV(poolAddress, chain, tokenMint),
-          jupiterSolPrice(),
-        ]);
-        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable for DS→SOL conversion");
+        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable");
         const toSOL = c => ({
           timestamp: c.timestamp,
           open: c.open / solPrice, high: c.high / solPrice,
@@ -692,27 +693,26 @@ export class HybridDataProvider {
         });
         const candles = usdCandles.map(toSOL);
         if (candles.length >= MIN_CANDLES) {
-          log.debug("screening", `getOHLCV: Dexscreener OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { pool: poolAddress });
+          log.debug("screening", `getOHLCV: Birdeye OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: tokenMint });
           return candles;
         }
-        errors.dexscreener = `thin (${candles.length} candles)`;
-        log.warn("screening", `getOHLCV: Dexscreener thin (${candles.length} candles)`, { pool: poolAddress });
+        errors.birdeye = `thin (${candles.length})`;
       } catch (err) {
-        errors.dexscreener = err.message;
-        log.warn("screening", `getOHLCV: Dexscreener fallback failed (${err.message})`, { pool: poolAddress });
+        errors.birdeye = err.message;
+        log.warn("screening", `getOHLCV: Birdeye failed (${err.message})`, { token: tokenMint });
       }
     } else {
-      errors.dexscreener = "no poolAddress and no tokenMint";
+      errors.birdeye = "no tokenMint";
     }
 
-    // ── Codex.io last fallback (USD ÷ solPrice → SOL) ────────────────────────
+    // ── 4. Codex LAST FALLBACK — USD ÷ solPrice → SOL ───────────────────────
     if (tokenMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
           codexOHLCV(timeframe, limit, tokenMint),
           jupiterSolPrice(),
         ]);
-        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable for Codex→SOL conversion");
+        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable");
         const toSOL = c => ({
           timestamp: c.timestamp,
           open: c.open / solPrice, high: c.high / solPrice,
@@ -721,41 +721,40 @@ export class HybridDataProvider {
         });
         const candles = usdCandles.map(toSOL);
         if (candles.length >= MIN_CANDLES) {
-          log.debug("screening", `getOHLCV: Codex OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { pool: poolAddress });
+          log.debug("screening", `getOHLCV: Codex OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: tokenMint });
           return candles;
         }
-        errors.codex = `thin (${candles.length} candles)`;
-        log.warn("screening", `getOHLCV: Codex thin (${candles.length} candles)`, { pool: poolAddress });
+        errors.codex = `thin (${candles.length})`;
       } catch (err) {
         errors.codex = err.message;
-        log.warn("screening", `getOHLCV: Codex fallback failed (${err.message})`, { pool: poolAddress });
+        log.warn("screening", `getOHLCV: Codex failed (${err.message})`, { token: tokenMint });
       }
     } else {
       errors.codex = "no tokenMint";
     }
 
-    // ── All sources failed → Telegram notif + retry next cycle ──────────────
+    // ── All sources failed ────────────────────────────────────────────────────
     const key = tokenMint ?? poolAddress;
     const now = Date.now();
     const lastNotified = _ohlcvFailNotified.get(key) ?? 0;
     if (now - lastNotified > OHLCV_NOTIF_COOLDOWN_MS) {
       _ohlcvFailNotified.set(key, now);
-      const dsLink = tokenMint ? `https://dexscreener.com/solana/${tokenMint}` : `https://dexscreener.com/solana/${poolAddress}`;
+      const dsLink = `https://dexscreener.com/solana/${tokenMint ?? poolAddress}`;
       const msg = [
         `⚠️ <b>OHLCV Gagal — Kandidat Di-skip</b>`,
         ``,
         `<b>Token:</b> <code>${tokenMint ?? "—"}</code>`,
-        `<b>Pool:</b> <code>${poolAddress ?? "—"}</code>`,
+        `<b>Pool (canonical):</b> <code>${gtPool ?? "—"}</code>`,
         ``,
         `<b>Error per source:</b>`,
         `• GeckoTerminal: ${errors.gt ?? "—"}`,
-        `• Birdeye: ${errors.birdeye ?? "—"}`,
         `• Dexscreener: ${errors.dexscreener ?? "—"}`,
+        `• Birdeye: ${errors.birdeye ?? "—"}`,
         `• Codex: ${errors.codex ?? "—"}`,
         ``,
         `<b>Chart:</b> <a href="${dsLink}">Dexscreener</a>`,
       ].join("\n");
-      telegramSendHTML(msg).catch(() => {}); // fire-and-forget, non-blocking
+      telegramSendHTML(msg).catch(() => {});
     }
 
     throw new Error(`getOHLCV: all sources failed for ${key} — candidate skipped`);
