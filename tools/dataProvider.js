@@ -106,23 +106,50 @@ async function dexscreenerPoolData(poolAddress, chain) {
   });
 }
 
-async function dexscreenerOHLCV(poolAddress, chain, timeframe, limit) {
+// Dexscreener OHLCV via priceHistory from pair or token endpoint
+// /dex/candles/ is not a valid public API endpoint (always 404) — use pair/token instead.
+async function dexscreenerOHLCV(poolAddress, chain, tokenMint = null) {
   return withRetry(async () => {
-    const typeMap = { "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1D": "1D", "1d": "1D" };
-    const dsType = typeMap[timeframe] ?? "5";
-    const res = await fetch(
-      `${DEXSCREENER_BASE}/dex/candles/${chain}/${poolAddress}?res=${dsType}&cb=${limit}`,
-      { signal: sig(TIMEOUT_MS) }
-    );
-    if (res.status === 429) throw new Error("Dexscreener 429");
-    if (!res.ok) throw new Error(`Dexscreener OHLCV error: ${res.status}`);
-    const data = await res.json();
-    const bars = data?.candles ?? data?.data?.candles;
-    if (!bars || bars.length === 0) throw new Error("Dexscreener: empty OHLCV");
-    return bars.map(b => ({
-      timestamp: b.t ?? b.time,
-      open: Number(b.o), high: Number(b.h), low: Number(b.l), close: Number(b.c), volume: Number(b.v),
-    }));
+    const parseBars = (bars) => bars
+      .filter(b => b && (b.t || b.time))
+      .map(b => ({
+        timestamp: b.t ?? b.time,
+        open: Number(b.o), high: Number(b.h), low: Number(b.l), close: Number(b.c), volume: Number(b.v) || 0,
+      }));
+
+    // Attempt 1: pair endpoint using pool address
+    if (poolAddress) {
+      const res = await fetch(
+        `${DEXSCREENER_BASE}/latest/dex/pairs/${chain}/${poolAddress}`,
+        { signal: sig(TIMEOUT_MS) }
+      );
+      if (res.status === 429) throw new Error("Dexscreener 429");
+      if (res.ok) {
+        const data = await res.json();
+        const pair = data?.pair ?? data?.pairs?.[0];
+        const bars = pair?.priceHistory;
+        if (bars && bars.length > 0) return parseBars(bars);
+      }
+    }
+
+    // Attempt 2: token endpoint (returns multiple pairs — pick highest volume)
+    if (tokenMint) {
+      const res = await fetch(
+        `${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`,
+        { signal: sig(TIMEOUT_MS) }
+      );
+      if (res.status === 429) throw new Error("Dexscreener 429");
+      if (res.ok) {
+        const data = await res.json();
+        const pairs = data?.pairs ?? [];
+        // Pick pair with most 24h volume
+        const best = pairs.sort((a, b) => (Number(b.volume?.h24) || 0) - (Number(a.volume?.h24) || 0))[0];
+        const bars = best?.priceHistory;
+        if (bars && bars.length > 0) return parseBars(bars);
+      }
+    }
+
+    throw new Error("Dexscreener OHLCV error: no priceHistory from pair or token endpoint");
   });
 }
 
@@ -332,6 +359,11 @@ async function jupiterQuotePrice(tokenMint, chain = "solana") {
 const _ohlcvFailNotified = new Map(); // tokenMint → lastNotifiedAtMs
 const OHLCV_NOTIF_COOLDOWN_MS = 30 * 60 * 1000;
 
+// OHLCV fail skip cache — after 3 consecutive all-source failures, skip token for 2h
+const _ohlcvFailCache = new Map(); // key → { count: N, skipUntil: ms }
+const OHLCV_FAIL_THRESHOLD = 3;
+const OHLCV_FAIL_SKIP_MS = 2 * 60 * 60 * 1000; // 2 hours
+
 // Cache SOL/USD price for 60s — shared across all getOHLCV calls within a screening cycle
 let _solPriceCache = null;
 let _solPriceCachedAt = 0;
@@ -507,6 +539,13 @@ export class HybridDataProvider {
   async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana", tokenMint = null) {
     const MIN_CANDLES = 6;
     const errors = {};
+    const cacheKey = tokenMint ?? poolAddress;
+
+    // ── Skip cache: if token repeatedly fails all sources, skip for 2h ────────
+    const failEntry = _ohlcvFailCache.get(cacheKey);
+    if (failEntry && Date.now() < failEntry.skipUntil) {
+      throw new Error(`getOHLCV: all sources failed for ${cacheKey} — candidate skipped`);
+    }
 
     // ── GeckoTerminal primary — native SOL denomination ──────────────────────
     if (poolAddress) {
@@ -538,6 +577,8 @@ export class HybridDataProvider {
       } catch (err) {
         errors.gt = err.message;
         log.warn("screening", `getOHLCV: GeckoTerminal failed → Birdeye (${err.message})`, { pool: poolAddress });
+        // Courtesy delay: if GT rate-limited, give Birdeye a head start
+        if (err.message?.includes("429")) await new Promise(r => setTimeout(r, 2000));
       }
     } else {
       errors.gt = "no poolAddress";
@@ -568,11 +609,11 @@ export class HybridDataProvider {
       errors.birdeye = "no tokenMint";
     }
 
-    // ── Dexscreener chart fallback (USD ÷ solPrice → SOL) ────────────────────
-    if (poolAddress) {
+    // ── Dexscreener fallback (priceHistory from pair/token endpoint, USD ÷ solPrice → SOL) ──
+    if (poolAddress || tokenMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
-          dexscreenerOHLCV(poolAddress, chain, timeframe, limit),
+          dexscreenerOHLCV(poolAddress, chain, tokenMint),
           jupiterSolPrice(),
         ]);
         if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable for DS→SOL conversion");
@@ -594,11 +635,18 @@ export class HybridDataProvider {
         log.warn("screening", `getOHLCV: Dexscreener fallback failed (${err.message})`, { pool: poolAddress });
       }
     } else {
-      errors.dexscreener = "no poolAddress";
+      errors.dexscreener = "no poolAddress and no tokenMint";
     }
 
-    // ── All sources failed → Telegram notif + skip ───────────────────────────
+    // ── All sources failed → increment fail cache + Telegram notif + skip ────
     const key = tokenMint ?? poolAddress;
+    const prev = _ohlcvFailCache.get(key) ?? { count: 0, skipUntil: 0 };
+    prev.count++;
+    if (prev.count >= OHLCV_FAIL_THRESHOLD) {
+      prev.skipUntil = Date.now() + OHLCV_FAIL_SKIP_MS;
+      log.warn("screening", `getOHLCV: ${key} failed ${prev.count}x — skipping for 2h`, { token: key });
+    }
+    _ohlcvFailCache.set(key, prev);
     const now = Date.now();
     const lastNotified = _ohlcvFailNotified.get(key) ?? 0;
     if (now - lastNotified > OHLCV_NOTIF_COOLDOWN_MS) {
