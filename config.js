@@ -151,12 +151,7 @@ export function getPositionSizing(totalSol) {
   const exposurableBalance = Math.max(0, totalSol - gasReserve);
   if (exposurableBalance < 1.0) return 0;
 
-  let perPosition;
-  if (totalSol < 8)         perPosition = 1.5;
-  else if (totalSol < 15)   perPosition = 2.8;
-  else if (totalSol < 25)   perPosition = 4.2;
-  else if (totalSol <= 40)  perPosition = 6.0;
-  else                      perPosition = Math.min(totalSol * 0.18, 9.0);
+  let perPosition = 0.1;
 
   // Hard cap: single position tidak boleh melebihi totalExposureCapPct% exposurable balance
   const maxSinglePosition = exposurableBalance * capPct;
