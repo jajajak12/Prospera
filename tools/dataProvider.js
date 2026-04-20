@@ -609,20 +609,18 @@ export class HybridDataProvider {
       try {
         let candles = null;
 
-        // 1. Try the Meteora pool address directly
-        if (poolAddress) candles = await tryGeckoPool(poolAddress);
-
-        // 2. If primary pool failed/thin, find GT top pool for this token
-        if ((!candles || candles.length < MIN_CANDLES) && tokenMint) {
+        // 1. GT token info FIRST — get GT's canonical top pools for this token
+        //    (Meteora pool address ≠ GT pool address for same token)
+        if (tokenMint) {
           try {
             const tokenData = await geckoTokenInfo(tokenMint, chain);
             const topPools = tokenData?.data?.relationships?.top_pools?.data ?? [];
             for (const p of topPools.slice(0, 3)) {
               const topAddr = p?.id?.split("_")[1];
-              if (!topAddr || topAddr === poolAddress) continue;
+              if (!topAddr) continue;
               const topCandles = await tryGeckoPool(topAddr);
               if (topCandles && topCandles.length >= MIN_CANDLES) {
-                log.debug("screening", `getOHLCV: GT top pool OK (${topCandles.length} candles)`, { pool: topAddr });
+                log.debug("screening", `getOHLCV: GT token-info pool OK (${topCandles.length} candles)`, { pool: topAddr });
                 candles = topCandles;
                 break;
               }
@@ -630,6 +628,12 @@ export class HybridDataProvider {
           } catch (err) {
             log.warn("screening", `getOHLCV: GT token info failed (${err.message})`, { token: tokenMint });
           }
+        }
+
+        // 2. Fallback: try Meteora pool address directly (if GT token info missed it)
+        if ((!candles || candles.length < MIN_CANDLES) && poolAddress) {
+          const meteraCandles = await tryGeckoPool(poolAddress);
+          if (meteraCandles && meteraCandles.length > (candles?.length ?? 0)) candles = meteraCandles;
         }
 
         if (candles && candles.length >= MIN_CANDLES) {
