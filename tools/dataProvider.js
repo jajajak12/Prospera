@@ -488,9 +488,10 @@ async function getReliableSOLPrice(tokenMint, poolAddress = null, chain = "solan
 // Codex GraphQL OHLCV — last fallback when GT + Birdeye + Dexscreener all fail.
 // Returns USD prices → caller divides by solPrice to get SOL denomination.
 // Tries poolAddress first (most accurate for TOKEN/SOL pairs), then tokenMint.
-async function codexOHLCV(poolAddress, timeframe, limit, tokenMint = null) {
+async function codexOHLCV(timeframe, limit, tokenMint) {
   const apiKey = process.env.CODEX_API_KEY;
   if (!apiKey) throw new Error("CODEX_API_KEY not configured");
+  if (!tokenMint) throw new Error("Codex: tokenMint required");
 
   const resMap = { "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1D": "1D", "1d": "1D" };
   const resolution = resMap[timeframe] ?? "5";
@@ -498,36 +499,27 @@ async function codexOHLCV(poolAddress, timeframe, limit, tokenMint = null) {
   const to   = Math.floor(Date.now() / 1000);
   const from = to - intervalSec * limit;
 
-  // Build candidate symbols: pool address first (pair-level accuracy), then token mint
-  const symbols = [];
-  if (poolAddress) symbols.push(`${poolAddress}:${CODEX_SOLANA_NET}`);
-  if (tokenMint)   symbols.push(`${tokenMint}:${CODEX_SOLANA_NET}`);
+  const symbol = `${tokenMint}:${CODEX_SOLANA_NET}`;
+  const query = `query GetBars($symbol: String!, $from: Int!, $to: Int!, $resolution: String!) {
+    getBars(symbol: $symbol, from: $from, to: $to, resolution: $resolution) { o h l c v t }
+  }`;
 
-  let lastErr;
-  for (const symbol of symbols) {
-    try {
-      const query = `{ getBars(symbol:"${symbol}", from:${from}, to:${to}, resolution:"${resolution}") { t o h l c volume } }`;
-      const res = await fetch(CODEX_BASE, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": apiKey },
-        body: JSON.stringify({ query }),
-        signal: sig(TIMEOUT_MS),
-      });
-      if (res.status === 429) throw new Error("Codex 429");
-      if (!res.ok) throw new Error(`Codex error: ${res.status}`);
-      const data = await res.json();
-      if (data.errors?.length) throw new Error(`Codex GraphQL: ${data.errors[0]?.message}`);
-      const bars = data?.data?.getBars;
-      if (!bars || bars.length === 0) { lastErr = new Error("Codex: empty OHLCV"); continue; }
-      return bars.map(b => ({
-        timestamp: Number(b.t),
-        open: Number(b.o), high: Number(b.h), low: Number(b.l), close: Number(b.c), volume: Number(b.volume) || 0,
-      }));
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  throw lastErr ?? new Error("Codex: no valid symbols");
+  const res = await fetch(CODEX_BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": apiKey },
+    body: JSON.stringify({ query, variables: { symbol, from, to, resolution } }),
+    signal: sig(TIMEOUT_MS),
+  });
+  if (res.status === 429) throw new Error("Codex 429");
+  if (!res.ok) throw new Error(`Codex error: ${res.status}`);
+  const data = await res.json();
+  if (data.errors?.length) throw new Error(`Codex GraphQL: ${data.errors[0]?.message}`);
+  const bars = data?.data?.getBars;
+  if (!bars || bars.length === 0) throw new Error("Codex: empty OHLCV");
+  return bars.map(b => ({
+    timestamp: Number(b.t),
+    open: Number(b.o), high: Number(b.h), low: Number(b.l), close: Number(b.c), volume: Number(b.v) || 0,
+  }));
 }
 
 // ─── HybridDataProvider ───────────────────────────────────────────────────────
@@ -677,10 +669,10 @@ export class HybridDataProvider {
     }
 
     // ── Codex.io last fallback (USD ÷ solPrice → SOL) ────────────────────────
-    if (poolAddress || tokenMint) {
+    if (tokenMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
-          codexOHLCV(poolAddress, timeframe, limit, tokenMint),
+          codexOHLCV(timeframe, limit, tokenMint),
           jupiterSolPrice(),
         ]);
         if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable for Codex→SOL conversion");
@@ -702,7 +694,7 @@ export class HybridDataProvider {
         log.warn("screening", `getOHLCV: Codex fallback failed (${err.message})`, { pool: poolAddress });
       }
     } else {
-      errors.codex = "no poolAddress and no tokenMint";
+      errors.codex = "no tokenMint";
     }
 
     // ── All sources failed → Telegram notif + retry next cycle ──────────────
