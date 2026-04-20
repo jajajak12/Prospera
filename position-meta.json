@@ -133,5 +133,54 @@
     "peakPrice": 0.000008074837143988388,
     "pool": "Gvi9bniExT6iXPpXDhqjkV5qLpNyLb38CLdpGKdmD1ME",
     "openedAt": "2026-04-17T03:45:49.810Z"
+  },
+  "ADAQq2L912uPiDKmo89EhsFTTTwvWHrwuXuN88VQZidy": {
+    "athBin": -515,
+    "ath": 0.000005218336516616625,
+    "peakPrice": 0.000007187843352828326,
+    "pool": "4RYpc6HRvoFdLbFetmD7Vr1B7nKMWLwiUCKAH77emdLy",
+    "openedAt": "2026-04-17T19:30:50.917Z"
+  },
+  "EJ5XR7tiT514TwW46wYnJkJkcH8DcTzUSHkf1myogP7q": {
+    "athBin": -484,
+    "ath": 0.000008622500661602435,
+    "peakPrice": 0.000008622500661602435,
+    "pool": "4RYpc6HRvoFdLbFetmD7Vr1B7nKMWLwiUCKAH77emdLy",
+    "openedAt": "2026-04-17T19:36:21.077Z"
+  },
+  "3em6CcaT1CLNSuStMvecBmxrU2TJv8f5MAUaSTkNocoN": {
+    "athBin": -500,
+    "ath": 0.000007953966233665229,
+    "peakPrice": 0.000007953966233665229,
+    "pool": "H6Fz46jbxRDk4ZjwfKEDj2KzWk9wErXhq6qY2cvmtV37",
+    "openedAt": "2026-04-17T21:31:31.401Z"
+  },
+  "5ZbfdJZ67QJ5LBGmmMix3uMZb6enPpNWBvceBuWXdBy4": {
+    "athBin": -489,
+    "ath": 0.000007958115113176807,
+    "peakPrice": 0.000008683697888937944,
+    "pool": "H6Fz46jbxRDk4ZjwfKEDj2KzWk9wErXhq6qY2cvmtV37",
+    "openedAt": "2026-04-18T02:30:43.946Z"
+  },
+  "4YJMvQ5UfCdzEanPFiJ7MyaHU9zeGRQ2uuVT6NLZ53Jt": {
+    "athBin": -402,
+    "ath": 0.00000687929583634639,
+    "peakPrice": 0.00000687929583634639,
+    "pool": "96mT8gwobVST2Xa1Has48TJzrUy313vqqASYUDo2hazG",
+    "openedAt": "2026-04-18T11:00:54.446Z"
+  },
+  "88ft2SFcdMnt5KMz9dsUCyS3SiHUXBCZzUmpnzQj2NdV": {
+    "athBin": -513,
+    "ath": 0.000005286588926115156,
+    "peakPrice": 0.000007861238417350518,
+    "pool": "B5f4YVscm7hiu577oFRP2pfsGpY4jZfvTNaBRUrPwr26",
+    "openedAt": "2026-04-18T12:15:35.463Z"
+  },
+  "D36XKyw37QLmE4d62GBragR44dDC2gvNkXvL53xaXy8U": {
+    "athBin": -443,
+    "ath": 0.000011517219999735628,
+    "peakPrice": 0.000011517219999735628,
+    "pool": "B6k62WAs4kUsGrfPw9qxFfUG7x3XYbYAHz1Mjm2Qdwu4",
+    "openedAt": "2026-04-20T05:22:13.900Z"
   }
 }

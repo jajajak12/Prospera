@@ -23,7 +23,7 @@ export const config = {
     exposureWarningPct:        u.exposureWarningPct        ?? 0.50,  // soft warning threshold (50%)
     totalExposureCapPct:       u.totalExposureCapPct       ?? 0.60,  // max % of balance deployed (60% hard cap)
     exposureHardPauseMinutes:  u.exposureHardPauseMinutes ?? 15,    // hard pause duration (minutes)
-    exposureGasReserve:        u.exposureGasReserve        ?? 0.3,   // SOL reserved for gas (excluded from cap calc)
+    exposureGasReserve:        u.exposureGasReserve        ?? 0.1,   // SOL reserved for gas (excluded from cap calc)
     // Exposure cap temporarily disabled for Phase 3 Stability Test
     exposureCapDisabled:        u.exposureCapDisabled       ?? true,
   },

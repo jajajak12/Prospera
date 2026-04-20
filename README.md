@@ -80,7 +80,7 @@ Kandidat di bawah `minConfluenceScore` difilter sebelum masuk ke LLM decision.
 | 25–40 SOL | 6.0 SOL |
 | > 40 SOL | min(18% wallet, 9 SOL) |
 
-**Exposure Cap: 60%** — Total deploy tidak boleh melebihi 60% saldo deployable (setelah gas reserve 0.3 SOL). *(Sementara dinonaktifkan — Phase 3)*
+**Exposure Cap: 60%** — Total deploy tidak boleh melebihi 60% saldo deployable (setelah gas reserve 0.1 SOL). *(Sementara dinonaktifkan — Phase 3)*
 
 ---
 
