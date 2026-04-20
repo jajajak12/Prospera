@@ -515,11 +515,27 @@ async function codexOHLCV(timeframe, limit, tokenMint) {
   const data = await res.json();
   if (data.errors?.length) throw new Error(`Codex GraphQL: ${data.errors[0]?.message}`);
   const bars = data?.data?.getBars;
-  if (!bars || bars.length === 0) throw new Error("Codex: empty OHLCV");
-  return bars.map(b => ({
-    timestamp: Number(b.t),
-    open: Number(b.o), high: Number(b.h), low: Number(b.l), close: Number(b.c), volume: Number(b.v) || 0,
-  }));
+  if (!bars) throw new Error("Codex: null response");
+
+  // Codex returns columnar format: { t: [...], o: [...], h: [...], l: [...], c: [...], v: [...] }
+  if (Array.isArray(bars.t)) {
+    if (bars.t.length === 0) throw new Error("Codex: empty OHLCV");
+    return bars.t.map((t, i) => ({
+      timestamp: Number(t),
+      open: Number(bars.o[i]), high: Number(bars.h[i]),
+      low: Number(bars.l[i]), close: Number(bars.c[i]),
+      volume: Number(bars.v[i]) || 0,
+    }));
+  }
+  // Fallback: row format [{ t, o, h, l, c, v }, ...]
+  if (Array.isArray(bars)) {
+    if (bars.length === 0) throw new Error("Codex: empty OHLCV");
+    return bars.map(b => ({
+      timestamp: Number(b.t),
+      open: Number(b.o), high: Number(b.h), low: Number(b.l), close: Number(b.c), volume: Number(b.v) || 0,
+    }));
+  }
+  throw new Error("Codex: unexpected response format");
 }
 
 // ─── HybridDataProvider ───────────────────────────────────────────────────────
@@ -578,40 +594,55 @@ export class HybridDataProvider {
     const errors = {};
 
     // ── GeckoTerminal primary — native SOL denomination ──────────────────────
-    if (poolAddress) {
+    // Helper: try GT OHLCV for a specific pool, return candles or null
+    const tryGeckoPool = async (addr) => {
       try {
-        const rawCandles = await geckoOHLCV(poolAddress, chain, timeframe, limit);
-        const candles = rawCandles;
-        log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles, SOL-native)`, { pool: poolAddress });
+        const c = await geckoOHLCV(addr, chain, timeframe, limit);
+        if (c.length > 0) return c;
+      } catch (_) {}
+      return null;
+    };
 
-        if (candles.length >= MIN_CANDLES) return candles;
+    if (poolAddress || tokenMint) {
+      try {
+        let candles = null;
 
-        // Pool thin → try top pool for this token
-        if (tokenMint) {
-          log.warn("screening", `getOHLCV: thin (${candles.length}) → top pool retry`, { token: tokenMint });
+        // 1. Try the Meteora pool address directly
+        if (poolAddress) candles = await tryGeckoPool(poolAddress);
+
+        // 2. If primary pool failed/thin, find GT top pool for this token
+        if ((!candles || candles.length < MIN_CANDLES) && tokenMint) {
           try {
             const tokenData = await geckoTokenInfo(tokenMint, chain);
-            const topPoolId = tokenData?.data?.relationships?.top_pools?.data?.[0]?.id;
-            const topPoolAddress = topPoolId?.split("_")[1] ?? null;
-            if (topPoolAddress && topPoolAddress !== poolAddress) {
-              const topCandles = await geckoOHLCV(topPoolAddress, chain, timeframe, limit);
-              log.debug("screening", `getOHLCV: top pool OK (${topCandles.length} candles)`, { pool: topPoolAddress });
-              if (topCandles.length >= MIN_CANDLES) return topCandles;
+            const topPools = tokenData?.data?.relationships?.top_pools?.data ?? [];
+            for (const p of topPools.slice(0, 3)) {
+              const topAddr = p?.id?.split("_")[1];
+              if (!topAddr || topAddr === poolAddress) continue;
+              const topCandles = await tryGeckoPool(topAddr);
+              if (topCandles && topCandles.length >= MIN_CANDLES) {
+                log.debug("screening", `getOHLCV: GT top pool OK (${topCandles.length} candles)`, { pool: topAddr });
+                candles = topCandles;
+                break;
+              }
             }
           } catch (err) {
-            log.warn("screening", `getOHLCV: top pool retry failed (${err.message})`);
+            log.warn("screening", `getOHLCV: GT token info failed (${err.message})`, { token: tokenMint });
           }
         }
-        if (candles.length > 0) return candles; // thin but better than nothing
-        errors.gt = "empty (0 candles)";
+
+        if (candles && candles.length >= MIN_CANDLES) {
+          log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles, SOL-native)`);
+          return candles;
+        }
+        if (candles && candles.length > 0) return candles; // thin but better than nothing
+        errors.gt = "empty after primary + top-pool retry";
       } catch (err) {
         errors.gt = err.message;
-        log.warn("screening", `getOHLCV: GeckoTerminal failed → Birdeye (${err.message})`, { pool: poolAddress });
-        // Courtesy delay: if GT rate-limited, give Birdeye a head start
+        log.warn("screening", `getOHLCV: GeckoTerminal failed (${err.message})`, { pool: poolAddress });
         if (err.message?.includes("429")) await new Promise(r => setTimeout(r, 2000));
       }
     } else {
-      errors.gt = "no poolAddress";
+      errors.gt = "no poolAddress and no tokenMint";
     }
 
     // ── Birdeye fallback (USD ÷ solPrice → SOL, quota-limited — only when GT fails) ──
