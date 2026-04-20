@@ -741,7 +741,47 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
 
   const afterVolumeCount = eligible.length;
 
-  // ── Step 3: mcap filter + pre-cap cull ─────────────────────────────────────
+  // ── Step 3: Meteora pool check — BEFORE RugCheck/Jupiter ─────────────────
+  // Hemat API quota: skip RugCheck/Jupiter untuk token yang tidak punya pool.
+  // Meteora kadang butuh 6-8 jam untuk index pool baru → RocketScan fallback.
+  {
+    log("screening", `Step 3 — Meteora pool check: ${eligible.length} token(s) after volume...`);
+    const poolMap = await fetchMeteoraDlmmPoolMap();
+    log("screening", `Meteora pool universe: ${poolMap.size} qualifying pools fetched`);
+
+    const missingPool = eligible.filter(t => !poolMap.has(t.mint));
+    if (missingPool.length > 0) {
+      log("screening", `Pool match: ${eligible.length - missingPool.length}/${eligible.length} in Meteora → ${missingPool.length} checking RocketScan...`);
+      const fallbacks = await fetchRocketScanFallback(missingPool, s);
+      for (const { token, pool } of fallbacks) {
+        poolMap.set(token.mint, pool);
+        log("screening", `  ${token.symbol}: RocketScan pool → ${pool.pool.slice(0, 8)}... (bin_step=${pool.bin_step})`);
+      }
+      if (fallbacks.length === 0) {
+        log("screening", `RocketScan fallback: no pools found for ${missingPool.length} token(s) — skipping`);
+      }
+    }
+
+    const before = eligible.length;
+    // Attach pool info to token, filter out tokens with no pool
+    eligible = eligible.filter(t => {
+      const pool = poolMap.get(t.mint);
+      if (!pool) {
+        log("screening", `  ${t.symbol}(${t.mint.slice(0, 8)}): NO POOL — not found in Meteora or RocketScan`);
+        return false;
+      }
+      t._pool = pool; // attach for use in Step 8
+      return true;
+    });
+
+    log.screening(`Step 3 — Pool check: ${eligible.length}/${before} have Meteora DLMM pool`);
+  }
+
+  if (eligible.length === 0) {
+    return { candidates: [], total_screened: allTokens.length, after_volume_count: afterVolumeCount, withPool_count: 0, fib_analyzed: 0 };
+  }
+
+  // ── Step 4: mcap + age filter ───────────────────────────────────────────────
   {
     const before = eligible.length;
     const afterMcapFilter = eligible.filter(t => {
@@ -769,7 +809,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
     }
     eligible = afterMcapFilter.slice(0, limit * 3);
     if (eligible.length < before) {
-      log.screening(`Step 3 — mcap filter: ${eligible.length}/${before} passed`);
+      log.screening(`Step 4 — mcap filter: ${eligible.length}/${before} passed`);
     }
   }
 
@@ -902,56 +942,18 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
     }
     log.screening(`Pre-pool cap: top ${maxTechAnalysis} by volume selected from ${preCapCount} passing filters — Meteora/RocketScan calls now limited to ${maxTechAnalysis}, Birdeye = ${maxTechAnalysis * 2} RPM`);
   }
-  const eligibleForPoolMatch = topCandidates; // rename for clarity in pool matching step
+  // Pool sudah di-attach ke t._pool di Step 3 — build withPool dari topCandidates
+  const withPool = topCandidates.map(t => ({ token: t, pool: t._pool }));
 
-  // ── Step 7: Find Meteora DLMM pool — only for top N candidates ──────────
-  // Fetch all qualifying pools in one bulk request, then match by token mint.
-  // Only top N tokens are matched (efficiency: skip pool lookup for low-volume tokens).
-  log("screening", `Finding Meteora DLMM pools for ${eligibleForPoolMatch.length} top candidates (pre-capped from ${eligible.length})...`);
-  const meteoraPoolMap = await fetchMeteoraDlmmPoolMap();
-  log("screening", `Meteora pool universe: ${meteoraPoolMap.size} qualifying pools fetched`);
-
-  // ── Step 7b: RocketScan fallback — only for top N tokens not in Meteora ──
-  // pool-discovery-api butuh waktu untuk mengindex pool baru.
-  // RocketScan mendeteksi pool on-chain, lebih cepat untuk pool baru.
-  const missingTokens = eligibleForPoolMatch.filter(t => !meteoraPoolMap.has(t.mint));
-  log("screening", `Pool match: ${eligibleForPoolMatch.length - missingTokens.length}/${eligibleForPoolMatch.length} found in Meteora → ${missingTokens.length} checking RocketScan...`);
-  if (missingTokens.length > 0) {
-    const fallbacks = await fetchRocketScanFallback(missingTokens, s);
-    for (const { token, pool } of fallbacks) {
-      meteoraPoolMap.set(token.mint, pool);
-      log("screening", `Found pool in RocketScan: ${token.symbol} → ${pool.pool.slice(0, 8)}... (bin_step=${pool.bin_step})`);
-    }
-    if (fallbacks.length > 0) {
-      log("screening", `RocketScan fallback: ${fallbacks.length}/${missingTokens.length} token(s) received pool`);
-    } else if (missingTokens.length > 0) {
-      log("screening", `RocketScan fallback: no pools found for ${missingTokens.length} token(s) — skipping`);
-    }
-  }
-
-  const withPool = eligibleForPoolMatch
-    .map(t => ({ token: t, pool: meteoraPoolMap.get(t.mint) ?? null }))
-    .filter(({ token, pool }) => {
-      if (!pool) {
-        log("screening", `  ${token.symbol}: NO POOL — not found in Meteora or RocketScan`);
-        return false;
-      }
-      return true;
-    });
-
-  _s("screening", `Step 7 — Meteora pool match: ${withPool.length}/${eligibleForPoolMatch.length} top candidates have pools`);
+  _s("screening", `Step 7 — Fibonacci analysis: ${withPool.length} candidates with confirmed pool`);
 
   if (withPool.length === 0) {
     return { candidates: [], total_screened: allTokens.length, after_volume_count: afterVolumeCount, withPool_count: 0, fib_analyzed: 0 };
   }
 
-  // ── Step 8: Fibonacci analysis ──────────────────────────────────────────
-  // Birdeye OHLCV called ONLY for the capped top N candidates.
-  // Meteora pool bin_step for bin range calculation.
-  // Birdeye 60 RPM ÷ 2 calls = 30 candidates max. We use 10 (~33% capacity).
-
-  // Filter out pools cached as "broken support" — price far below Fib 0.618, no recovery expected soon
-  // All price values stored in SOL denomination (pool.price from Meteora) to match OHLCV candle units.
+  // ── Step 8: Fibonacci + OHLCV analysis ───────────────────────────────────
+  // OHLCV hanya dipanggil di sini — setelah semua filter terlewati + pool confirmed.
+  // Filter out pools cached as "broken support"
   const now = Date.now();
   const toAnalyze = withPool.filter(({ token, pool }) => {
     // Skip pools that are actively crashing (>80% price drop in 24h) — not an entry signal
