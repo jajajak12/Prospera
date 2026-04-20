@@ -359,10 +359,6 @@ async function jupiterQuotePrice(tokenMint, chain = "solana") {
 const _ohlcvFailNotified = new Map(); // tokenMint → lastNotifiedAtMs
 const OHLCV_NOTIF_COOLDOWN_MS = 30 * 60 * 1000;
 
-// OHLCV fail skip cache — after 3 consecutive all-source failures, skip token for 2h
-const _ohlcvFailCache = new Map(); // key → { count: N, skipUntil: ms }
-const OHLCV_FAIL_THRESHOLD = 3;
-const OHLCV_FAIL_SKIP_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 // Cache SOL/USD price for 60s — shared across all getOHLCV calls within a screening cycle
 let _solPriceCache = null;
@@ -539,13 +535,6 @@ export class HybridDataProvider {
   async getOHLCV(poolAddress, timeframe = "5m", limit = 100, chain = "solana", tokenMint = null) {
     const MIN_CANDLES = 6;
     const errors = {};
-    const cacheKey = tokenMint ?? poolAddress;
-
-    // ── Skip cache: if token repeatedly fails all sources, skip for 2h ────────
-    const failEntry = _ohlcvFailCache.get(cacheKey);
-    if (failEntry && Date.now() < failEntry.skipUntil) {
-      throw new Error(`getOHLCV: all sources failed for ${cacheKey} — candidate skipped`);
-    }
 
     // ── GeckoTerminal primary — native SOL denomination ──────────────────────
     if (poolAddress) {
@@ -638,15 +627,8 @@ export class HybridDataProvider {
       errors.dexscreener = "no poolAddress and no tokenMint";
     }
 
-    // ── All sources failed → increment fail cache + Telegram notif + skip ────
+    // ── All sources failed → Telegram notif + retry next cycle ──────────────
     const key = tokenMint ?? poolAddress;
-    const prev = _ohlcvFailCache.get(key) ?? { count: 0, skipUntil: 0 };
-    prev.count++;
-    if (prev.count >= OHLCV_FAIL_THRESHOLD) {
-      prev.skipUntil = Date.now() + OHLCV_FAIL_SKIP_MS;
-      log.warn("screening", `getOHLCV: ${key} failed ${prev.count}x — skipping for 2h`, { token: key });
-    }
-    _ohlcvFailCache.set(key, prev);
     const now = Date.now();
     const lastNotified = _ohlcvFailNotified.get(key) ?? 0;
     if (now - lastNotified > OHLCV_NOTIF_COOLDOWN_MS) {
