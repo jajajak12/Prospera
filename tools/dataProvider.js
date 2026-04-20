@@ -39,6 +39,8 @@ const TIMEOUT_MS = 3000;
 const _birdeyeKeys = () => [
   process.env.BIRDEYE_API_KEY,
   process.env.BIRDEYE_API_KEY_2,
+  process.env.BIRDEYE_API_KEY_3,
+  process.env.BIRDEYE_API_KEY_4,
 ].filter(Boolean);
 let _beKeyIdx = 0;
 function birdeyeKey() {
