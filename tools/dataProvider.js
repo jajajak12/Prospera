@@ -28,6 +28,8 @@ import { sendHTML as telegramSendHTML } from "../telegram.js";
 const DEXSCREENER_BASE   = "https://api.dexscreener.com";
 const BIRDEYE_BASE       = "https://public-api.birdeye.so";
 const GECKOTERMINAL_BASE = "https://api.geckoterminal.com/api/v2";
+const CODEX_BASE         = "https://graph.codex.io/graphql";
+const CODEX_SOLANA_NET   = 1399811149;
 const JUPITER_QUOTE_API  = "https://api.jup.ag/swap/v1";
 const JUPITER_PRICE_API = "https://api.jup.ag/price/v3";
 const SOL_MINT           = "So11111111111111111111111111111111111111112"; // wrapped SOL
@@ -481,6 +483,53 @@ async function getReliableSOLPrice(tokenMint, poolAddress = null, chain = "solan
   return null;
 }
 
+// ─── Codex.io ────────────────────────────────────────────────────────────────
+
+// Codex GraphQL OHLCV — last fallback when GT + Birdeye + Dexscreener all fail.
+// Returns USD prices → caller divides by solPrice to get SOL denomination.
+// Tries poolAddress first (most accurate for TOKEN/SOL pairs), then tokenMint.
+async function codexOHLCV(poolAddress, timeframe, limit, tokenMint = null) {
+  const apiKey = process.env.CODEX_API_KEY;
+  if (!apiKey) throw new Error("CODEX_API_KEY not configured");
+
+  const resMap = { "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1D": "1D", "1d": "1D" };
+  const resolution = resMap[timeframe] ?? "5";
+  const intervalSec = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1D": 86400, "1d": 86400 }[timeframe] ?? 300;
+  const to   = Math.floor(Date.now() / 1000);
+  const from = to - intervalSec * limit;
+
+  // Build candidate symbols: pool address first (pair-level accuracy), then token mint
+  const symbols = [];
+  if (poolAddress) symbols.push(`${poolAddress}:${CODEX_SOLANA_NET}`);
+  if (tokenMint)   symbols.push(`${tokenMint}:${CODEX_SOLANA_NET}`);
+
+  let lastErr;
+  for (const symbol of symbols) {
+    try {
+      const query = `{ getBars(symbol:"${symbol}", from:${from}, to:${to}, resolution:"${resolution}") { t o h l c volume } }`;
+      const res = await fetch(CODEX_BASE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": apiKey },
+        body: JSON.stringify({ query }),
+        signal: sig(TIMEOUT_MS),
+      });
+      if (res.status === 429) throw new Error("Codex 429");
+      if (!res.ok) throw new Error(`Codex error: ${res.status}`);
+      const data = await res.json();
+      if (data.errors?.length) throw new Error(`Codex GraphQL: ${data.errors[0]?.message}`);
+      const bars = data?.data?.getBars;
+      if (!bars || bars.length === 0) { lastErr = new Error("Codex: empty OHLCV"); continue; }
+      return bars.map(b => ({
+        timestamp: Number(b.t),
+        open: Number(b.o), high: Number(b.h), low: Number(b.l), close: Number(b.c), volume: Number(b.volume) || 0,
+      }));
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr ?? new Error("Codex: no valid symbols");
+}
+
 // ─── HybridDataProvider ───────────────────────────────────────────────────────
 
 export class HybridDataProvider {
@@ -627,6 +676,35 @@ export class HybridDataProvider {
       errors.dexscreener = "no poolAddress and no tokenMint";
     }
 
+    // ── Codex.io last fallback (USD ÷ solPrice → SOL) ────────────────────────
+    if (poolAddress || tokenMint) {
+      try {
+        const [usdCandles, solPrice] = await Promise.all([
+          codexOHLCV(poolAddress, timeframe, limit, tokenMint),
+          jupiterSolPrice(),
+        ]);
+        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable for Codex→SOL conversion");
+        const toSOL = c => ({
+          timestamp: c.timestamp,
+          open: c.open / solPrice, high: c.high / solPrice,
+          low:  c.low  / solPrice, close: c.close / solPrice,
+          volume: c.volume,
+        });
+        const candles = usdCandles.map(toSOL);
+        if (candles.length >= MIN_CANDLES) {
+          log.debug("screening", `getOHLCV: Codex OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { pool: poolAddress });
+          return candles;
+        }
+        errors.codex = `thin (${candles.length} candles)`;
+        log.warn("screening", `getOHLCV: Codex thin (${candles.length} candles)`, { pool: poolAddress });
+      } catch (err) {
+        errors.codex = err.message;
+        log.warn("screening", `getOHLCV: Codex fallback failed (${err.message})`, { pool: poolAddress });
+      }
+    } else {
+      errors.codex = "no poolAddress and no tokenMint";
+    }
+
     // ── All sources failed → Telegram notif + retry next cycle ──────────────
     const key = tokenMint ?? poolAddress;
     const now = Date.now();
@@ -644,6 +722,7 @@ export class HybridDataProvider {
         `• GeckoTerminal: ${errors.gt ?? "—"}`,
         `• Birdeye: ${errors.birdeye ?? "—"}`,
         `• Dexscreener: ${errors.dexscreener ?? "—"}`,
+        `• Codex: ${errors.codex ?? "—"}`,
         ``,
         `<b>Chart:</b> <a href="${dsLink}">Dexscreener</a>`,
       ].join("\n");
