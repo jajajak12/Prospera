@@ -26,7 +26,7 @@
   "minVolBigMcap": 1000000,
   "totalExposureCapPct": 0.6,
   "exposureGasReserve": 0.1,
-  "minVolume": 150000,
+  "minVolume": 400000,
   "minBinStep": 80,
   "maxBinStep": 200,
   "minFeeActiveTvlRatio": 0.05,
