@@ -439,9 +439,16 @@ export async function runManagementCycle({ silent = false } = {}) {
       const effectiveHigh = (livePrice != null || candleHigh != null) ? Math.max(livePrice ?? 0, candleHigh ?? 0) : null;
       const fibState = updateFibTouchState(p.position, livePrice);
       if (fibState.touched && effectiveHigh != null && fibState.fib236 != null && effectiveHigh >= fibState.fib236) {
-        const src = (candleHigh != null && candleHigh >= fibState.fib236 && (livePrice == null || livePrice < fibState.fib236)) ? "candle high" : "live";
-        _m("management", `Successful rebound: ${p.pair} — touched Fib ≤0.500 then recovered ≥0.236 (${src}=${effectiveHigh.toPrecision(4)} >= fib236=${fibState.fib236.toPrecision(4)}) → closing + ATH cooldown`);
-        exitMap.set(p.position, `Successful rebound: touched ≤0.500 then recovered to 0.236`);
+        const reboundViaCandleOnly = candleHigh != null && candleHigh >= fibState.fib236 && (livePrice == null || livePrice < fibState.fib236);
+        // Guard: jika candle high yang jadi penentu tapi live price masih < fib500,
+        // candle high itu dari fase pump sebelum dip (bukan rebound sesungguhnya) → skip
+        if (reboundViaCandleOnly && livePrice != null && fibState.fib500 != null && livePrice < fibState.fib500) {
+          _m("management", `Rebound suppressed: ${p.pair} — candle high ${candleHigh.toPrecision(4)} >= fib236 but live price ${livePrice.toPrecision(4)} < fib500 ${fibState.fib500.toPrecision(4)} (pre-dip candle, not a true rebound)`);
+        } else {
+          const src = reboundViaCandleOnly ? "candle high" : "live";
+          _m("management", `Successful rebound: ${p.pair} — touched Fib ≤0.500 then recovered ≥0.236 (${src}=${effectiveHigh.toPrecision(4)} >= fib236=${fibState.fib236.toPrecision(4)}) → closing + ATH cooldown`);
+          exitMap.set(p.position, `Successful rebound: touched ≤0.500 then recovered to 0.236`);
+        }
       }
       // Rebound from .618 + profit ≥10%: touched Fib .618, recovered to ≥.500 → early exit
       if (!exitMap.has(p.position) && fibState.touched618 && effectiveHigh != null && fibState.fib500 != null && effectiveHigh >= fibState.fib500 && p.pnl_pct != null && p.pnl_pct >= 10) {

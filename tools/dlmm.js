@@ -23,6 +23,7 @@ import { recordPerformance } from "../lessons.js";
 import { isPoolOnCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
 import { fetchLPAgentOpenPositions } from "./study.js";
+import { notifyClose, isEnabled as telegramEnabled } from "../telegram.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -752,6 +753,12 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         log("close", `ATH USD at close: ${athPriceAtClose ?? "N/A"}`);
       } catch (e) {
         log("close_warn", `ATH fetch at close failed: ${e.message}`);
+      }
+
+      // Telegram close notification
+      if (telegramEnabled()) {
+        const pairName = tracked.pool_name || position_address.slice(0, 8);
+        notifyClose({ pair: pairName, pnlUsd, pnlPct, reason }).catch(() => {});
       }
 
       await recordPerformance({
