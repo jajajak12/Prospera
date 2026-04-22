@@ -624,7 +624,7 @@ export class HybridDataProvider {
     if (gtPool) {
       try {
         const candles = await geckoOHLCV(gtPool, chain, timeframe, limit);
-        if (candles.length >= MIN_CANDLES) {
+        if (candles.length >= 5) {
           log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles, SOL-native)`, { pool: gtPool });
           return candles;
         }
