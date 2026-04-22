@@ -227,6 +227,7 @@ async function _birdeyeOHLCVByMintOnce(tokenMint, type, limit, chain, apiKey) {
       { headers: birdeyeHeaders(chain, apiKey), signal: sig(TIMEOUT_MS) }
     );
     if (res.status === 429) throw new Error("Birdeye 429");
+    if (res.status === 400) throw new Error("Birdeye: token not indexed (400)");
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       if (res.status === 401) throw new Error("Birdeye 401");
@@ -613,6 +614,7 @@ export class HybridDataProvider {
         }
       } catch (err) {
         log.warn("screening", `getOHLCV: GT token info failed (${err.message}) — using Meteora pool`, { token: tokenMint });
+        if (err.message?.includes("429")) await new Promise(r => setTimeout(r, 8000));
       }
     }
     // Fallback to Meteora pool if GT token info failed
@@ -635,7 +637,7 @@ export class HybridDataProvider {
       } catch (err) {
         errors.gt = err.message;
         log.warn("screening", `getOHLCV: GeckoTerminal failed → DS (${err.message})`, { pool: gtPool });
-        if (err.message?.includes("429")) await new Promise(r => setTimeout(r, 2000));
+        if (err.message?.includes("429")) await new Promise(r => setTimeout(r, 8000));
       }
     } else {
       errors.gt = "no pool resolved";
