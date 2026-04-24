@@ -420,7 +420,13 @@ export async function runManagementCycle({ silent = false } = {}) {
         for (let i = 0; i < touchedPositions.length; i++) {
           const r = candleResults[i];
           if (r.status === 'fulfilled' && Array.isArray(r.value) && r.value.length > 0) {
-            const maxHigh = Math.max(...r.value.map(c => c.high ?? 0));
+            const trackedPos = getTrackedPosition(touchedPositions[i].position);
+            const touchedAtSec = trackedPos?.touched_lower_fib_at != null ? trackedPos.touched_lower_fib_at / 1000 : null;
+            const postTouchCandles = touchedAtSec != null
+              ? r.value.filter(c => c.timestamp >= touchedAtSec)
+              : r.value;
+            if (postTouchCandles.length === 0) continue;
+            const maxHigh = Math.max(...postTouchCandles.map(c => c.high ?? 0));
             if (maxHigh > 0) candleHighMap.set(touchedPositions[i].position, maxHigh);
           }
         }

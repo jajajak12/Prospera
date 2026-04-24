@@ -91,6 +91,7 @@ export function trackPosition({
     fib_zone,
     fib_levels_sol,
     touched_lower_fib: false,
+    touched_lower_fib_at: null,
     touched_fib618: false,
     rsi,
     atr_pct,
@@ -367,6 +368,7 @@ export function updateFibTouchState(position_address, livePriceSol) {
   let dirty = false;
   if (!pos.touched_lower_fib && livePriceSol <= pos.fib_levels_sol.fib500) {
     pos.touched_lower_fib = true;
+    pos.touched_lower_fib_at = Date.now();
     dirty = true;
     log("state", `Position ${position_address} touched Fib ≤0.500 (price ${livePriceSol.toPrecision(4)} <= fib500 ${pos.fib_levels_sol.fib500.toPrecision(4)}) — watching for successful rebound to 0.236`);
   }
