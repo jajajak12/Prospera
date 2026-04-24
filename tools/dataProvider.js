@@ -311,7 +311,7 @@ async function geckoPoolData(poolAddress, chain) {
 async function geckoTokenInfo(tokenMint, chain) {
   return withRetry(async () => {
     const network = chain === "solana" ? "solana" : chain;
-    const res = await fetch(`${GECKOTERMINAL_BASE}/networks/${network}/tokens/${tokenMint}`, { headers: GT_HEADERS, signal: sig(TIMEOUT_MS) });
+    const res = await fetch(`${GECKOTERMINAL_BASE}/networks/${network}/tokens/${tokenMint}?include=top_pools`, { headers: GT_HEADERS, signal: sig(TIMEOUT_MS) });
     if (res.status === 429) throw new Error("GeckoTerminal 429");
     if (!res.ok) throw new Error(`GeckoTerminal token info error: ${res.status}`);
     const data = await res.json();
@@ -607,10 +607,20 @@ export class HybridDataProvider {
     if (tokenMint) {
       try {
         const tokenData = await geckoTokenInfo(tokenMint, chain);
-        const topPoolId = tokenData?.data?.relationships?.top_pools?.data?.[0]?.id;
-        canonicalPool = topPoolId?.split("_")[1] ?? null;
+        const topPools = tokenData?.data?.relationships?.top_pools?.data ?? [];
+        const included = tokenData?.included ?? [];
+        // prefer SOL-quoted pool to ensure OHLCV prices are SOL-denominated
+        const solPool = topPools.find(p => {
+          const poolDetail = included.find(inc => inc.id === p.id);
+          const quoteSymbol = poolDetail?.attributes?.quote_token_symbol?.toUpperCase() ?? '';
+          return quoteSymbol.includes('SOL');
+        });
+        const chosenPool = solPool ?? topPools[0];
+        canonicalPool = chosenPool?.id?.split("_")[1] ?? null;
         if (canonicalPool) {
-          log.debug("screening", `getOHLCV: canonical pool = ${canonicalPool}`, { token: tokenMint });
+          const chosenDetail = included.find(inc => inc.id === chosenPool?.id);
+          const quoteSymbol = chosenDetail?.attributes?.quote_token_symbol ?? '?';
+          log.debug("screening", `getOHLCV: canonical pool = ${canonicalPool} (quote=${quoteSymbol})`, { token: tokenMint });
         }
       } catch (err) {
         log.warn("screening", `getOHLCV: GT token info failed (${err.message}) — using Meteora pool`, { token: tokenMint });
