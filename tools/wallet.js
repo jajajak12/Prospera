@@ -7,7 +7,7 @@ import {
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
-import { getConnection } from "../rpc.js";
+import { getConnection, withRpcFallback, reportRpcSuccess } from "../rpc.js";
 
 let _wallet = null;
 let _balanceCache = null; // { data: {...}, ts: number }
@@ -85,11 +85,10 @@ export async function getWalletBalances() {
     return result;
   } catch (error) {
     log("wallet_error", `Helius failed (${error.message}) — falling back to RPC balance`);
-    // Fallback: read SOL balance directly from RPC so screening isn't blocked
+    // Fallback: iterate all configured RPC endpoints via withRpcFallback
     try {
-      const conn = getConnection();
       const pubkey = getWallet().publicKey;
-      const lamports = await conn.getBalance(pubkey);
+      const lamports = await withRpcFallback(conn => conn.getBalance(pubkey), "wallet_balance");
       const solBalance = lamports / LAMPORTS_PER_SOL;
       log("wallet", `RPC fallback balance: ${solBalance.toFixed(4)} SOL`);
       const rpcResult = {
