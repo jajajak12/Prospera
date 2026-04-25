@@ -10,6 +10,8 @@ import { config } from "../config.js";
 import { getConnection } from "../rpc.js";
 
 let _wallet = null;
+let _balanceCache = null; // { data: {...}, ts: number }
+const BALANCE_CACHE_TTL_MS = 15 * 60 * 1000;
 
 function getWallet() {
   if (!_wallet) {
@@ -70,7 +72,7 @@ export async function getWalletBalances() {
       usd: b.usdValue ? Math.round(b.usdValue * 100) / 100 : null,
     }));
 
-    return {
+    const result = {
       wallet: walletAddress,
       sol: Math.round(solBalance * 1e6) / 1e6,
       sol_price: Math.round(solPrice * 100) / 100,
@@ -79,6 +81,8 @@ export async function getWalletBalances() {
       tokens: enrichedTokens,
       total_usd: Math.round((data.totalUsdValue || 0) * 100) / 100,
     };
+    _balanceCache = { data: result, ts: Date.now() };
+    return result;
   } catch (error) {
     log("wallet_error", `Helius failed (${error.message}) — falling back to RPC balance`);
     // Fallback: read SOL balance directly from RPC so screening isn't blocked
@@ -88,7 +92,7 @@ export async function getWalletBalances() {
       const lamports = await conn.getBalance(pubkey);
       const solBalance = lamports / LAMPORTS_PER_SOL;
       log("wallet", `RPC fallback balance: ${solBalance.toFixed(4)} SOL`);
-      return {
+      const rpcResult = {
         wallet: walletAddress,
         sol: Math.round(solBalance * 1e6) / 1e6,
         sol_price: 0,
@@ -98,8 +102,15 @@ export async function getWalletBalances() {
         total_usd: 0,
         error: `Helius unavailable — RPC fallback used`,
       };
+      _balanceCache = { data: rpcResult, ts: Date.now() };
+      return rpcResult;
     } catch (rpcErr) {
       log("wallet_error", `RPC fallback also failed: ${rpcErr.message}`);
+      if (_balanceCache && (Date.now() - _balanceCache.ts) < BALANCE_CACHE_TTL_MS) {
+        const ageMin = Math.round((Date.now() - _balanceCache.ts) / 60000);
+        log("wallet", `Both APIs failed — using cached balance from ${ageMin}m ago (${_balanceCache.data.sol.toFixed(4)} SOL)`);
+        return { ..._balanceCache.data, error: `cached ${ageMin}m — both APIs rate-limited` };
+      }
       return {
         wallet: walletAddress,
         sol: 0,

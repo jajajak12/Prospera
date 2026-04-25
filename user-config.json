@@ -67,5 +67,6 @@
   "maxTvl": 250000,
   "dashboardBaseUrl": "https://hutlike-unexemplary-kyle.ngrok-free.dev",
   "dashboardRefreshSec": 15,
-  "exposureCapDisabled": true
+  "exposureCapDisabled": true,
+  "wickRatioThreshold": 1.0
 }

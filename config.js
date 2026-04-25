@@ -58,6 +58,7 @@ export const config = {
     candleLimit:           u.candleLimit           ?? 100,
     fibConfluenceRequired: u.fibConfluenceRequired ?? true,
     minConfluenceScore:   u.minConfluenceScore   ?? 0.30,   // min fib confluence to enter (screen.js)
+    wickRatioThreshold:   u.wickRatioThreshold   ?? 1.0,    // upper wick / body ratio to suppress spike highs
     maxTechnicalAnalysisCandidates: u.maxTechnicalAnalysisCandidates ?? 10,  // Birdeye 60 RPM ÷ 2 calls = 30 max. We use 10 (~33% of limit).
     // Auto-backtest pre-deploy filter
     autoBacktest:         u.autoBacktest         ?? false,
@@ -360,6 +361,7 @@ export function reloadScreeningThresholds() {
     if (fresh.backtestAggregate     != null)       s.backtestAggregate  = fresh.backtestAggregate;
     if (fresh.rsiMin                != null)       s.rsiMin             = fresh.rsiMin;
     if (fresh.minConfluenceScore    != null)       s.minConfluenceScore = fresh.minConfluenceScore;
+    if (fresh.wickRatioThreshold    != null)       s.wickRatioThreshold = fresh.wickRatioThreshold;
     if (fresh.binsExtraLow  != null) config.strategy.binsExtraLow  = fresh.binsExtraLow;
     if (fresh.binsExtraMid  != null) config.strategy.binsExtraMid  = fresh.binsExtraMid;
     if (fresh.binsExtraHigh != null) config.strategy.binsExtraHigh = fresh.binsExtraHigh;

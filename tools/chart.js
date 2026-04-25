@@ -15,6 +15,7 @@
 
 import { hybridDataProvider } from "./dataProvider.js";
 import { log } from "../logger.js";
+import { config } from "../config.js";
 
 // ─── OHLCV Fetch ─────────────────────────────────────────────────────────────
 
@@ -38,19 +39,37 @@ export async function fetchDailyOHLCV(tokenMint, limit = 1000, poolAddress = nul
   }
 }
 
+// ─── Wick Filter ─────────────────────────────────────────────────────────────
+
+/**
+ * Return the effective high for a candle, suppressing anomalous upper wicks.
+ * Doji (body < 0.1% of high) → use candle.high as-is (wick is price action).
+ * Upper wick >= body * wickRatioThreshold → use body top (max of open/close).
+ */
+function effectiveHigh(candle, wickRatioThreshold = 1.0) {
+  const bodyTop = Math.max(candle.open, candle.close);
+  const body = Math.abs(candle.open - candle.close);
+  if (body < candle.high * 0.001) return candle.high; // doji — skip filter
+  const upperWick = candle.high - bodyTop;
+  if (upperWick >= body * wickRatioThreshold) return bodyTop;
+  return candle.high;
+}
+
 // ─── Swing Detection ─────────────────────────────────────────────────────────
 
 /**
  * Detect swing high and swing low from candles array.
+ * wickRatioThreshold: when set, suppresses spike wicks via effectiveHigh().
  * Returns { swingHigh, swingLow, highIndex, lowIndex }
  */
-export function detectSwing(candles) {
+export function detectSwing(candles, wickRatioThreshold = null) {
   let swingHigh = -Infinity, highIndex = 0;
   let swingLow  =  Infinity, lowIndex  = 0;
 
   for (let i = 0; i < candles.length; i++) {
-    if (candles[i].high > swingHigh) { swingHigh = candles[i].high; highIndex = i; }
-    if (candles[i].low  < swingLow)  { swingLow  = candles[i].low;  lowIndex  = i; }
+    const hi = wickRatioThreshold != null ? effectiveHigh(candles[i], wickRatioThreshold) : candles[i].high;
+    if (hi > swingHigh) { swingHigh = hi; highIndex = i; }
+    if (candles[i].low < swingLow) { swingLow = candles[i].low; lowIndex = i; }
   }
 
   return { swingHigh, swingLow, highIndex, lowIndex };
@@ -78,13 +97,15 @@ function findSwingLows(candles, lookback = 5) {
 /**
  * Find local swing highs (resistance levels) from candle data.
  */
-function findSwingHighs(candles, lookback = 5) {
+function findSwingHighs(candles, lookback = 5, wickRatioThreshold = null) {
   const levels = [];
   for (let i = lookback; i < candles.length - lookback; i++) {
-    const price = candles[i].high;
+    const price = wickRatioThreshold != null ? effectiveHigh(candles[i], wickRatioThreshold) : candles[i].high;
     let isHigh = true;
     for (let j = i - lookback; j <= i + lookback; j++) {
-      if (j !== i && candles[j].high >= price) { isHigh = false; break; }
+      if (j === i) continue;
+      const cmpPrice = wickRatioThreshold != null ? effectiveHigh(candles[j], wickRatioThreshold) : candles[j].high;
+      if (cmpPrice >= price) { isHigh = false; break; }
     }
     if (isHigh) levels.push(price);
   }
@@ -391,24 +412,25 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   // ── Fibonacci: drawn from all-time-low → ATH ───────────────────────────────
   // Daily candles give full price history. Fib is the overall range framework;
   // S/R from price action validates which levels are meaningful.
+  const wickThresh = config.screening.wickRatioThreshold;
   let swingHigh, swingLow;
   if (dailyCandles && dailyCandles.length >= 1) {
     // Use all available daily candles for ATH/ATL — even a single candle
     // is better than intraday for new tokens (captures full-day high/low).
     // Since daily data is fetched fresh every cycle, a new ATH is picked up
     // automatically on the next screening run.
-    swingHigh = Math.max(...dailyCandles.map(c => c.high));
+    swingHigh = Math.max(...dailyCandles.map(c => effectiveHigh(c, wickThresh)));
     swingLow  = Math.min(...dailyCandles.map(c => c.low));
     // For tokens with very few daily candles, also consider intraday extremes
     // to ensure the current session's ATH is captured.
     if (dailyCandles.length <= 3) {
-      const { swingHigh: intradayHigh, swingLow: intradayLow } = detectSwing(candles);
+      const { swingHigh: intradayHigh, swingLow: intradayLow } = detectSwing(candles, wickThresh);
       swingHigh = Math.max(swingHigh, intradayHigh);
       swingLow  = Math.min(swingLow,  intradayLow);
     }
   } else {
     // Fallback to intraday swing if daily data completely unavailable
-    ({ swingHigh, swingLow } = detectSwing(candles));
+    ({ swingHigh, swingLow } = detectSwing(candles, wickThresh));
   }
 
   // Guard: for very new tokens (≤1 daily candle), the daily high may include a
@@ -416,11 +438,11 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   // If swingHigh is >5x the current price in this case, re-derive from filtered
   // intraday candles — drop the top 5% of price outliers to remove the spike.
   if (swingHigh > currentPrice * 5 && dailyCandles != null && dailyCandles.length <= 1) {
-    const sortedHighs = candles.map(c => c.high).sort((a, b) => a - b);
+    const sortedHighs = candles.map(c => effectiveHigh(c, wickThresh)).sort((a, b) => a - b);
     const p95 = sortedHighs[Math.floor(sortedHighs.length * 0.95)] ?? swingHigh;
-    const cleaned = candles.filter(c => c.high <= p95);
+    const cleaned = candles.filter(c => effectiveHigh(c, wickThresh) <= p95);
     if (cleaned.length >= 20) {
-      const { swingHigh: h, swingLow: l } = detectSwing(cleaned);
+      const { swingHigh: h, swingLow: l } = detectSwing(cleaned, wickThresh);
       swingHigh = h;
       swingLow  = Math.min(swingLow, l);
     }
@@ -538,8 +560,8 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   const pricePosition = inAthZone ? 0 : Math.max(0, Math.min(1, rawPosition));
 
   // ── Price Action S/R: find real support below Fib 0.618 ──────────────────
-  const dailySR    = dailyCandles ? [...findSwingLows(dailyCandles), ...findSwingHighs(dailyCandles)] : [];
-  const intradaySR = [...findSwingLows(candles), ...findSwingHighs(candles)];
+  const dailySR    = dailyCandles ? [...findSwingLows(dailyCandles), ...findSwingHighs(dailyCandles, 5, wickThresh)] : [];
+  const intradaySR = [...findSwingLows(candles), ...findSwingHighs(candles, 5, wickThresh)];
   const srLevels   = [...dailySR, ...intradaySR];
 
   const supportsBelow = srLevels.filter(l => l < fib.fib618).sort((a, b) => b - a);
