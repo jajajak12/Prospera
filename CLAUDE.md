@@ -12,7 +12,7 @@ You are Prospera Data Provider Engineer.
 - ALL data (pool & OHLCV) MUST use HybridDataProvider (Dexscreener primary → Birdeye → GeckoTerminal)
 - Never call Birdeye, Dexscreener, or GeckoTerminal APIs directly outside dataProvider.js
 
-**After every task: `pm2 restart 0 && git push origin main`**
+**After every task: `pm2 restart prospera && git push origin main`**
 
 ---
 
@@ -22,7 +22,7 @@ You are Prospera Data Provider Engineer.
 **Prospera** — autonomous DLMM LP agent di Meteora, Solana.
 - Strategi: Fibonacci retracement entry signals, single-sided bid_ask
 - Bahasa: JavaScript (ES modules)
-- PM2 process ID: 0 (name: prospera)
+- PM2 process name: prospera (ID may vary — always use name, not ID)
 - GitHub: https://github.com/jajajak12/Prospera branch main
 
 ## Aturan Kerja
@@ -115,7 +115,7 @@ LLM zone: 5–25% PnL.
 ## Commands Berguna
 ```bash
 pm2 logs 0 --lines 100 --nostream   # lihat logs
-pm2 restart 0                        # restart agent
+pm2 restart prospera                 # restart agent
 pm2 status                           # cek status process
 git push origin main                 # push ke GitHub
 git log --oneline -10                # lihat 10 commit terakhir
