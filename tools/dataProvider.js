@@ -22,6 +22,7 @@
  * Each source: 1 retry on 429 before falling back to next.
  */
 
+import { randomUUID } from "crypto";
 import { log } from "../logger.js";
 import { sendHTML as telegramSendHTML } from "../telegram.js";
 
@@ -545,6 +546,41 @@ async function codexOHLCV(timeframe, limit, tokenMint) {
   throw new Error("Codex: unexpected response format");
 }
 
+// ─── GMGN OpenAPI ─────────────────────────────────────────────────────────────
+
+const GMGN_BASE = "https://openapi.gmgn.ai";
+const GMGN_RES_MAP = { "1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1D": "1d", "1d": "1d" };
+
+async function gmgnOHLCV(tokenMint, timeframe, limit, chain) {
+  const apiKey = process.env.GMGN_API_KEY;
+  if (!apiKey) throw new Error("GMGN_API_KEY not configured");
+  const resolution = GMGN_RES_MAP[timeframe] ?? "5m";
+  const intervalSec = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1D": 86400, "1d": 86400 }[timeframe] ?? 300;
+  const now = Math.floor(Date.now() / 1000);
+  const from = now - intervalSec * limit;
+  const gmgnChain = chain === "solana" ? "sol" : chain;
+  const params = new URLSearchParams({
+    chain: gmgnChain, address: tokenMint, resolution,
+    from: String(from), to: String(now),
+    timestamp: String(now), client_id: randomUUID(),
+  });
+  const res = await fetch(`${GMGN_BASE}/v1/market/token_kline?${params}`, {
+    headers: { "X-APIKEY": apiKey, "Content-Type": "application/json" },
+    signal: sig(TIMEOUT_MS),
+  });
+  if (res.status === 429) throw new Error("GMGN 429");
+  if (!res.ok) throw new Error(`GMGN kline error: ${res.status}`);
+  const data = await res.json();
+  if (data.code !== 0) throw new Error(`GMGN kline: ${data.message ?? data.error ?? data.code}`);
+  const list = data?.data?.list;
+  if (!list || list.length === 0) throw new Error("GMGN: empty kline");
+  return list.map(c => ({
+    timestamp: Number(c.time) / 1000,
+    open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close),
+    volume: Number(c.volume) || 0,
+  }));
+}
+
 // ─── HybridDataProvider ───────────────────────────────────────────────────────
 
 export class HybridDataProvider {
@@ -717,7 +753,7 @@ export class HybridDataProvider {
       errors.birdeye = "no tokenMint";
     }
 
-    // ── 4. Codex LAST FALLBACK — USD ÷ solPrice → SOL ───────────────────────
+    // ── 4. Codex FALLBACK — USD ÷ solPrice → SOL ────────────────────────────
     if (tokenMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
@@ -745,6 +781,34 @@ export class HybridDataProvider {
       errors.codex = "no tokenMint";
     }
 
+    // ── 5. GMGN LAST FALLBACK — USD ÷ solPrice → SOL ────────────────────────
+    if (tokenMint) {
+      try {
+        const [usdCandles, solPrice] = await Promise.all([
+          gmgnOHLCV(tokenMint, timeframe, limit, chain),
+          jupiterSolPrice(),
+        ]);
+        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable");
+        const toSOL = c => ({
+          timestamp: c.timestamp,
+          open: c.open / solPrice, high: c.high / solPrice,
+          low:  c.low  / solPrice, close: c.close / solPrice,
+          volume: c.volume,
+        });
+        const candles = usdCandles.map(toSOL);
+        if (candles.length >= MIN_CANDLES) {
+          log.debug("screening", `getOHLCV: GMGN OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: tokenMint });
+          return candles;
+        }
+        errors.gmgn = `thin (${candles.length})`;
+      } catch (err) {
+        errors.gmgn = err.message;
+        log.warn("screening", `getOHLCV: GMGN failed (${err.message})`, { token: tokenMint });
+      }
+    } else {
+      errors.gmgn = "no tokenMint";
+    }
+
     // ── All sources failed ────────────────────────────────────────────────────
     const key = tokenMint ?? poolAddress;
     const now = Date.now();
@@ -763,6 +827,7 @@ export class HybridDataProvider {
         `• Dexscreener: ${errors.dexscreener ?? "—"}`,
         `• Birdeye: ${errors.birdeye ?? "—"}`,
         `• Codex: ${errors.codex ?? "—"}`,
+        `• GMGN: ${errors.gmgn ?? "—"}`,
         ``,
         `<b>Chart:</b> <a href="${dsLink}">Dexscreener</a>`,
       ].join("\n");
