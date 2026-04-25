@@ -556,13 +556,13 @@ async function gmgnOHLCV(tokenMint, timeframe, limit, chain) {
   if (!apiKey) throw new Error("GMGN_API_KEY not configured");
   const resolution = GMGN_RES_MAP[timeframe] ?? "5m";
   const intervalSec = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1D": 86400, "1d": 86400 }[timeframe] ?? 300;
-  const now = Math.floor(Date.now() / 1000);
-  const from = now - intervalSec * limit;
+  const nowMs = Date.now();
+  const fromMs = nowMs - intervalSec * limit * 1000; // GMGN from/to = milliseconds
   const gmgnChain = chain === "solana" ? "sol" : chain;
   const params = new URLSearchParams({
     chain: gmgnChain, address: tokenMint, resolution,
-    from: String(from), to: String(now),
-    timestamp: String(now), client_id: randomUUID(),
+    from: String(fromMs), to: String(nowMs),
+    timestamp: String(Math.floor(nowMs / 1000)), client_id: randomUUID(),
   });
   const res = await fetch(`${GMGN_BASE}/v1/market/token_kline?${params}`, {
     headers: { "X-APIKEY": apiKey, "Content-Type": "application/json" },
