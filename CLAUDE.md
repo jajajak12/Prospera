@@ -9,8 +9,8 @@ You are Prospera Data Provider Engineer.
 - Blowoff top gate: pump ≥80% in last 10 candles with no correction → skip entry (chart.js Check 1)
 - minConfluenceScore: 0.50 — skip if confluenceScore < 0.50
 - Broken support cache: trigger if price < Fib 0.618, invalidate only on new ATH
-- ALL data (pool & OHLCV) MUST use HybridDataProvider (Dexscreener primary → Birdeye → GeckoTerminal)
-- Never call Birdeye, Dexscreener, or GeckoTerminal APIs directly outside dataProvider.js
+- ALL data (pool & OHLCV) MUST use HybridDataProvider (OHLCV chain: GT → DS → Birdeye → Codex → GMGN)
+- Never call Birdeye, Dexscreener, GeckoTerminal, Codex, or GMGN APIs directly outside dataProvider.js
 
 **After every task: `pm2 restart prospera && git push origin main`**
 
@@ -52,6 +52,20 @@ tools/
   wallet.js        — wallet balance, swap via Jupiter
   study.js         — LPAgent API client
 ```
+
+## OHLCV Fallback Chain (getOHLCV)
+Priority order — each falls through on error/timeout/empty:
+1. **GeckoTerminal** — native SOL denomination (canonical pool via GT token info)
+2. **Dexscreener** — USD ÷ solPrice → SOL (priceHistory from pair/token endpoint)
+3. **Birdeye** — USD ÷ solPrice → SOL (by tokenMint)
+4. **Codex** — USD ÷ solPrice → SOL (GraphQL, requires `CODEX_API_KEY`)
+5. **GMGN** — USD ÷ solPrice → SOL (requires `GMGN_API_KEY`)
+   - Endpoint: `https://openapi.gmgn.ai/v1/market/token_kline`
+   - **Free** for all GMGN users. No subscription fee.
+   - Get key: generate Ed25519 keypair → submit pubkey at `gmgn.ai/ai` → receive API key
+   - Demo/test key (not for production): `gmgn_solbscbaseethmonadtron`
+   - Rate limit: weight=2, ~5 req/s burst; default 1 req/s sustained
+   - Resolutions: `1m / 5m / 15m / 1h / 4h / 1d`
 
 ## Screening Pipeline (v3)
 ```
