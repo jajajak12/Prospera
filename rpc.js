@@ -151,11 +151,14 @@ export function reportRpcError(err) {
  * Tries current endpoint, then each fallback once.
  */
 export async function withRpcFallback(fn, label = "rpc_call") {
-  const total = Math.max(1, (_endpoints.length || loadEndpoints().length));
+  if (!_connection) init();
+  const total = Math.max(1, _endpoints.length);
 
   for (let attempt = 0; attempt < total; attempt++) {
     try {
-      const result = await fn(getConnection());
+      // Use _connection directly — avoids getConnection()'s auto-reset to primary,
+      // which would undo reportRpcError's endpoint switch on every iteration.
+      const result = await fn(_connection);
       reportRpcSuccess();
       return result;
     } catch (err) {
