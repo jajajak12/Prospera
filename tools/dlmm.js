@@ -206,6 +206,9 @@ export async function deployPosition({
   log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`, deployCtx);
   log("deploy", `Position: ${newPosition.publicKey.toString()}`, deployCtx);
 
+  // Track Phase 1 key for wide-range phantom cleanup on Phase 2 failure
+  let _phase1PositionKey = null;
+
   try {
     const txHashes = [];
 
@@ -230,6 +233,8 @@ export async function deployPosition({
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
+      // Phase 1 confirmed on-chain — track for phantom cleanup if Phase 2 fails
+      _phase1PositionKey = newPosition.publicKey;
 
       // Phase 2: Add liquidity (may be multiple txs)
       const addTxs = await pool.addLiquidityByStrategyChunkable({
@@ -246,6 +251,7 @@ export async function deployPosition({
         txHashes.push(txHash);
         log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
       }
+      _phase1PositionKey = null; // Phase 2 succeeded — no phantom
     } else {
       // ── Standard Path (≤69 bins) ─────────────────────────────────
       const tx = await pool.initializePositionAndAddLiquidityByStrategy({
@@ -316,6 +322,33 @@ export async function deployPosition({
     };
   } catch (error) {
     log("deploy_error", error.message);
+    // Always invalidate cache so next cycle fetches fresh LPAgent state
+    _positionsCacheAt = 0;
+
+    // Wide-range: Phase 1 created an empty on-chain position but Phase 2 failed.
+    // Close it immediately so LPAgent doesn't return it as an active position,
+    // which would block re-entry for the same token/pool.
+    if (_phase1PositionKey) {
+      try {
+        log("deploy", `Phantom cleanup: closing empty position ${_phase1PositionKey.toString().slice(0, 8)} (Phase 2 failed: ${error.message.slice(0, 60)})`);
+        const cleanupTxs = await pool.removeLiquidity({
+          user: wallet.publicKey,
+          position: _phase1PositionKey,
+          fromBinId: -887272,
+          toBinId: 887272,
+          bps: new BN(10000),
+          shouldClaimAndClose: true,
+        });
+        for (const tx of Array.isArray(cleanupTxs) ? cleanupTxs : [cleanupTxs]) {
+          await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet]), "deploy:phantom_cleanup")
+            .catch(e => log("deploy_error", `Phantom cleanup tx failed: ${e.message}`));
+        }
+        log("deploy", `Phantom cleanup OK: empty position closed`);
+      } catch (cleanupErr) {
+        log("deploy_error", `Phantom cleanup failed: ${cleanupErr.message}`);
+      }
+    }
+
     return { success: false, error: error.message };
   }
 }

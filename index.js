@@ -435,6 +435,14 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     const exitMap = new Map();
     for (const p of positionData) {
+      // Zero-value: rugged/dead token — close immediately, don't wait for SL/OOR logic
+      const ageMin = p.age_minutes ?? 0;
+      if (ageMin >= 5 && ((p.total_value_sol != null && p.total_value_sol <= 0) || (p.total_value_usd != null && p.total_value_usd <= 0))) {
+        _m("management", `Zero-value: ${p.pair} sol=${p.total_value_sol} usd=${p.total_value_usd} → auto-close (rugged/dead token)`);
+        exitMap.set(p.position, "zero_value");
+        continue;
+      }
+
       const exit = updatePnlAndCheckExits(p.position, p, config.management);
       if (exit) { exitMap.set(p.position, exit.reason); continue; }
 
