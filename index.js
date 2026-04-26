@@ -654,7 +654,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     // ── Orphan scan: on-chain positions LPAgent doesn't return (phantom/failed deploy) ──
     {
-      const orphans = await scanOrphanPositions(positionData.map(p => p.position));
+      const orphans = await scanOrphanPositions(positionData.map(p => p.position), positionData);
       for (const o of orphans) {
         _m("management", `Orphan position ${o.position.slice(0, 8)}...${o.position.slice(-4)} (pool ${o.pool.slice(0, 8)}) not in LPAgent → close`);
         const r = await closePosition({ position_address: o.position, reason: "orphan_position", _pool_hint: o.pool }).catch(e => ({ success: false, error: e.message }));

@@ -364,9 +364,14 @@ let _orphanScanAt = 0;
 // ─── Orphan Position Scanner ────────────────────────────────────
 // Finds on-chain DLMM positions that LPAgent doesn't return (phantom/failed deploys).
 // Throttled to once per hour to avoid expensive RPC scans every cycle.
-export async function scanOrphanPositions(lpAgentAddresses) {
+export async function scanOrphanPositions(lpAgentAddresses, lpAgentPositionData = []) {
   if (Date.now() - _orphanScanAt < ORPHAN_SCAN_INTERVAL_MS) return [];
   _orphanScanAt = Date.now();
+
+  log("orphan_scan", `LPAgent knows ${lpAgentAddresses.length} position(s): [${lpAgentAddresses.map(a => a.slice(0, 8)).join(", ")}]`);
+  for (const p of lpAgentPositionData) {
+    log("orphan_scan", `  LPAgent pos ${(p.position || "?").slice(0, 8)} | pair=${p.pair} | sol=${p.total_value_sol} | usd=${p.total_value_usd} | age_min=${p.age_minutes}`);
+  }
 
   try {
     const { DLMM } = await getDLMM();
@@ -376,13 +381,24 @@ export async function scanOrphanPositions(lpAgentAddresses) {
       wallet.publicKey
     );
 
+    const poolCount = Object.keys(allPositions).length;
+    let chainTotal = 0;
+    for (const posData of Object.values(allPositions)) chainTotal += (posData.lbPairPositionsData || []).length;
+    log("orphan_scan", `On-chain: ${chainTotal} position(s) across ${poolCount} pool(s)`);
+
     const knownSet = new Set(lpAgentAddresses);
     const orphans = [];
 
     for (const [lbPairKey, posData] of Object.entries(allPositions)) {
       for (const pos of (posData.lbPairPositionsData || [])) {
         const addr = pos.publicKey.toString();
-        if (!knownSet.has(addr)) {
+        const isKnown = knownSet.has(addr);
+        // Log total liquidity to detect zero-value positions skipped by LPAgent
+        const totalLiq = pos.positionData?.totalXAmount != null
+          ? `X=${pos.positionData.totalXAmount} Y=${pos.positionData.totalYAmount}`
+          : "liq=unknown";
+        log("orphan_scan", `  chain pos ${addr.slice(0, 8)} pool=${lbPairKey.slice(0, 8)} ${totalLiq} | known=${isKnown}`);
+        if (!isKnown) {
           orphans.push({ position: addr, pool: lbPairKey });
         }
       }
