@@ -30,7 +30,7 @@ import { agentLoop, probeLLMProviders } from "./agent.js";
 import http from "http";
 import { log } from "./logger.js";
 import { logWithId, logSkip, shortId, logCycleStart } from "./log-utils.js";
-import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
+import { getMyPositions, closePosition, getActiveBin, scanOrphanPositions } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { getCircuitState, shouldSkipNextCycle, getActiveProvider } from "./tools/circuit-breaker.js";
@@ -437,7 +437,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     for (const p of positionData) {
       // Zero-value: rugged/dead token — close immediately, don't wait for SL/OOR logic
       const ageMin = p.age_minutes ?? 0;
-      if (ageMin >= 5 && ((p.total_value_sol != null && p.total_value_sol <= 0) || (p.total_value_usd != null && p.total_value_usd <= 0))) {
+      if (ageMin >= 10 && (p.total_value_sol != null && p.total_value_sol <= 0) && (p.total_value_usd != null && p.total_value_usd <= 0)) {
         _m("management", `Zero-value: ${p.pair} sol=${p.total_value_sol} usd=${p.total_value_usd} → auto-close (rugged/dead token)`);
         exitMap.set(p.position, "zero_value");
         continue;
@@ -649,6 +649,21 @@ export async function runManagementCycle({ silent = false } = {}) {
         const { executeTool } = await import("./tools/executor.js");
         const r = await executeTool("claim_fees", { position_address: p.position }).catch(e => ({ success: false, error: e.message }));
         if (r?.success) _m("management", `  → fees claimed ${p.pair}`); else _m("error", `  → claim failed: ${r?.error}`);
+      }
+    }
+
+    // ── Orphan scan: on-chain positions LPAgent doesn't return (phantom/failed deploy) ──
+    {
+      const orphans = await scanOrphanPositions(positionData.map(p => p.position));
+      for (const o of orphans) {
+        _m("management", `Orphan position ${o.position.slice(0, 8)}...${o.position.slice(-4)} (pool ${o.pool.slice(0, 8)}) not in LPAgent → close`);
+        const r = await closePosition({ position_address: o.position, reason: "orphan_position", _pool_hint: o.pool }).catch(e => ({ success: false, error: e.message }));
+        if (r.success) {
+          notifyClose({ pair: "ORPHAN/SOL", pnlUsd: 0, pnlPct: 0, reason: "orphan_position" }).catch(() => {});
+          _m("management", `  → orphan closed`);
+        } else {
+          _m("error", `  → orphan close failed: ${r.error}`);
+        }
       }
     }
 

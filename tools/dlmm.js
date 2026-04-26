@@ -354,10 +354,52 @@ export async function deployPosition({
 }
 
 const POSITIONS_CACHE_TTL = 5 * 60_000; // 5 minutes
+const ORPHAN_SCAN_INTERVAL_MS = 60 * 60_000; // 1 hour
 
 let _positionsCache = null;
 let _positionsCacheAt = 0;
 let _positionsInflight = null; // deduplicates concurrent calls
+let _orphanScanAt = 0;
+
+// ─── Orphan Position Scanner ────────────────────────────────────
+// Finds on-chain DLMM positions that LPAgent doesn't return (phantom/failed deploys).
+// Throttled to once per hour to avoid expensive RPC scans every cycle.
+export async function scanOrphanPositions(lpAgentAddresses) {
+  if (Date.now() - _orphanScanAt < ORPHAN_SCAN_INTERVAL_MS) return [];
+  _orphanScanAt = Date.now();
+
+  try {
+    const { DLMM } = await getDLMM();
+    const wallet = getWallet();
+    const allPositions = await DLMM.getAllLbPairPositionsByUser(
+      getConnection(),
+      wallet.publicKey
+    );
+
+    const knownSet = new Set(lpAgentAddresses);
+    const orphans = [];
+
+    for (const [lbPairKey, posData] of Object.entries(allPositions)) {
+      for (const pos of (posData.lbPairPositionsData || [])) {
+        const addr = pos.publicKey.toString();
+        if (!knownSet.has(addr)) {
+          orphans.push({ position: addr, pool: lbPairKey });
+        }
+      }
+    }
+
+    if (orphans.length > 0) {
+      log("orphan_scan", `Found ${orphans.length} orphan(s): ${orphans.map(o => o.position.slice(0, 8)).join(", ")}`);
+    } else {
+      log("orphan_scan", "No orphan positions found");
+    }
+
+    return orphans;
+  } catch (e) {
+    log("orphan_scan", `Scan failed: ${e.message}`);
+    return [];
+  }
+}
 
 // ─── Fetch DLMM PnL API for all positions in a pool ────────────
 async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
@@ -627,7 +669,7 @@ export async function claimFees({ position_address }) {
 }
 
 // ─── Close Position ────────────────────────────────────────────
-export async function closePosition({ position_address, reason, skip_swap = false }) {
+export async function closePosition({ position_address, reason, skip_swap = false, _pool_hint = null }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
     return { dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
@@ -639,7 +681,7 @@ export async function closePosition({ position_address, reason, skip_swap = fals
     const closeCtx = { position: position_address, pool: tracked?.pool, pair: tracked?.pool_name, reason };
     log("close", `Closing position: ${position_address}`, closeCtx);
     const wallet = getWallet();
-    const poolAddress = await lookupPoolForPosition(position_address, wallet.publicKey.toString());
+    const poolAddress = _pool_hint ?? await lookupPoolForPosition(position_address, wallet.publicKey.toString());
     // Clear cached pool so SDK loads fresh position fee state
     poolCache.delete(poolAddress.toString());
     const pool = await getPool(poolAddress);
