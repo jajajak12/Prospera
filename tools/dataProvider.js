@@ -369,6 +369,34 @@ async function jupiterQuotePrice(tokenMint, chain = "solana") {
 const _ohlcvFailNotified = new Map(); // tokenMint → lastNotifiedAtMs
 const OHLCV_NOTIF_COOLDOWN_MS = 30 * 60 * 1000;
 
+// GT 429 per-provider cooldown — skip GT for 60s after a 429, fall through immediately
+let _gtCooldownUntil = 0;
+const gtIsOnCooldown = () => Date.now() < _gtCooldownUntil;
+const gtSetCooldown = (ms = 60_000) => { _gtCooldownUntil = Date.now() + ms; };
+
+// tokenMint resolution cache — pool address → base token mint
+const _tokenMintCache = new Map();
+async function resolveTokenMint(poolAddress, chain) {
+  if (_tokenMintCache.has(poolAddress)) return _tokenMintCache.get(poolAddress);
+  let mint = null;
+  try {
+    const res = await fetch(`${DEXSCREENER_BASE}/latest/dex/pairs/${chain}/${poolAddress}`, { signal: sig(TIMEOUT_MS) });
+    if (res.ok) {
+      const data = await res.json();
+      const pair = data?.pair ?? data?.pairs?.[0];
+      mint = pair?.baseToken?.address ?? null;
+    }
+  } catch {}
+  if (!mint && !gtIsOnCooldown()) {
+    try {
+      const pool = await geckoPoolData(poolAddress, chain);
+      mint = pool?.baseToken?.address ?? null;
+    } catch {}
+  }
+  if (mint) _tokenMintCache.set(poolAddress, mint);
+  return mint;
+}
+
 
 // Cache SOL/USD price for 60s — shared across all getOHLCV calls within a screening cycle
 let _solPriceCache = null;
@@ -640,7 +668,7 @@ export class HybridDataProvider {
     // pump.fun pool address ≠ Meteora pool address.
     // GT/DS need the pump.fun pool. geckoTokenInfo returns GT's indexed top pool.
     let canonicalPool = null;
-    if (tokenMint) {
+    if (tokenMint && !gtIsOnCooldown()) {
       try {
         const tokenData = await geckoTokenInfo(tokenMint, chain);
         const topPools = tokenData?.data?.relationships?.top_pools?.data ?? [];
@@ -660,14 +688,14 @@ export class HybridDataProvider {
         }
       } catch (err) {
         log.warn("screening", `getOHLCV: GT token info failed (${err.message}) — using Meteora pool`, { token: tokenMint });
-        if (err.message?.includes("429")) await new Promise(r => setTimeout(r, 8000));
+        if (err.message?.includes("429")) gtSetCooldown();
       }
     }
     // Fallback to Meteora pool if GT token info failed
     const gtPool = canonicalPool ?? poolAddress;
 
     // ── 1. GeckoTerminal PRIMARY — native SOL denomination ───────────────────
-    if (gtPool) {
+    if (gtPool && !gtIsOnCooldown()) {
       try {
         const candles = await geckoOHLCV(gtPool, chain, timeframe, limit);
         if (candles.length >= 5) {
@@ -683,10 +711,10 @@ export class HybridDataProvider {
       } catch (err) {
         errors.gt = err.message;
         log.warn("screening", `getOHLCV: GeckoTerminal failed → DS (${err.message})`, { pool: gtPool });
-        if (err.message?.includes("429")) await new Promise(r => setTimeout(r, 8000));
+        if (err.message?.includes("429")) gtSetCooldown();
       }
     } else {
-      errors.gt = "no pool resolved";
+      errors.gt = gtIsOnCooldown() ? "on cooldown (429 backoff)" : "no pool resolved";
     }
 
     // ── 2. Dexscreener SECONDARY — USD ÷ solPrice → SOL ─────────────────────
@@ -725,11 +753,18 @@ export class HybridDataProvider {
       errors.dexscreener = "no pool";
     }
 
+    // ── Resolve tokenMint from poolAddress if missing before mint-required fallbacks ──
+    let resolvedMint = tokenMint;
+    if (!resolvedMint && poolAddress) {
+      resolvedMint = await resolveTokenMint(poolAddress, chain);
+      if (resolvedMint) log.debug("screening", `getOHLCV: resolved tokenMint=${resolvedMint} from pool`, { pool: poolAddress });
+    }
+
     // ── 3. Birdeye FALLBACK — USD ÷ solPrice → SOL ───────────────────────────
-    if (tokenMint) {
+    if (resolvedMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
-          birdeyeOHLCVByMint(tokenMint, timeframe, limit, chain),
+          birdeyeOHLCVByMint(resolvedMint, timeframe, limit, chain),
           jupiterSolPrice(),
         ]);
         if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable");
@@ -741,23 +776,23 @@ export class HybridDataProvider {
         });
         const candles = usdCandles.map(toSOL);
         if (candles.length >= MIN_CANDLES) {
-          log.debug("screening", `getOHLCV: Birdeye OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: tokenMint });
+          log.debug("screening", `getOHLCV: Birdeye OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: resolvedMint });
           return candles;
         }
         errors.birdeye = `thin (${candles.length})`;
       } catch (err) {
         errors.birdeye = err.message;
-        log.warn("screening", `getOHLCV: Birdeye failed (${err.message})`, { token: tokenMint });
+        log.warn("screening", `getOHLCV: Birdeye failed (${err.message})`, { token: resolvedMint });
       }
     } else {
-      errors.birdeye = "no tokenMint";
+      errors.birdeye = "no tokenMint (resolution failed)";
     }
 
     // ── 4. Codex FALLBACK — USD ÷ solPrice → SOL ────────────────────────────
-    if (tokenMint) {
+    if (resolvedMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
-          codexOHLCV(timeframe, limit, tokenMint),
+          codexOHLCV(timeframe, limit, resolvedMint),
           jupiterSolPrice(),
         ]);
         if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable");
@@ -769,23 +804,23 @@ export class HybridDataProvider {
         });
         const candles = usdCandles.map(toSOL);
         if (candles.length >= MIN_CANDLES) {
-          log.debug("screening", `getOHLCV: Codex OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: tokenMint });
+          log.debug("screening", `getOHLCV: Codex OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: resolvedMint });
           return candles;
         }
         errors.codex = `thin (${candles.length})`;
       } catch (err) {
         errors.codex = err.message;
-        log.warn("screening", `getOHLCV: Codex failed (${err.message})`, { token: tokenMint });
+        log.warn("screening", `getOHLCV: Codex failed (${err.message})`, { token: resolvedMint });
       }
     } else {
-      errors.codex = "no tokenMint";
+      errors.codex = "no tokenMint (resolution failed)";
     }
 
     // ── 5. GMGN LAST FALLBACK — USD ÷ solPrice → SOL ────────────────────────
-    if (tokenMint) {
+    if (resolvedMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
-          gmgnOHLCV(tokenMint, timeframe, limit, chain),
+          gmgnOHLCV(resolvedMint, timeframe, limit, chain),
           jupiterSolPrice(),
         ]);
         if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable");
@@ -797,20 +832,20 @@ export class HybridDataProvider {
         });
         const candles = usdCandles.map(toSOL);
         if (candles.length >= MIN_CANDLES) {
-          log.debug("screening", `getOHLCV: GMGN OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: tokenMint });
+          log.debug("screening", `getOHLCV: GMGN OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: resolvedMint });
           return candles;
         }
         errors.gmgn = `thin (${candles.length})`;
       } catch (err) {
         errors.gmgn = err.message;
-        log.warn("screening", `getOHLCV: GMGN failed (${err.message})`, { token: tokenMint });
+        log.warn("screening", `getOHLCV: GMGN failed (${err.message})`, { token: resolvedMint });
       }
     } else {
-      errors.gmgn = "no tokenMint";
+      errors.gmgn = "no tokenMint (resolution failed)";
     }
 
     // ── All sources failed ────────────────────────────────────────────────────
-    const key = tokenMint ?? poolAddress;
+    const key = resolvedMint ?? tokenMint ?? poolAddress;
     const now = Date.now();
     const lastNotified = _ohlcvFailNotified.get(key) ?? 0;
     if (now - lastNotified > OHLCV_NOTIF_COOLDOWN_MS) {
