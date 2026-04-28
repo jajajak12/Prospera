@@ -15,9 +15,19 @@ function load() {
   if (!fs.existsSync(POOL_MEMORY_FILE)) return {};
   try {
     const parsed = JSON.parse(fs.readFileSync(POOL_MEMORY_FILE, "utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-    log("pool-memory", `pool-memory.json corrupted (not object) — resetting`);
-    return {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      log("pool-memory", `pool-memory.json corrupted (not object) — resetting`);
+      return {};
+    }
+    // Discard stale cooldowns on load so expired timestamps don't block pools
+    const now = Date.now();
+    for (const key of Object.keys(parsed)) {
+      const entry = parsed[key];
+      if (entry?.cooldown_until && new Date(entry.cooldown_until).getTime() < now) {
+        delete entry.cooldown_until;
+      }
+    }
+    return parsed;
   } catch {
     return {};
   }

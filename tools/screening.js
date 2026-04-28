@@ -1081,6 +1081,8 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
   }
 
   // ── Step 9: Smart wallet activity check (DISABLED — LP API free tier rate limited)
+  // observePoolParticipants() in executor.js still fires post-close and auto-promotes
+  // wallets to smart-wallets.json. Re-enable this block when LP API tier allows it.
   // if (candidates.length > 0) {
   //   try {
   //     const poolAddresses = candidates.map(c => c.pool);

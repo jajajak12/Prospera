@@ -13,6 +13,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import crypto from "crypto";
 import { log } from "./logger.js";
 import { safeSave } from "./log-utils.js";
 import { sendMessage } from "./telegram.js";
@@ -43,6 +44,15 @@ function load() {
 
 function save(data) {
   safeSave(LESSONS_FILE, data, "lessons");
+}
+
+function ruleHash(rule) {
+  return crypto.createHash("sha1").update(rule.trim().toLowerCase()).digest("hex").slice(0, 12);
+}
+
+function isDuplicateRule(data, rule) {
+  const h = ruleHash(rule);
+  return data.lessons.some(l => ruleHash(l.rule ?? "") === h);
 }
 
 // ─── Record Position Performance ──────────────────────────────
@@ -111,10 +121,14 @@ export async function recordPerformance(perf) {
 
   const lesson = derivLesson(entry);
   if (lesson) {
-    data.lessons.push(lesson);
-    log("lessons", `New lesson: ${lesson.rule}`);
-    const emoji = lesson.outcome === "good" ? "✅" : lesson.outcome === "bad" ? "❌" : "⚠️";
-    sendMessage(`${emoji} Pelajaran baru [${lesson.outcome.toUpperCase()}]\n${lesson.rule}`).catch(() => {});
+    if (isDuplicateRule(data, lesson.rule)) {
+      log("lessons", `Duplicate lesson skipped: ${lesson.rule.slice(0, 80)}`);
+    } else {
+      data.lessons.push(lesson);
+      log("lessons", `New lesson: ${lesson.rule}`);
+      const emoji = lesson.outcome === "good" ? "✅" : lesson.outcome === "bad" ? "❌" : "⚠️";
+      sendMessage(`${emoji} Pelajaran baru [${lesson.outcome.toUpperCase()}]\n${lesson.rule}`).catch(() => {});
+    }
   }
 
   save(data);
@@ -335,14 +349,11 @@ export function evolveThresholds(perfData, config) {
 
   // Log as a lesson
   const data = load();
-  data.lessons.push({
-    id: Date.now(),
-    rule: `[AUTO-EVOLVED @ ${perfData.length} positions] ${Object.entries(changes).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")} — ${Object.values(rationale).join("; ")}`,
-    tags: ["evolution", "config_change"],
-    outcome: "manual",
-    created_at: new Date().toISOString(),
-  });
-  save(data);
+  const evolvedRule = `[AUTO-EVOLVED @ ${perfData.length} positions] ${Object.entries(changes).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")} — ${Object.values(rationale).join("; ")}`;
+  if (!isDuplicateRule(data, evolvedRule)) {
+    data.lessons.push({ id: Date.now(), rule: evolvedRule, tags: ["evolution", "config_change"], outcome: "manual", created_at: new Date().toISOString() });
+    save(data);
+  }
 
   return { changes, rationale };
 }
@@ -544,8 +555,10 @@ async function runChartLessonAnalysis(perf, outcome) {
       log("lessons", `Screening chart lesson DISCARDED — contains CJK characters (language leak): ${screenerResp.slice(0, 60)}`);
     } else {
       const rule = `CHART [${label}][SCREENING]: ${screenerResp.slice(0, 500)}`;
-      data.lessons.push({ id: Date.now(), rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "screening", "entry"], ...base, created_at: now });
-      log("lessons", `Screening chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+      if (!isDuplicateRule(data, rule)) {
+        data.lessons.push({ id: Date.now(), rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "screening", "entry"], ...base, created_at: now });
+        log("lessons", `Screening chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+      }
     }
   }
 
@@ -554,8 +567,10 @@ async function runChartLessonAnalysis(perf, outcome) {
       log("lessons", `Management chart lesson DISCARDED — contains CJK characters (language leak): ${managerResp.slice(0, 60)}`);
     } else {
       const rule = `CHART [${label}][MANAGEMENT]: ${managerResp.slice(0, 600)}`;
-      data.lessons.push({ id: Date.now() + 1, rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "management", "hold", "close"], ...base, created_at: now });
-      log("lessons", `Management chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+      if (!isDuplicateRule(data, rule)) {
+        data.lessons.push({ id: Date.now() + 1, rule, tags: ["chart_lesson", isProfit ? "positive_pattern" : "negative_pattern", "management", "hold", "close"], ...base, created_at: now });
+        log("lessons", `Management chart lesson saved [${label}]: ${rule.slice(0, 120)}`);
+      }
     }
   }
 
@@ -576,6 +591,10 @@ async function runChartLessonAnalysis(perf, outcome) {
 
 export function addLesson(rule, tags = [], { pinned = false, role = null } = {}) {
   const data = load();
+  if (!pinned && isDuplicateRule(data, rule)) {
+    log("lessons", `Duplicate manual lesson skipped: ${rule.slice(0, 80)}`);
+    return;
+  }
   data.lessons.push({
     id: Date.now(),
     rule,

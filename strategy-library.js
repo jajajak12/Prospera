@@ -2,7 +2,8 @@
  * strategy-library.js — Single default strategy preset
  *
  * Only one preset: "fibonacci" (Fibonacci + Volume Profile entry).
- * Apply via apply_strategy tool.
+ * Apply via apply_strategy tool (REPL/manual only — not LLM-exposed in prompt.js).
+ * Also consumed by backtest.js getStrategy() for named preset backtests.
  *
  * NOTE: These hardcoded values are the STRATEGY DEFAULT.
  * user-config.json values override these when set.

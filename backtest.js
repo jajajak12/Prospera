@@ -39,6 +39,12 @@ import {
 } from "./tools/chart.js";
 import { getStrategy } from "./strategy-library.js";
 import { log } from "./logger.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BACKTEST_DIR = path.join(__dirname, "backtests");
 
 const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 
@@ -307,22 +313,20 @@ export async function runBacktest({
     throw new Error(`Not enough candle data (${candles.length} candles, need ${candleLimit + 10}+)`);
   }
 
-  // Build Fib levels from daily ATH/ATL
+  // Build Fib levels — prefer daily candles for ATH/ATL (more history),
+  // always also merge intraday highs/lows to catch recent pumps between daily bars.
   let swingHigh, swingLow;
   if (dailyCandles && dailyCandles.length >= 1) {
     swingHigh = Math.max(...dailyCandles.map(c => c.high));
     swingLow  = Math.min(...dailyCandles.map(c => c.low));
-    if (dailyCandles.length <= 3) {
-      const ih = Math.max(...candles.map(c => c.high));
-      const il = Math.min(...candles.map(c => c.low));
-      swingHigh = Math.max(swingHigh, ih);
-      swingLow  = Math.min(swingLow,  il);
-    }
   } else {
-    let maxH = -Infinity, minL = Infinity;
-    for (const c of candles) { if (c.high > maxH) maxH = c.high; if (c.low < minL) minL = c.low; }
-    swingHigh = maxH; swingLow = minL;
+    swingHigh = -Infinity; swingLow = Infinity;
   }
+  // Always incorporate intraday extremes — catches intraday ATH not captured in daily bar
+  const intradayHigh = Math.max(...candles.map(c => c.high));
+  const intradayLow  = Math.min(...candles.map(c => c.low));
+  swingHigh = Math.max(swingHigh, intradayHigh);
+  swingLow  = Math.min(swingLow,  intradayLow);
 
   const fibLevels = calcFibLevels(swingHigh, swingLow);
 
@@ -437,6 +441,17 @@ export async function runBacktest({
   result.avgPnlPct   = result.summary.avgPnlPct;
   result.totalPnlPct = result.summary.totalPnlPct;
 
+  // Persist results for audit trail
+  try {
+    if (!fs.existsSync(BACKTEST_DIR)) fs.mkdirSync(BACKTEST_DIR, { recursive: true });
+    const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
+    const fname = path.join(BACKTEST_DIR, `${ts}_${poolAddress.slice(0, 8)}.json`);
+    fs.writeFileSync(fname, JSON.stringify(result, null, 2));
+    log("backtest", `Saved to ${fname}`);
+  } catch (e) {
+    log("backtest_warn", `Failed to save backtest: ${e.message}`);
+  }
+
   return result;
 }
 
@@ -525,19 +540,16 @@ export async function runBacktestWithSweep({
     throw new Error(`Not enough candle data (${candles.length} candles)`);
   }
 
-  // Build Fib levels
+  // Build Fib levels — always merge daily + intraday extremes
   let swingHigh, swingLow;
   if (dailyCandles && dailyCandles.length >= 1) {
     swingHigh = Math.max(...dailyCandles.map(c => c.high));
     swingLow  = Math.min(...dailyCandles.map(c => c.low));
-    if (dailyCandles.length <= 3) {
-      swingHigh = Math.max(swingHigh, ...candles.map(c => c.high));
-      swingLow  = Math.min(swingLow,  ...candles.map(c => c.low));
-    }
   } else {
-    swingHigh = Math.max(...candles.map(c => c.high));
-    swingLow  = Math.min(...candles.map(c => c.low));
+    swingHigh = -Infinity; swingLow = Infinity;
   }
+  swingHigh = Math.max(swingHigh, ...candles.map(c => c.high));
+  swingLow  = Math.min(swingLow,  ...candles.map(c => c.low));
 
   const fibLevels = calcFibLevels(swingHigh, swingLow);
 

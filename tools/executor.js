@@ -216,6 +216,7 @@ const toolMap = {
       timeframe:             ["screening", "timeframe"],
       candleLimit:           ["screening", "candleLimit"],
       fibConfluenceRequired: ["screening", "fibConfluenceRequired"],
+      minConfluenceScore:    ["screening", "minConfluenceScore"],
       // management
       minClaimAmount:        ["management", "minClaimAmount"],
       autoSwapAfterClaim:    ["management", "autoSwapAfterClaim"],
@@ -276,13 +277,35 @@ const toolMap = {
       applied.minVolume = 100;
       log("config", `update_config: minVolume clamped to 100 (hard floor)`);
     }
-    if (applied.minBinStep != null && applied.minBinStep < 80) {
-      applied.minBinStep = 80;
-      log("config", `update_config: minBinStep clamped to 80 (hard floor)`);
+    if (applied.minBinStep != null && applied.minBinStep < 1) {
+      applied.minBinStep = 1;
+      log("config", `update_config: minBinStep clamped to 1 (hard floor)`);
+    }
+    if (applied.maxBinStep != null && applied.maxBinStep > 500) {
+      applied.maxBinStep = 500;
+      log("config", `update_config: maxBinStep clamped to 500 (hard ceiling)`);
+    }
+    if (applied.maxMcap != null && applied.maxMcap > 100_000_000) {
+      applied.maxMcap = 100_000_000;
+      log("config", `update_config: maxMcap clamped to 100_000_000 (hard ceiling)`);
     }
     if (applied.stopLossPct != null && applied.stopLossPct < -50) {
       applied.stopLossPct = -50;
       log("config", `update_config: stopLossPct clamped to -50 (hard floor)`);
+    }
+    if (applied.stopLossPct != null && applied.stopLossPct > 0) {
+      applied.stopLossPct = 0;
+      log("config", `update_config: stopLossPct clamped to 0 (cannot be positive)`);
+    }
+    if (applied.maxPositions != null && (applied.maxPositions < 1 || applied.maxPositions > 10)) {
+      applied.maxPositions = Math.min(10, Math.max(1, applied.maxPositions));
+      log("config", `update_config: maxPositions clamped to [1–10]: ${applied.maxPositions}`);
+    }
+    if (applied.minConfluenceScore != null) {
+      if (applied.minConfluenceScore < 0 || applied.minConfluenceScore > 1) {
+        applied.minConfluenceScore = Math.min(1, Math.max(0, applied.minConfluenceScore));
+        log("config", `update_config: minConfluenceScore clamped to [0–1]: ${applied.minConfluenceScore}`);
+      }
     }
 
     // Apply to live config immediately

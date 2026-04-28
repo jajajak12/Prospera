@@ -81,6 +81,7 @@ import { log } from "./logger.js";
 import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
+import { sendMessage, isEnabled as telegramEnabled } from "./telegram.js";
 import {
   getActiveProvider,
   getProviderConfig,
@@ -251,6 +252,7 @@ export async function agentLoop(
   const ONCE_PER_SESSION = new Set(["deploy_position", "swap_token", "close_position"]);
   const NO_RETRY_TOOLS   = new Set(["deploy_position"]);
   const firedOnce        = new Set();
+  let _repairCount       = 0;
 
   for (let step = 0; step < maxSteps; step++) {
     log("agent", `Step ${step + 1}/${maxSteps}`);
@@ -348,7 +350,9 @@ export async function agentLoop(
             } catch {
               try {
                 tc.function.arguments = JSON.stringify(JSON.parse(jsonrepair(tc.function.arguments)));
-                log("warn", `Repaired malformed JSON args for ${tc.function.name}`);
+                _repairCount++;
+                log("warn", `[repair] Repaired malformed JSON args for ${tc.function.name} (cycle total: ${_repairCount})`);
+                if (_repairCount === 3 && telegramEnabled()) sendMessage(`⚠️ LLM JSON repair threshold: ${_repairCount} repairs in one cycle — possible model malfunction (${agentType})`).catch(() => {});
               } catch {
                 tc.function.arguments = "{}";
                 log("error", `Could not repair JSON args for ${tc.function.name} — cleared to {}`);
@@ -380,7 +384,8 @@ export async function agentLoop(
         } catch {
           try {
             functionArgs = JSON.parse(jsonrepair(toolCall.function.arguments));
-            log("warn", `Repaired malformed JSON args for ${functionName}`);
+            _repairCount++;
+            log("warn", `[repair] Repaired malformed JSON args for ${functionName} (cycle total: ${_repairCount})`);
           } catch (parseError) {
             log("error", `Failed to parse args for ${functionName}: ${parseError.message}`);
             functionArgs = {};
