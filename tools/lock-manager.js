@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ── Paths ───────────────────────────────────────────────────────────────────
 export const SCREENING_LOCK_PATH  = path.join(__dirname, "..", "screening-lock.json");
 export const MANAGEMENT_LOCK_PATH  = path.join(__dirname, "..", "management.lock");
+export const DEPLOY_LOCK_PATH     = path.join(__dirname, "..", "deploy.lock");
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
@@ -115,6 +116,20 @@ export function acquireManagementLock() {
 
 export function completeManagementLock() {
   writeManagementLock("completed");
+}
+
+// ── Deploy lock (cross-cycle atomic deploy gate) ─────────────────────────────
+export function acquireDeployLock() {
+  const lock = readLock(DEPLOY_LOCK_PATH, "deploy");
+  if (lock?.status === "running") {
+    return { acquired: false, reason: `deploy lock: deploy already in progress (pid ${lock.pid})` };
+  }
+  writeLock(DEPLOY_LOCK_PATH, "running");
+  return { acquired: true };
+}
+
+export function releaseDeployLock() {
+  writeLock(DEPLOY_LOCK_PATH, "completed");
 }
 
 // ── Guard utilities ──────────────────────────────────────────────────────────

@@ -37,7 +37,7 @@ import { getCircuitState, shouldSkipNextCycle, getActiveProvider } from "./tools
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, notifyClose, sendWithButtons, registerCallback, unregisterCallback } from "./telegram.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updateFibTouchState, getStateSummary } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updateFibTouchState, getStateSummary, syncOpenPositions } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
@@ -53,6 +53,18 @@ if (!lpKey) {
 }
 log("startup", `LPAgent: primary=${lpKey ? "YES (len=" + lpKey.length + ")" : "MISSING"} backup=${lpKeyBackup ? "YES (len=" + lpKeyBackup.length + ")" : "MISSING"}`);
 
+// Wallet key validation — fail fast before any cycle runs
+try {
+  const { Keypair } = await import("@solana/web3.js");
+  const bs58 = (await import("bs58")).default;
+  if (!process.env.WALLET_PRIVATE_KEY) throw new Error("WALLET_PRIVATE_KEY not set");
+  const wallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
+  log("startup", `Wallet: ${wallet.publicKey.toString().slice(0, 8)}...`);
+} catch (e) {
+  console.error(`FATAL: Wallet key invalid — ${e.message}`);
+  process.exit(1);
+}
+
 // LLM provider probe — called async below in startAgent()
 
 // Also warn if Telegram not configured (non-fatal)
@@ -60,6 +72,14 @@ const _tel = telegramEnabled();
 log("startup", `Telegram: bot=${_tel ? "ACTIVE" : "DISABLED"} chatId=${process.env.TELEGRAM_CHAT_ID || "MISSING"}`);
 if (_tel) {
   sendMessage("✅ Prospera Agent started — LIVE mode").catch(() => {});
+}
+
+// ── Utility ───────────────────────────────────────────────────────────────────
+function withTimeout(promise, ms, label = "operation") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ]);
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -394,6 +414,16 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     const positionData = positions.map(p => ({ ...p, recall: recallForPool(p.pool) }));
 
+    // Prune stale entries from unbounded maps (M1+M2)
+    const activePositionIds = new Set(positionData.map(p => p.position));
+    const now = Date.now();
+    for (const key of _trendAlertedUntil.keys()) {
+      if (!activePositionIds.has(key) || _trendAlertedUntil.get(key) < now) _trendAlertedUntil.delete(key);
+    }
+    for (const key of _pnlHistory.keys()) {
+      if (!activePositionIds.has(key)) _pnlHistory.delete(key);
+    }
+
     // Fetch live prices for Successful Rebound fib tracking (only for positions with stored fib levels)
     const positionsWithFibLevels = positionData.filter(p => getTrackedPosition(p.position)?.fib_levels_sol != null);
     const livePriceMap = new Map();
@@ -414,7 +444,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         const candleResults = await Promise.allSettled(
           touchedPositions.map(p => {
             const tracked = getTrackedPosition(p.position);
-            return hybridDataProvider.getOHLCV(p.pool, "5m", 12, "solana", tracked?.base_mint ?? null);
+            return withTimeout(hybridDataProvider.getOHLCV(p.pool, "5m", 12, "solana", tracked?.base_mint ?? null), 15000, `getOHLCV(${p.pool?.slice(0,8)})`);
           })
         );
         for (let i = 0; i < touchedPositions.length; i++) {
@@ -721,7 +751,7 @@ export async function runManagementCycle({ silent = false } = {}) {
               const tracked = getTrackedPosition(p.position);
               const baseMint = tracked?.base_mint ?? null;
               const fibs = tracked?.fib_levels_sol ?? null;
-              return hybridDataProvider.getOHLCV(p.pool, "5m", 12, "solana", baseMint)
+              return withTimeout(hybridDataProvider.getOHLCV(p.pool, "5m", 12, "solana", baseMint), 15000, `getOHLCV(${p.pool?.slice(0,8)})`)
                 .then(candles => ({ position: p.position, candles, fibs }));
             })
           );
@@ -1080,7 +1110,38 @@ export function startCronJobs() {
     runPnLPoll().catch(e => log("cron_error", `PnL poll failed: ${e.message}`));
   });
 
-  _cronTasks = [mgmtTask, screenTask, backtestTask, briefingTask, pollTask];
+  const syncTask = cron.schedule("30 * * * *", async () => {
+    try {
+      const positions = await getMyPositions({ force: true, silent: true });
+      const activeAddresses = (positions?.positions ?? []).map(p => p.position);
+      syncOpenPositions(activeAddresses);
+      log("cron", `State sync: ${activeAddresses.length} active on-chain positions reconciled`);
+    } catch (e) {
+      log("cron_error", `State sync cron failed: ${e.message}`);
+    }
+  });
+
+  const orphanTask = cron.schedule("0 * * * *", async () => {
+    try {
+      const positions = await getMyPositions({ force: true, silent: true });
+      const knownAddresses = (positions?.positions ?? []).map(p => p.position);
+      const orphans = await scanOrphanPositions(knownAddresses, positions?.positions ?? []);
+      for (const o of orphans) {
+        log("management", `[orphan-cron] Orphan ${o.position.slice(0, 8)}...${o.position.slice(-4)} → close`);
+        const r = await closePosition({ position_address: o.position, reason: "orphan_position", _pool_hint: o.pool }).catch(e => ({ success: false, error: e.message }));
+        if (r.success) {
+          notifyClose({ pair: "ORPHAN/SOL", pnlUsd: 0, pnlPct: 0, reason: "orphan_position" }).catch(() => {});
+          log("management", `[orphan-cron] → closed`);
+        } else {
+          log("error", `[orphan-cron] → close failed: ${r.error}`);
+        }
+      }
+    } catch (e) {
+      log("cron_error", `Orphan scan cron failed: ${e.message}`);
+    }
+  });
+
+  _cronTasks = [mgmtTask, screenTask, backtestTask, briefingTask, pollTask, syncTask, orphanTask];
   log("cron", `Cron started — mgmt=*/${config.schedule.managementIntervalMin}min screen=*/${config.schedule.screeningIntervalMin}min`);
 }
 

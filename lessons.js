@@ -325,7 +325,7 @@ export function evolveThresholds(perfData, config) {
   Object.assign(userConfig, changes);
   userConfig._lastEvolved   = new Date().toISOString();
   userConfig._positionsAtEvolution = perfData.length;
-  fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+  safeSave(USER_CONFIG_PATH, userConfig, "user_config");
 
   // Apply to live config immediately
   if (changes.binsByStep != null) {

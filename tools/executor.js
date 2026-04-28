@@ -26,7 +26,8 @@ import { addPoolNote } from "../pool-memory.js";
 import { addSmartWallet, removeSmartWallet, loadSmartWallets, observePoolParticipants, getObservationStats } from "../smart-wallets.js";
 import { runBacktest } from "../backtest.js";
 import { listStrategies, getStrategy } from "../strategy-library.js";
-import { config, reloadScreeningThresholds } from "../config.js";
+import { config, reloadScreeningThresholds, canOpenNewPosition, calculateCurrentExposureSol } from "../config.js";
+import { acquireDeployLock, releaseDeployLock } from "./lock-manager.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -37,6 +38,7 @@ const PENDING_ATH_PATH    = path.join(__dirname, "../screening-pending.json");
 const POSITION_META_PATH  = path.join(__dirname, "../position-meta.json");
 
 import { log, logAction } from "../logger.js";
+import { safeSave } from "../log-utils.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
@@ -156,7 +158,7 @@ const toolMap = {
     Object.assign(userConfig, applied);
     userConfig.preset = name;
     userConfig._lastStrategyApplied = new Date().toISOString();
-    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+    safeSave(USER_CONFIG_PATH, userConfig, "user_config");
 
     log("strategy", `Applied preset "${name}": ${Object.keys(applied).join(", ")}`);
     addLesson(`[STRATEGY] Switched to preset "${name}" — ${preset.description}`, ["strategy", "config_change"]);
@@ -298,7 +300,7 @@ const toolMap = {
     }
     Object.assign(userConfig, applied);
     userConfig._lastAgentTune = new Date().toISOString();
-    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+    safeSave(USER_CONFIG_PATH, userConfig, "user_config");
 
     // Restart cron jobs if intervals changed
     const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null;
@@ -352,6 +354,17 @@ export async function executeTool(name, args) {
       log("safety_block", `${name} blocked: ${safetyCheck.reason}`);
       return { blocked: true, reason: safetyCheck.reason };
     }
+  }
+
+  // Atomic deploy lock — prevents concurrent deploys across screening + management cycles
+  let _heldDeployLock = false;
+  if (name === "deploy_position") {
+    const lock = acquireDeployLock();
+    if (!lock.acquired) {
+      log("safety_block", `deploy_position blocked: ${lock.reason}`);
+      return { blocked: true, reason: lock.reason };
+    }
+    _heldDeployLock = true;
   }
 
   try {
@@ -475,6 +488,8 @@ export async function executeTool(name, args) {
     const duration = Date.now() - startTime;
     logAction({ tool: name, args, error: error.message, duration_ms: duration, success: false });
     return { error: error.message, tool: name };
+  } finally {
+    if (_heldDeployLock) releaseDeployLock();
   }
 }
 
@@ -582,6 +597,15 @@ async function runSafetyChecks(name, args) {
           pass: false,
           reason: `Insufficient SOL: have ${balance.sol}, need ${minRequired} (${amountY} deploy + ${gasReserve} gas).`,
         };
+      }
+
+      // Exposure cap re-check — TOCTOU guard: another cycle may have deployed between screener check and here
+      {
+        const currentExposureSol = calculateCurrentExposureSol(positions, balance.sol_price ?? 0);
+        const cap = canOpenNewPosition(amountY, currentExposureSol, balance.sol);
+        if (!cap.allowed) {
+          return { pass: false, reason: `Exposure cap exceeded at deploy time: ${cap.reason}` };
+        }
       }
 
       // Real-time Fib 0.500 gate — SOL denomination (consistent with OHLCV candles and Fib levels)

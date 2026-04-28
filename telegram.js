@@ -26,18 +26,24 @@ function loadChatId() {
 }
 
 function saveChatId(id) {
+  const tmp = `${USER_CONFIG_PATH}.tmp`;
   try {
     let cfg = fs.existsSync(USER_CONFIG_PATH)
       ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
       : {};
     cfg.telegramChatId = id;
-    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
+    fs.renameSync(tmp, USER_CONFIG_PATH);
   } catch (e) {
     log("telegram_error", `Failed to persist chatId: ${e.message}`);
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
   }
 }
 
 loadChatId();
+if (TOKEN && !chatId) {
+  log("telegram_warn", "TELEGRAM_CHAT_ID not set — bot will ignore all incoming messages until env is configured");
+}
 
 // ─── Core send ───────────────────────────────────────────────────
 export function isEnabled() {
@@ -87,13 +93,19 @@ export async function sendHTML(html) {
 
 
 // ─── Inline keyboard callbacks ───────────────────────────────────
-const _callbackHandlers = new Map(); // callbackData → handler fn
+const _callbackHandlers = new Map(); // callbackData → { handler, timer }
 
-export function registerCallback(callbackData, handler) {
-  _callbackHandlers.set(callbackData, handler);
+export function registerCallback(callbackData, handler, ttlMs = 30 * 60_000) {
+  const existing = _callbackHandlers.get(callbackData);
+  if (existing?.timer) clearTimeout(existing.timer);
+  const timer = setTimeout(() => _callbackHandlers.delete(callbackData), ttlMs);
+  if (timer.unref) timer.unref(); // don't prevent process exit
+  _callbackHandlers.set(callbackData, { handler, timer });
 }
 
 export function unregisterCallback(callbackData) {
+  const existing = _callbackHandlers.get(callbackData);
+  if (existing?.timer) clearTimeout(existing.timer);
   _callbackHandlers.delete(callbackData);
 }
 
@@ -145,8 +157,10 @@ async function poll(onMessage) {
         const cbq = update.callback_query;
         if (cbq) {
           await answerCallbackQuery(cbq.id);
-          const handler = _callbackHandlers.get(cbq.data);
-          if (handler) {
+          const entry = _callbackHandlers.get(cbq.data);
+          if (entry) {
+            const { handler, timer } = entry;
+            if (timer) clearTimeout(timer);
             _callbackHandlers.delete(cbq.data); // one-shot
             await handler(cbq.data).catch(e => log("telegram_error", `Callback handler error: ${e.message}`));
           }
@@ -158,12 +172,10 @@ async function poll(onMessage) {
 
         const incomingChatId = String(msg.chat.id);
 
-        // Auto-register first sender as the owner
+        // Reject all messages if chatId not configured — require explicit TELEGRAM_CHAT_ID in env
         if (!chatId) {
-          chatId = incomingChatId;
-          saveChatId(chatId);
-          log("telegram", `Registered chat ID: ${chatId}`);
-          await sendMessage("Connected! I'm your LP agent. Ask me anything or use commands like /status.");
+          log("telegram_warn", `Message from ${incomingChatId} ignored — TELEGRAM_CHAT_ID not set in env`);
+          continue;
         }
 
         // Only accept messages from the registered chat

@@ -18,10 +18,13 @@ import { log } from "./logger.js";
  * @param {string} [tag]    — log tag suffix, e.g. "lessons" → logs "lessons_error"
  */
 export function safeSave(filePath, data, tag = "file") {
+  const tmp = `${filePath}.tmp`;
   try {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs.renameSync(tmp, filePath);
   } catch (e) {
     log(`${tag}_error`, `safeSave failed (${filePath}): ${e.message}`);
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
   }
 }
 

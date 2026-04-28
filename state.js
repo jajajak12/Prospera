@@ -32,11 +32,14 @@ function load() {
 }
 
 function save(state) {
+  const tmp = `${STATE_FILE}.tmp`;
   try {
     state.lastUpdated = new Date().toISOString();
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, STATE_FILE);
   } catch (err) {
     log("state_error", `Failed to write state.json: ${err.message}`);
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
   }
 }
 
