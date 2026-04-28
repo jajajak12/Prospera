@@ -23,7 +23,7 @@ import { recordPerformance } from "../lessons.js";
 import { isPoolOnCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
 import { fetchLPAgentOpenPositions } from "./study.js";
-import { notifyClose, isEnabled as telegramEnabled } from "../telegram.js";
+// telegram notify handled by callers (executor.js / index.js)
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -750,10 +750,9 @@ export async function closePosition({ position_address, reason, skip_swap = fals
     await new Promise(r => setTimeout(r, 5000));
 
     // ─── Step 3: Auto-swap base token to SOL ──────────────────────
-    if (!skip_swap && tracked?.pool) {
+    if (!skip_swap) {
       try {
         const { getWalletBalances, swapToken: doSwap } = await import("./wallet.js");
-        const pool = await getPool(new PublicKey(tracked.pool));
         const baseMint = pool.lbPair.tokenXMint.toString();
         for (let attempt = 1; attempt <= 3; attempt++) {
           await new Promise(r => setTimeout(r, attempt * 3000));
@@ -846,13 +845,7 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         log("close_warn", `ATH fetch at close failed: ${e.message}`);
       }
 
-      // Telegram close notification
-      if (telegramEnabled()) {
-        const pairName = tracked.pool_name || position_address.slice(0, 8);
-        notifyClose({ pair: pairName, pnlUsd, pnlPct, reason }).catch(() => {});
-      }
-
-      await recordPerformance({
+      try { await recordPerformance({
         position: position_address,
         pool: poolAddress,
         pool_name: tracked.pool_name || poolAddress.slice(0, 8),
@@ -889,7 +882,7 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         fib_levels_sol: tracked.fib_levels_sol ?? null,
         deployed_at: tracked.deployed_at ?? null,
         base_mint: pool.lbPair.tokenXMint.toString(),
-      });
+      }); } catch (e) { log("close_warn", `recordPerformance failed: ${e.message}`); }
 
       return { success: true, position: position_address, pool: poolAddress, pool_name: tracked.pool_name || null, txs: txHashes, pnl_usd: pnlUsd, pnl_pct: pnlPct, base_mint: pool.lbPair.tokenXMint.toString(), close_reason: reason || "agent decision" };
     }
