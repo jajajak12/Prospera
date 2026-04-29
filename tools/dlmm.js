@@ -251,6 +251,26 @@ export async function deployPosition({
       // Solution: createExtendedEmptyPosition (returns Transaction | Transaction[]),
       //           then addLiquidityByStrategyChunkable (returns Transaction[]).
 
+      // Pre-check: bid_ask's RebalanceLiquidity instruction requires all bin arrays
+      // to already exist on-chain — it does NOT auto-initialize them like the standard
+      // path does. If any are missing, Phase 2 will fail with InvalidBinArray (0x178b).
+      // Bail before Phase 1 to avoid wasting gas on position creation + phantom cleanup.
+      {
+        const { getBinArrayKeysCoverage, chunkedGetMultipleAccountInfos } = await import("@meteora-ag/dlmm");
+        const binArrayKeys = getBinArrayKeysCoverage(minBinId, maxBinId, pool.pubkey, pool.program.programId);
+        const binArrayAccounts = await chunkedGetMultipleAccountInfos(getConnection(), binArrayKeys);
+        const missingCount = binArrayAccounts.filter(a => a == null).length;
+        if (missingCount > 0) {
+          log("deploy_warn", `Bin array pre-check: ${missingCount}/${binArrayKeys.length} arrays missing for range [${minBinId}, ${maxBinId}] — aborting before Phase 1`, deployCtx);
+          return {
+            success: false,
+            reason: "bin_arrays_not_initialized",
+            retryable: true,
+            error: `${missingCount}/${binArrayKeys.length} bin arrays not initialized on-chain for range [${minBinId}, ${maxBinId}]. Pool may initialize them over time.`,
+          };
+        }
+      }
+
       // Phase 1: Create empty position (may be multiple txs)
       const createTxs = await pool.createExtendedEmptyPosition(
         minBinId,
