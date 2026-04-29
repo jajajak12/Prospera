@@ -1209,10 +1209,21 @@ async function handleTelegram(text) {
       }
       return;
     }
+    if (text.startsWith("/blacklist_keyword")) {
+      const word = text.replace("/blacklist_keyword", "").trim().toLowerCase();
+      if (!word) { await sendMessage("Usage: /blacklist_keyword <word>"); return; }
+      const p = path.join(__dirname, "token-type-blacklist.json");
+      try {
+        const list = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, "utf8")) : [];
+        if (list.includes(word)) { await sendMessage(`"${word}" already in keyword blacklist.`); return; }
+        list.push(word);
+        fs.writeFileSync(p, JSON.stringify(list, null, 2));
+        await sendMessage(`✅ Added "${word}" to keyword blacklist (${list.length} total).`);
+      } catch (e) { await sendMessage(`Error: ${e.message}`); }
+      return;
+    }
     if (text === "/help") {
-      await sendMessage(`Prospera Commands:\n/positions — list open positions\n/status — agent status overview\n/briefing — trigger morning briefing\n/backtest — run 7d backtest\n/backtest 14d — run 14d backtest\n/close <N> — close position N\n/screening — trigger screening cycle
-/management — trigger management cycle
-/help — show this message`);
+      await sendMessage(`Prospera Commands:\n/positions — list open positions\n/status — agent status overview\n/briefing — trigger morning briefing\n/backtest — run 7d backtest\n/backtest 14d — run 14d backtest\n/close <N> — close position N\n/screening — trigger screening cycle\n/management — trigger management cycle\n/blacklist_keyword <word> — add keyword to scam-type blacklist\n/help — show this message`);
       return;
     }
     if (text === "/status") {

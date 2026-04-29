@@ -76,6 +76,27 @@ function isBlacklisted(mint) {
   return _blacklistCache().has(mint);
 }
 
+// ─── Keyword blacklist (charity/scam type tokens) ─────────────────────────────
+const TOKEN_TYPE_BLACKLIST_PATH = path.join(__dirname, "..", "token-type-blacklist.json");
+let _keywordCache = { mtime: 0, keywords: [] };
+
+function getKeywordBlacklist() {
+  try {
+    if (!fs.existsSync(TOKEN_TYPE_BLACKLIST_PATH)) return _keywordCache.keywords;
+    const { mtimeMs } = fs.statSync(TOKEN_TYPE_BLACKLIST_PATH);
+    if (mtimeMs !== _keywordCache.mtime) {
+      _keywordCache.mtime = mtimeMs;
+      _keywordCache.keywords = JSON.parse(fs.readFileSync(TOKEN_TYPE_BLACKLIST_PATH, "utf8"));
+    }
+  } catch { /* non-fatal */ }
+  return _keywordCache.keywords;
+}
+
+function matchedKeyword(name, symbol) {
+  const haystack = `${name ?? ""} ${symbol ?? ""}`.toLowerCase();
+  return getKeywordBlacklist().find(kw => haystack.includes(kw.toLowerCase())) ?? null;
+}
+
 function isDevBlocked(devAddress) {
   if (!devAddress) return false;
   return _devBlockCache().has(devAddress);
@@ -577,6 +598,11 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
     }
     if (isBlacklisted(t.mint)) {
       log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — token blacklisted`);
+      return false;
+    }
+    const kw = matchedKeyword(t.name, t.symbol);
+    if (kw) {
+      log("screening", `  [SKIP] ${t.name ?? t.symbol}-SOL — matched keyword "${kw}" (scam_type_keyword)`);
       return false;
     }
     // isDevBlocked already called correctly at line 578 (after okx.creator available)
