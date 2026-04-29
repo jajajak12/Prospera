@@ -91,17 +91,19 @@ export async function getWalletBalances() {
       const lamports = await withRpcFallback(conn => conn.getBalance(pubkey), "wallet_balance");
       const solBalance = lamports / LAMPORTS_PER_SOL;
       log("wallet", `RPC fallback balance: ${solBalance.toFixed(4)} SOL`);
+      // Preserve cached token data — RPC doesn't return SPL tokens, don't overwrite good cache
+      const cachedTokens = _balanceCache?.data?.tokens ?? [];
       const rpcResult = {
         wallet: walletAddress,
         sol: Math.round(solBalance * 1e6) / 1e6,
-        sol_price: 0,
+        sol_price: _balanceCache?.data?.sol_price ?? 0,
         sol_usd: 0,
         usdc: 0,
-        tokens: [],
+        tokens: cachedTokens,
         total_usd: 0,
         error: `Helius unavailable — RPC fallback used`,
       };
-      _balanceCache = { data: rpcResult, ts: Date.now() };
+      // Don't overwrite _balanceCache — preserve last Helius token data for auto-swap
       return rpcResult;
     } catch (rpcErr) {
       log("wallet_error", `RPC fallback also failed: ${rpcErr.message}`);

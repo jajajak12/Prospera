@@ -78,7 +78,7 @@ export async function estimateBinInitFee(poolAddress, binsBelow, binsAbove) {
   const activeBin = await pool.getActiveBin();
   const minBinId = activeBin.binId - binsBelow;
   const maxBinId = activeBin.binId + binsAbove;
-  const keys = getBinArrayKeysCoverage(minBinId, maxBinId, pool.pubkey, pool.program.programId);
+  const keys = getBinArrayKeysCoverage(new BN(minBinId), new BN(maxBinId), pool.pubkey, pool.program.programId);
   const accounts = await chunkedGetMultipleAccountInfos(getConnection(), keys);
   const newArrays = accounts.filter(a => a == null).length;
   return { estimatedFee: newArrays * BIN_ARRAY_FEE, newArrays, totalArrays: keys.length };
@@ -257,7 +257,7 @@ export async function deployPosition({
       // Bail before Phase 1 to avoid wasting gas on position creation + phantom cleanup.
       {
         const { getBinArrayKeysCoverage, chunkedGetMultipleAccountInfos } = await import("@meteora-ag/dlmm");
-        const binArrayKeys = getBinArrayKeysCoverage(minBinId, maxBinId, pool.pubkey, pool.program.programId);
+        const binArrayKeys = getBinArrayKeysCoverage(new BN(minBinId), new BN(maxBinId), pool.pubkey, pool.program.programId);
         const binArrayAccounts = await chunkedGetMultipleAccountInfos(getConnection(), binArrayKeys);
         const missingCount = binArrayAccounts.filter(a => a == null).length;
         if (missingCount > 0) {
@@ -806,18 +806,24 @@ export async function closePosition({ position_address, reason, skip_swap = fals
       try {
         const { getWalletBalances, swapToken: doSwap } = await import("./wallet.js");
         const baseMint = pool.lbPair.tokenXMint.toString();
+        let swapped = false;
         for (let attempt = 1; attempt <= 3; attempt++) {
           await new Promise(r => setTimeout(r, attempt * 3000));
           const balances = await getWalletBalances({});
           const token = balances.tokens?.find(t => t.mint === baseMint);
+          log("close", `Step 3 attempt ${attempt}: token=${token ? `${token.symbol} $${token.usd?.toFixed(2)}` : "not found"} helius=${!balances.error}`);
           if (token && token.usd >= 0.10) {
-            log("close", `Step 3: Auto-swapping ${token.symbol || baseMint.slice(0, 8)} ($${token.usd.toFixed(2)}) to SOL`);
             const swapR = await doSwap({ input_mint: baseMint, output_mint: "SOL", amount: token.balance }).catch(e => ({ error: e.message }));
             if (swapR?.error) log("close_warn", `Step 3 swap failed: ${swapR.error}`);
             else if (swapR?.amount_out) log("close", `Step 3 OK: received ${swapR.amount_out} SOL`);
+            swapped = true;
+            break;
+          } else if (token && token.usd < 0.10) {
+            log("close", `Step 3: token $${token.usd?.toFixed(2)} < $0.10 threshold — skipping swap`);
             break;
           }
         }
+        if (!swapped) log("close_warn", `Step 3: token ${baseMint.slice(0, 8)} not found in wallet after 3 attempts — swap skipped`);
       } catch (e) {
         log("close_warn", `Step 3 auto-swap error: ${e.message}`);
       }
