@@ -76,8 +76,10 @@ export async function estimateBinInitFee(poolAddress, binsBelow, binsAbove) {
   const { getBinArrayKeysCoverage, BIN_ARRAY_FEE, chunkedGetMultipleAccountInfos } = await import("@meteora-ag/dlmm");
   const pool = await getPool(poolAddress);
   const activeBin = await pool.getActiveBin();
-  const minBinId = activeBin.binId - binsBelow;
-  const maxBinId = activeBin.binId + binsAbove;
+  const activeBinIdNum = (activeBin.binId != null && typeof activeBin.binId === 'object' && activeBin.binId.toNumber)
+    ? activeBin.binId.toNumber() : Number(activeBin.binId);
+  const minBinId = activeBinIdNum - binsBelow;
+  const maxBinId = activeBinIdNum + binsAbove;
   const keys = getBinArrayKeysCoverage(new BN(minBinId), new BN(maxBinId), pool.pubkey, pool.program.programId);
   const accounts = await chunkedGetMultipleAccountInfos(getConnection(), keys);
   const newArrays = accounts.filter(a => a == null).length;
@@ -196,10 +198,14 @@ export async function deployPosition({
   const wallet = getWallet();
   const pool = await getPool(pool_address);
   const activeBin = await pool.getActiveBin();
+  // Normalize binId to plain number — SDK may return BN or string in some versions
+  const activeBinIdNum = (activeBin.binId != null && typeof activeBin.binId === 'object' && activeBin.binId.toNumber)
+    ? activeBin.binId.toNumber()
+    : Number(activeBin.binId);
 
   // Range calculation
-  const minBinId = activeBin.binId - activeBinsBelow;
-  const maxBinId = activeBin.binId + activeBinsAbove;
+  const minBinId = activeBinIdNum - activeBinsBelow;
+  const maxBinId = activeBinIdNum + activeBinsAbove;
 
   const strategyMap = {
     spot: StrategyType.Spot,
@@ -234,7 +240,7 @@ export async function deployPosition({
   const deployCtx = { pool: pool_address, pair: pool_name };
   log("deploy", `Pool: ${pool_address}`, deployCtx);
   const rangeMode = activeBinsAbove < 0 ? " — PASSIVE BID (range below active bin)" : "";
-  log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins, active=${activeBin.binId}${isWideRange ? " WIDE" : ""}${rangeMode})`, deployCtx);
+  log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins, active=${activeBinIdNum}${isWideRange ? " WIDE" : ""}${rangeMode})`, deployCtx);
   log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`, deployCtx);
   log("deploy", `Position: ${newPosition.publicKey.toString()}`, deployCtx);
 
@@ -311,7 +317,7 @@ export async function deployPosition({
         user: wallet.publicKey,
         totalXAmount: totalXLamports,
         totalYAmount: totalYLamports,
-        strategy: { maxBinId, minBinId, strategyType },
+        strategy: { minBinId, maxBinId, strategyType },
         slippage: 1000, // 10% in bps
       });
       const txHash = await refreshAndSend(tx, [wallet, newPosition], "deploy:standard");
@@ -333,7 +339,7 @@ export async function deployPosition({
       organic_score,
       amount_sol: finalAmountY,
       amount_x: finalAmountX,
-      active_bin: activeBin.binId,
+      active_bin: activeBinIdNum,
       initial_value_usd,
       mcap,
       volume_5m,
@@ -350,8 +356,8 @@ export async function deployPosition({
 
     const actualBinStep = pool.lbPair.binStep;
     const activePrice = parseFloat(pool.fromPricePerLamport(Number(activeBin.price)));
-    const minPrice = activePrice * Math.pow(1 + actualBinStep / 10000, minBinId - activeBin.binId);
-    const maxPrice = activePrice * Math.pow(1 + actualBinStep / 10000, maxBinId - activeBin.binId);
+    const minPrice = activePrice * Math.pow(1 + actualBinStep / 10000, minBinId - activeBinIdNum);
+    const maxPrice = activePrice * Math.pow(1 + actualBinStep / 10000, maxBinId - activeBinIdNum);
 
     // Read base fee directly from pool — baseFactor * binStep / 10^6 gives fee in %
     const baseFactor = pool.lbPair.parameters?.baseFactor ?? 0;
@@ -362,7 +368,7 @@ export async function deployPosition({
       position: newPosition.publicKey.toString(),
       pool: pool_address,
       pool_name,
-      bin_range: { min: minBinId, max: maxBinId, active: activeBin.binId },
+      bin_range: { min: minBinId, max: maxBinId, active: activeBinIdNum },
       price_range: { min: minPrice, max: maxPrice },
       bin_step: actualBinStep,
       base_fee: actualBaseFee,
