@@ -257,22 +257,27 @@ export async function deployPosition({
       // Solution: createExtendedEmptyPosition (returns Transaction | Transaction[]),
       //           then addLiquidityByStrategyChunkable (returns Transaction[]).
 
-      // Pre-check: bid_ask's RebalanceLiquidity instruction requires all bin arrays
-      // to already exist on-chain — it does NOT auto-initialize them like the standard
-      // path does. If any are missing, Phase 2 will fail with InvalidBinArray (0x178b).
-      // Bail before Phase 1 to avoid wasting gas on position creation + phantom cleanup.
+      // Pre-check: bid_ask's RebalanceLiquidity requires all bin arrays to exist
+      // on-chain. It does NOT auto-initialize them like the standard path does.
+      // We also check the bin array adjacent above maxBinId — RebalanceLiquidity
+      // internally looks up the active-bin boundary which can touch the next array.
       {
-        const { getBinArrayKeysCoverage, chunkedGetMultipleAccountInfos } = await import("@meteora-ag/dlmm");
-        const binArrayKeys = getBinArrayKeysCoverage(new BN(minBinId), new BN(maxBinId), pool.pubkey, pool.program.programId);
-        const binArrayAccounts = await chunkedGetMultipleAccountInfos(getConnection(), binArrayKeys);
-        const missingCount = binArrayAccounts.filter(a => a == null).length;
-        if (missingCount > 0) {
-          log("deploy_warn", `Bin array pre-check: ${missingCount}/${binArrayKeys.length} arrays missing for range [${minBinId}, ${maxBinId}] — aborting before Phase 1`, deployCtx);
+        const { getBinArrayKeysCoverage, getBinArrayIndexesCoverage, deriveBinArray, chunkedGetMultipleAccountInfos } = await import("@meteora-ag/dlmm");
+        const baseKeys = getBinArrayKeysCoverage(new BN(minBinId), new BN(maxBinId), pool.pubkey, pool.program.programId);
+        // Adjacent bin array above the range (RebalanceLiquidity may probe it for active-bin boundary)
+        const maxIndex = getBinArrayIndexesCoverage(new BN(maxBinId), new BN(maxBinId))[0];
+        const adjacentKey = deriveBinArray(pool.pubkey, maxIndex.addn(1), pool.program.programId)[0];
+        const allKeys = [...baseKeys, adjacentKey];
+        const binArrayAccounts = await chunkedGetMultipleAccountInfos(getConnection(), allKeys);
+        const missing = allKeys.filter((_, i) => binArrayAccounts[i] == null);
+        if (missing.length > 0) {
+          const missingCount = missing.length;
+          log("deploy_warn", `Bin array pre-check: ${missingCount}/${allKeys.length} arrays missing for range [${minBinId}, ${maxBinId}]+adjacent — aborting before Phase 1`, deployCtx);
           return {
             success: false,
             reason: "bin_arrays_not_initialized",
             retryable: true,
-            error: `${missingCount}/${binArrayKeys.length} bin arrays not initialized on-chain for range [${minBinId}, ${maxBinId}]. Pool may initialize them over time.`,
+            error: `${missingCount}/${allKeys.length} bin arrays not initialized on-chain for range [${minBinId}, ${maxBinId}]. Pool may initialize them over time.`,
           };
         }
       }
@@ -407,6 +412,16 @@ export async function deployPosition({
       }
     }
 
+    // InvalidBinArray (0x178b) on Phase 2: bin arrays exist but RebalanceLiquidity
+    // accessed one we didn't pre-check. Mark retryable so firedOnce is NOT set.
+    if (error.message?.includes("0x178b") || error.message?.includes("InvalidBinArray")) {
+      return {
+        success: false,
+        reason: "bin_arrays_not_initialized",
+        retryable: true,
+        error: error.message,
+      };
+    }
     return { success: false, error: error.message };
   }
 }

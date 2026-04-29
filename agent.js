@@ -407,7 +407,7 @@ export async function agentLoop(
 
         const result = await executeTool(functionName, functionArgs);
 
-        if (NO_RETRY_TOOLS.has(functionName) && !result.retryable_expiry) firedOnce.add(functionName);
+        if (NO_RETRY_TOOLS.has(functionName) && !result.retryable_expiry && !result.retryable) firedOnce.add(functionName);
         else if (ONCE_PER_SESSION.has(functionName) && result.success === true) firedOnce.add(functionName);
 
         return {
