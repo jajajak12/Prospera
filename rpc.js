@@ -173,6 +173,14 @@ export async function withRpcFallback(fn, label = "rpc_call") {
 }
 
 /**
+ * True when active connection is a fallback endpoint (not primary).
+ * Fallback RPCs may report stale blockhashes — callers should add buffer.
+ */
+export function isOnFallback() {
+  return _currentIdx > 0;
+}
+
+/**
  * Return current RPC status for health/debug.
  */
 export function getRpcStatus() {

@@ -8,7 +8,7 @@ import bs58 from "bs58";
 import { config } from "../config.js";
 import { hybridDataProvider } from './dataProvider.js';
 import { log } from "../logger.js";
-import { getConnection, withRpcFallback, reportRpcSuccess, reportRpcError } from "../rpc.js";
+import { getConnection, withRpcFallback, reportRpcSuccess, reportRpcError, isOnFallback } from "../rpc.js";
 import {
   trackPosition,
   markOutOfRange,
@@ -95,6 +95,38 @@ export async function getActiveBin({ pool_address }) {
     price: parseFloat(pool.fromPricePerLamport(Number(activeBin.price))),
     pricePerLamport: activeBin.price.toString(),
   };
+}
+
+// ─── TX helpers ────────────────────────────────────────────────
+
+function isBlockHeightError(err) {
+  return (err?.message || "").includes("block height exceeded");
+}
+
+/**
+ * Fetch fresh blockhash, stamp it onto tx, then send.
+ * On fallback RPC adds +150 to lastValidBlockHeight (stale-hash buffer).
+ * Retries once on TransactionExpiredBlockheightExceededError with a second
+ * fresh blockhash before giving up.
+ */
+async function refreshAndSend(tx, signers, label) {
+  const FALLBACK_BUFFER = 150;
+
+  async function attempt() {
+    const conn = getConnection();
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+    tx.recentBlockhash = blockhash;
+    tx.lastValidBlockHeight = lastValidBlockHeight + (isOnFallback() ? FALLBACK_BUFFER : 0);
+    return withRpcFallback(c => sendAndConfirmTransaction(c, tx, signers), label);
+  }
+
+  try {
+    return await attempt();
+  } catch (err) {
+    if (!isBlockHeightError(err)) throw err;
+    log("deploy_warn", `${label}: block height exceeded — retrying with fresh blockhash`);
+    return await attempt(); // one retry
+  }
 }
 
 // ─── Deploy Position ───────────────────────────────────────────
@@ -229,7 +261,7 @@ export async function deployPosition({
       const createTxArray = Array.isArray(createTxs) ? createTxs : [createTxs];
       for (let i = 0; i < createTxArray.length; i++) {
         const signers = i === 0 ? [wallet, newPosition] : [wallet];
-        const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, createTxArray[i], signers), "deploy:create");
+        const txHash = await refreshAndSend(createTxArray[i], signers, "deploy:create");
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
@@ -247,7 +279,7 @@ export async function deployPosition({
       });
       const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
       for (let i = 0; i < addTxArray.length; i++) {
-        const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, addTxArray[i], [wallet]), "deploy:add_liquidity");
+        const txHash = await refreshAndSend(addTxArray[i], [wallet], "deploy:add_liquidity");
         txHashes.push(txHash);
         log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
       }
@@ -262,7 +294,7 @@ export async function deployPosition({
         strategy: { maxBinId, minBinId, strategyType },
         slippage: 1000, // 10% in bps
       });
-      const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet, newPosition]), "deploy:standard");
+      const txHash = await refreshAndSend(tx, [wallet, newPosition], "deploy:standard");
       txHashes.push(txHash);
     }
 

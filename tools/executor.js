@@ -510,7 +510,8 @@ export async function executeTool(name, args) {
   } catch (error) {
     const duration = Date.now() - startTime;
     logAction({ tool: name, args, error: error.message, duration_ms: duration, success: false });
-    return { error: error.message, tool: name };
+    const retryable_expiry = (error.message || "").includes("block height exceeded");
+    return { error: error.message, tool: name, ...(retryable_expiry ? { retryable_expiry: true } : {}) };
   } finally {
     if (_heldDeployLock) releaseDeployLock();
   }
