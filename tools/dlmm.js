@@ -62,7 +62,10 @@ async function getPool(poolAddress) {
   const key = poolAddress.toString();
   if (!poolCache.has(key)) {
     const { DLMM } = await getDLMM();
-    const pool = await DLMM.create(getConnection(), new PublicKey(poolAddress));
+    const pool = await withRpcFallback(
+      conn => DLMM.create(conn, new PublicKey(poolAddress)),
+      "getPool"
+    );
     poolCache.set(key, pool);
   }
   return poolCache.get(key);
@@ -81,7 +84,7 @@ export async function estimateBinInitFee(poolAddress, binsBelow, binsAbove) {
   const minBinId = activeBinIdNum - binsBelow;
   const maxBinId = activeBinIdNum + binsAbove;
   const keys = getBinArrayKeysCoverage(new BN(minBinId), new BN(maxBinId), pool.pubkey, pool.program.programId);
-  const accounts = await chunkedGetMultipleAccountInfos(getConnection(), keys);
+  const accounts = await withRpcFallback(conn => chunkedGetMultipleAccountInfos(conn, keys), "estimateBinInitFee");
   const newArrays = accounts.filter(a => a == null).length;
   return { estimatedFee: newArrays * BIN_ARRAY_FEE, newArrays, totalArrays: keys.length };
 }
@@ -115,8 +118,10 @@ async function refreshAndSend(tx, signers, label) {
   const FALLBACK_BUFFER = 150;
 
   async function attempt() {
-    const conn = getConnection();
-    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+    const { blockhash, lastValidBlockHeight } = await withRpcFallback(
+      conn => conn.getLatestBlockhash("confirmed"),
+      `${label}:blockhash`
+    );
     tx.recentBlockhash = blockhash;
     tx.lastValidBlockHeight = lastValidBlockHeight + (isOnFallback() ? FALLBACK_BUFFER : 0);
     return withRpcFallback(c => sendAndConfirmTransaction(c, tx, signers), label);
@@ -228,7 +233,7 @@ export async function deployPosition({
   // Most Meteora pools base tokens are 6 or 9. To be safe, we should fetch.
   let totalXLamports = new BN(0);
   if (finalAmountX > 0) {
-    const mintInfo = await getConnection().getParsedAccountInfo(new PublicKey(pool.lbPair.tokenXMint));
+    const mintInfo = await withRpcFallback(conn => conn.getParsedAccountInfo(new PublicKey(pool.lbPair.tokenXMint)), "deploy:mintDecimals");
     const decimals = mintInfo.value?.data?.parsed?.info?.decimals ?? 9;
     totalXLamports = new BN(Math.floor(finalAmountX * Math.pow(10, decimals)));
   }
@@ -268,7 +273,7 @@ export async function deployPosition({
         const maxIndex = getBinArrayIndexesCoverage(new BN(maxBinId), new BN(maxBinId))[0];
         const adjacentKey = deriveBinArray(pool.pubkey, maxIndex.addn(1), pool.program.programId)[0];
         const allKeys = [...baseKeys, adjacentKey];
-        const binArrayAccounts = await chunkedGetMultipleAccountInfos(getConnection(), allKeys);
+        const binArrayAccounts = await withRpcFallback(conn => chunkedGetMultipleAccountInfos(conn, allKeys), "deploy:binArrayPreCheck");
         const missing = allKeys.filter((_, i) => binArrayAccounts[i] == null);
         if (missing.length > 0) {
           const missingCount = missing.length;
@@ -437,7 +442,7 @@ let _orphanScanAt = 0;
 // ─── Orphan Position Scanner ────────────────────────────────────
 // Finds on-chain DLMM positions that LPAgent doesn't return (phantom/failed deploys).
 // Throttled to once per hour to avoid expensive RPC scans every cycle.
-export async function scanOrphanPositions(lpAgentAddresses, lpAgentPositionData = []) {
+export async function scanOrphanPositions(lpAgentAddresses, lpAgentPositionData = [], ghostPositions = []) {
   if (Date.now() - _orphanScanAt < ORPHAN_SCAN_INTERVAL_MS) return [];
   _orphanScanAt = Date.now();
 
@@ -449,9 +454,9 @@ export async function scanOrphanPositions(lpAgentAddresses, lpAgentPositionData 
   try {
     const { DLMM } = await getDLMM();
     const wallet = getWallet();
-    const allPositions = await DLMM.getAllLbPairPositionsByUser(
-      getConnection(),
-      wallet.publicKey
+    const allPositions = await withRpcFallback(
+      conn => DLMM.getAllLbPairPositionsByUser(conn, wallet.publicKey),
+      "orphanScan:getAllPositions"
     );
 
     const poolCount = Object.keys(allPositions).length;
@@ -491,6 +496,15 @@ export async function scanOrphanPositions(lpAgentAddresses, lpAgentPositionData 
     const ghosts = lpAgentPositionData.filter(p => p.position && !chainSet.has(p.position));
     for (const g of ghosts) {
       log("orphan_scan", `  Ghost: pos=${g.position.slice(0, 8)} LPAgent-only (not on-chain) sol=${g.total_value_sol} pair=${g.pair}`);
+    }
+
+    // Zero-value ghost positions with known pool: account exists but getAllLbPairPositionsByUser
+    // missed them (DLMM v2, empty bins, SDK gap). Close to reclaim rent.
+    for (const g of ghostPositions) {
+      if (!g.position || !g.pool) continue;
+      if (chainSet.has(g.position)) continue; // already caught above
+      log("orphan_scan", `  Ghost+pool: pos=${g.position.slice(0, 8)} pool=${g.pool?.slice(0, 8)} sol=${g.total_value_sol} → close to reclaim rent`);
+      orphans.push({ position: g.position, pool: g.pool });
     }
 
     if (orphans.length > 0) {
@@ -640,13 +654,17 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
 
     // Filter LPAgent ghost positions: zero value + not deployed by us (not in state.json)
     // LPAgent keeps tracking positions after on-chain account is closed/rugged indefinitely.
+    const ghostPositions = [];
     const filtered = positions.filter(p => {
       const isGhost = p.total_value_sol <= 0 && !getTrackedPosition(p.position);
-      if (isGhost) log("positions_warn", `Ghost position filtered: pos=${p.position?.slice(0, 8)} pair=${p.pair} sol=${p.total_value_sol} age=${p.age_minutes} — LPAgent ghost, not tracked in state`);
+      if (isGhost) {
+        log("positions_warn", `Ghost position filtered: pos=${p.position?.slice(0, 8)} pair=${p.pair} sol=${p.total_value_sol} age=${p.age_minutes} — LPAgent ghost, not tracked in state`);
+        ghostPositions.push(p);
+      }
       return !isGhost;
     });
 
-    const result = { wallet: walletAddress, total_positions: filtered.length, positions: filtered };
+    const result = { wallet: walletAddress, total_positions: filtered.length, positions: filtered, ghost_positions: ghostPositions };
     syncOpenPositions(filtered.map(p => p.position));
     _positionsCache = result;
     _positionsCacheAt = Date.now();
@@ -666,9 +684,12 @@ export async function getWalletPositions({ wallet_address }) {
   try {
     const DLMM_PROGRAM = new PublicKey("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
 
-    const accounts = await getConnection().getProgramAccounts(DLMM_PROGRAM, {
-      filters: [{ memcmp: { offset: 40, bytes: new PublicKey(wallet_address).toBase58() } }],
-    });
+    const accounts = await withRpcFallback(
+      conn => conn.getProgramAccounts(DLMM_PROGRAM, {
+        filters: [{ memcmp: { offset: 40, bytes: new PublicKey(wallet_address).toBase58() } }],
+      }),
+      "getWalletPositions"
+    );
 
     if (accounts.length === 0) {
       return { wallet: wallet_address, total_positions: 0, positions: [] };
@@ -1057,9 +1078,9 @@ async function lookupPoolForPosition(position_address, walletAddress) {
 
   // SDK scan (last resort)
   const { DLMM } = await getDLMM();
-  const allPositions = await DLMM.getAllLbPairPositionsByUser(
-    getConnection(),
-    new PublicKey(walletAddress)
+  const allPositions = await withRpcFallback(
+    conn => DLMM.getAllLbPairPositionsByUser(conn, new PublicKey(walletAddress)),
+    "lookupPool:getAllPositions"
   );
 
   for (const [lbPairKey, positionData] of Object.entries(allPositions)) {
