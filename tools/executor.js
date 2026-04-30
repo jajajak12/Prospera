@@ -466,30 +466,9 @@ export async function executeTool(name, args) {
             observePoolParticipants(poolAddr, pnlPct, ownWallet).catch(() => {});
           }
         }
-
-        // Auto-swap base token back to SOL
-        if (!args.skip_swap && result.base_mint) {
-          try {
-            let token = null;
-            for (let attempt = 1; attempt <= 3; attempt++) {
-              await new Promise(r => setTimeout(r, attempt * 3000));
-              const balances = await getWalletBalances({});
-              token = balances.tokens?.find(t => t.mint === result.base_mint);
-              if (token && token.usd >= 0.10) break;
-              log("executor", `Auto-swap attempt ${attempt}/3: token not found or < $0.10, retrying...`);
-            }
-            if (token && token.usd >= 0.10) {
-              log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
-              const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
-              result.auto_swapped = true;
-              result.auto_swap_note = `Base token already auto-swapped back to SOL. Do NOT call swap_token again.`;
-              if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
-            } else {
-              log("executor_warn", `Auto-swap after close: ${result.base_mint.slice(0, 8)} not found after 3 attempts`);
-            }
-          } catch (e) {
-            log("executor_warn", `Auto-swap after close failed: ${e.message}`);
-          }
+        // Step 3 swap handled inside closePosition() in dlmm.js (10 retries + RPC fallback)
+        if (result.auto_swapped) {
+          log("executor", `Auto-swap already done inside closePosition — ${result.sol_received ? `received ${result.sol_received} SOL` : "completed"}`);
         }
 
       } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {

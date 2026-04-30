@@ -848,29 +848,71 @@ export async function closePosition({ position_address, reason, skip_swap = fals
 
     // ─── Step 3: Auto-swap base token to SOL ──────────────────────
     if (!skip_swap) {
-      try {
-        const { getWalletBalances, swapToken: doSwap } = await import("./wallet.js");
-        const baseMint = pool.lbPair.tokenXMint.toString();
-        let swapped = false;
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          await new Promise(r => setTimeout(r, attempt * 3000));
-          const balances = await getWalletBalances({});
-          const token = balances.tokens?.find(t => t.mint === baseMint);
-          log("close", `Step 3 attempt ${attempt}: token=${token ? `${token.symbol} $${token.usd?.toFixed(2)}` : "not found"} helius=${!balances.error}`);
-          if (token && token.usd >= 0.10) {
-            const swapR = await doSwap({ input_mint: baseMint, output_mint: "SOL", amount: token.balance }).catch(e => ({ error: e.message }));
-            if (swapR?.error) log("close_warn", `Step 3 swap failed: ${swapR.error}`);
-            else if (swapR?.amount_out) log("close", `Step 3 OK: received ${swapR.amount_out} SOL`);
-            swapped = true;
-            break;
-          } else if (token && token.usd < 0.10) {
-            log("close", `Step 3: token $${token.usd?.toFixed(2)} < $0.10 threshold — skipping swap`);
-            break;
+      const SOL_MINT  = "So11111111111111111111111111111111111111112";
+      const USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+      const baseMint  = pool.lbPair.tokenXMint.toString();
+      if (baseMint === SOL_MINT || baseMint === USDT_MINT) {
+        log("close", `Step 3: base token is ${baseMint === SOL_MINT ? "SOL" : "USDT"} — skip swap`);
+      } else {
+        try {
+          const { getWalletBalances, swapToken: doSwap } = await import("./wallet.js");
+          const { sendMessage: tgAlert } = await import("../telegram.js");
+          let swapped = false;
+          let lastError = null;
+          const MAX_ATTEMPTS = 10;
+          for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            await new Promise(r => setTimeout(r, Math.min(attempt * 3000, 30000)));
+            try {
+              const balances = await getWalletBalances({});
+              let tokenAmt = null;
+              let tokenUsd = null;
+              const heliusOk = !balances.error;
+              const heliusToken = heliusOk ? balances.tokens?.find(t => t.mint === baseMint) : null;
+              if (heliusToken) {
+                tokenAmt = heliusToken.balance;
+                tokenUsd = heliusToken.usd;
+              } else {
+                // Helius unavailable — query token account directly via RPC
+                const accounts = await withRpcFallback(
+                  conn => conn.getParsedTokenAccountsByOwner(wallet.publicKey, { mint: new PublicKey(baseMint) }),
+                  "swap:rpc_balance"
+                );
+                const acct = accounts.value?.[0]?.account?.data?.parsed?.info?.tokenAmount;
+                if (acct && parseFloat(acct.uiAmount) > 0) {
+                  tokenAmt = parseFloat(acct.uiAmount);
+                  tokenUsd = null; // USD unknown without Helius
+                }
+              }
+              log("close", `Step 3 attempt ${attempt}/${MAX_ATTEMPTS}: token=${tokenAmt != null ? `${tokenAmt} ($${tokenUsd != null ? tokenUsd.toFixed(2) : "?"})` : "not found"} helius=${heliusOk}`);
+              if (tokenAmt == null) continue;
+              if (tokenUsd != null && tokenUsd < 0.10) {
+                log("close", `Step 3: token $${tokenUsd.toFixed(2)} < $0.10 — skip swap`);
+                swapped = true;
+                break;
+              }
+              const swapR = await doSwap({ input_mint: baseMint, output_mint: "SOL", amount: tokenAmt }).catch(e => ({ error: e.message }));
+              if (swapR?.error) {
+                lastError = swapR.error;
+                log("close_warn", `Step 3 swap attempt ${attempt} failed: ${swapR.error}`);
+                continue;
+              }
+              if (swapR?.amount_out) {
+                log("close", `Step 3 OK (attempt ${attempt}): received ${swapR.amount_out} SOL`);
+                swapped = true;
+                break;
+              }
+            } catch (attemptErr) {
+              lastError = attemptErr.message;
+              log("close_warn", `Step 3 attempt ${attempt} error: ${attemptErr.message}`);
+            }
           }
+          if (!swapped) {
+            log("close_warn", `SWAP_FAILED_PERMANENT: ${baseMint.slice(0, 8)} — exhausted ${MAX_ATTEMPTS} attempts. Last: ${lastError}`);
+            tgAlert(`⚠️ SWAP_FAILED_PERMANENT\nToken: ${baseMint}\nLast error: ${lastError || "not found in wallet"}`).catch(() => {});
+          }
+        } catch (e) {
+          log("close_warn", `Step 3 auto-swap error: ${e.message}`);
         }
-        if (!swapped) log("close_warn", `Step 3: token ${baseMint.slice(0, 8)} not found in wallet after 3 attempts — swap skipped`);
-      } catch (e) {
-        log("close_warn", `Step 3 auto-swap error: ${e.message}`);
       }
     }
 
