@@ -460,11 +460,13 @@ export async function scanOrphanPositions(lpAgentAddresses, lpAgentPositionData 
     log("orphan_scan", `On-chain: ${chainTotal} position(s) across ${poolCount} pool(s)`);
 
     const knownSet = new Set(lpAgentAddresses);
+    const chainSet = new Set();
     const orphans = [];
 
     for (const [lbPairKey, posData] of Object.entries(allPositions)) {
       for (const pos of (posData.lbPairPositionsData || [])) {
         const addr = pos.publicKey.toString();
+        chainSet.add(addr);
         const isKnown = knownSet.has(addr);
         // Log total liquidity to detect zero-value positions skipped by LPAgent
         const totalLiq = pos.positionData?.totalXAmount != null
@@ -477,10 +479,16 @@ export async function scanOrphanPositions(lpAgentAddresses, lpAgentPositionData 
       }
     }
 
+    // Reverse ghost check: LPAgent knows position but it's NOT on-chain
+    const ghosts = lpAgentPositionData.filter(p => p.position && !chainSet.has(p.position));
+    for (const g of ghosts) {
+      log("orphan_scan", `  Ghost: pos=${g.position.slice(0, 8)} LPAgent-only (not on-chain) sol=${g.total_value_sol} pair=${g.pair}`);
+    }
+
     if (orphans.length > 0) {
       log("orphan_scan", `Found ${orphans.length} orphan(s): ${orphans.map(o => o.position.slice(0, 8)).join(", ")}`);
     } else {
-      log("orphan_scan", "No orphan positions found");
+      log("orphan_scan", `No orphan positions found${ghosts.length > 0 ? ` (${ghosts.length} ghost(s) logged above — filtered by getMyPositions)` : ""}`);
     }
 
     return orphans;
@@ -622,8 +630,16 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
       };
     });
 
-    const result = { wallet: walletAddress, total_positions: positions.length, positions };
-    syncOpenPositions(positions.map(p => p.position));
+    // Filter LPAgent ghost positions: zero value + not deployed by us (not in state.json)
+    // LPAgent keeps tracking positions after on-chain account is closed/rugged indefinitely.
+    const filtered = positions.filter(p => {
+      const isGhost = p.total_value_sol <= 0 && !getTrackedPosition(p.position);
+      if (isGhost) log("positions_warn", `Ghost position filtered: pos=${p.position?.slice(0, 8)} pair=${p.pair} sol=${p.total_value_sol} age=${p.age_minutes} — LPAgent ghost, not tracked in state`);
+      return !isGhost;
+    });
+
+    const result = { wallet: walletAddress, total_positions: filtered.length, positions: filtered };
+    syncOpenPositions(filtered.map(p => p.position));
     _positionsCache = result;
     _positionsCacheAt = Date.now();
     return result;
@@ -851,6 +867,7 @@ export async function closePosition({ position_address, reason, skip_swap = fals
     }
 
     recordClose(position_address, reason || "agent decision");
+    log("close", `State: pos=${position_address.slice(0, 8)} pool=${poolAddress.toString().slice(0, 8)} tracked=${!!tracked} removed=${!!tracked}`);
 
     // Record performance for learning
     if (tracked) {
@@ -968,6 +985,11 @@ export async function closePosition({ position_address, reason, skip_swap = fals
 
     return { success: true, position: position_address, pool: poolAddress, pool_name: null, txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString(), close_reason: reason || "agent decision" };
   } catch (error) {
+    if (/binId|undefined.*binId|Cannot read properties of undefined/i.test(error.message)) {
+      log("close_warn", `Position ${position_address.slice(0, 8)} already gone on-chain (${error.message}) — force-marking closed`);
+      try { recordClose(position_address, "position_already_gone_onchain"); } catch (_) {}
+      return { success: true, already_closed: true, position: position_address };
+    }
     log("close_error", error.message);
     return { success: false, error: error.message };
   }
