@@ -468,12 +468,20 @@ export async function scanOrphanPositions(lpAgentAddresses, lpAgentPositionData 
         const addr = pos.publicKey.toString();
         chainSet.add(addr);
         const isKnown = knownSet.has(addr);
-        // Log total liquidity to detect zero-value positions skipped by LPAgent
-        const totalLiq = pos.positionData?.totalXAmount != null
-          ? `X=${pos.positionData.totalXAmount} Y=${pos.positionData.totalYAmount}`
-          : "liq=unknown";
-        log("orphan_scan", `  chain pos ${addr.slice(0, 8)} pool=${lbPairKey.slice(0, 8)} ${totalLiq} | known=${isKnown}`);
+        const isTracked = !!getTrackedPosition(addr);
+        const xAmt = pos.positionData?.totalXAmount ?? null;
+        const yAmt = pos.positionData?.totalYAmount ?? null;
+        const isZeroLiq = xAmt !== null && yAmt !== null
+          && BigInt(xAmt.toString()) === 0n && BigInt(yAmt.toString()) === 0n;
+        const totalLiq = xAmt != null ? `X=${xAmt} Y=${yAmt}` : "liq=unknown";
+        log("orphan_scan", `  chain pos ${addr.slice(0, 8)} pool=${lbPairKey.slice(0, 8)} ${totalLiq} | known=${isKnown} tracked=${isTracked} zeroLiq=${isZeroLiq}`);
         if (!isKnown) {
+          // On-chain but LPAgent doesn't know → true orphan
+          orphans.push({ position: addr, pool: lbPairKey });
+        } else if (!isTracked && isZeroLiq) {
+          // LPAgent-known + on-chain + zero liquidity + not in state.json
+          // Ghost filter removes from management view — catch here for close
+          log("orphan_scan", `  Stranded: pos=${addr.slice(0, 8)} LPAgent-known + on-chain + zero liq + untracked → close`);
           orphans.push({ position: addr, pool: lbPairKey });
         }
       }
