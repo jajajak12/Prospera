@@ -1057,9 +1057,23 @@ export async function closePosition({ position_address, reason, skip_swap = fals
     return { success: true, position: position_address, pool: poolAddress, pool_name: null, txs: txHashes, base_mint: pool.lbPair.tokenXMint.toString(), close_reason: reason || "agent decision" };
   } catch (error) {
     if (/binId|undefined.*binId|Cannot read properties of undefined/i.test(error.message)) {
-      log("close_warn", `Position ${position_address.slice(0, 8)} already gone on-chain (${error.message}) — force-marking closed`);
-      try { recordClose(position_address, "position_already_gone_onchain"); } catch (_) {}
-      return { success: true, already_closed: true, position: position_address };
+      // SDK removeLiquidity crashes on zero-liq zero-fee positions (activeBins[0] undefined).
+      // Try closePositionIfEmpty which handles this case directly.
+      log("close_warn", `Position ${position_address.slice(0, 8)} removeLiquidity binId crash — attempting closePositionIfEmpty fallback`);
+      try {
+        const _pool = typeof pool !== "undefined" ? pool : await getPool(poolAddress);
+        const _posData = await _pool.getPosition(new PublicKey(position_address));
+        const closeTx = await _pool.closePositionIfEmpty({ owner: wallet.publicKey, position: _posData });
+        const closeHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, closeTx, [wallet]), "close:closePositionIfEmpty");
+        log("close", `closePositionIfEmpty SUCCESS: ${closeHash}`);
+        recordClose(position_address, reason || "agent decision");
+        return { success: true, position: position_address, pool: poolAddress?.toString(), txs: [closeHash], base_mint: _pool.lbPair.tokenXMint.toString(), close_reason: reason || "agent decision" };
+      } catch (fallbackErr) {
+        // If position truly gone on-chain, getPosition itself throws
+        log("close_warn", `closePositionIfEmpty also failed: ${fallbackErr.message} — force-marking closed`);
+        try { recordClose(position_address, "position_already_gone_onchain"); } catch (_) {}
+        return { success: true, already_closed: true, position: position_address };
+      }
     }
     log("close_error", error.message);
     return { success: false, error: error.message };
