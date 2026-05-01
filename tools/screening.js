@@ -508,14 +508,22 @@ async function fetchMeteoraDlmmPoolMap() {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
       log("screening", `Meteora API error: HTTP ${res.status} — will rely on RocketScan fallback for pool discovery`);
-      return new Map();
+      return { poolMap: new Map(), totalTvlMap: new Map() };
     }
     const data = await res.json();
     let pools = (data.data ?? []);
 
     if (!Array.isArray(pools) || pools.length === 0) {
       log("screening", `Meteora API returned 0 pools (or unexpected format) — RocketScan will handle all pool discovery`);
-      return new Map();
+      return { poolMap: new Map(), totalTvlMap: new Map() };
+    }
+
+    // Sum TVL per base mint across ALL pools (pre-condense, pre-age-filter)
+    const totalTvlMap = new Map();
+    for (const p of pools) {
+      const mint = p.token_x?.address;
+      if (!mint) continue;
+      totalTvlMap.set(mint, (totalTvlMap.get(mint) ?? 0) + (p.tvl ?? p.active_tvl ?? 0));
     }
 
     pools = pools.map(condensePool);
@@ -541,10 +549,10 @@ async function fetchMeteoraDlmmPoolMap() {
         poolMap.set(mint, pool);
       }
     }
-    return poolMap;
+    return { poolMap, totalTvlMap };
   } catch (err) {
     log("screening", `Meteora bulk fetch error: ${err.message}`);
-    return new Map();
+    return { poolMap: new Map(), totalTvlMap: new Map() };
   }
 }
 
@@ -772,7 +780,7 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
   // Meteora kadang butuh 6-8 jam untuk index pool baru → RocketScan fallback.
   {
     log("screening", `Step 3 — Meteora pool check: ${eligible.length} token(s) after volume...`);
-    const poolMap = await fetchMeteoraDlmmPoolMap();
+    const { poolMap, totalTvlMap } = await fetchMeteoraDlmmPoolMap();
     log("screening", `Meteora pool universe: ${poolMap.size} qualifying pools fetched`);
 
     const missingPool = eligible.filter(t => !poolMap.has(t.mint));
@@ -797,10 +805,28 @@ export async function getTopCandidates({ limit = 20, correlationId = null, athOo
         return false;
       }
       t._pool = pool; // attach for use in Step 8
+      t._totalMintTvl = totalTvlMap.get(t.mint) ?? (pool.active_tvl ?? 0);
       return true;
     });
 
     log.screening(`Step 3 — Pool check: ${eligible.length}/${before} have Meteora DLMM pool`);
+
+    // High-TVL gate: total token TVL > threshold requires proportionally high volume
+    const highTvlThreshold = s.highTvlThreshold ?? 300_000;
+    const minVolumeHighTvl = s.minVolumeHighTvl ?? 1_000_000;
+    if (highTvlThreshold > 0 && minVolumeHighTvl > 0) {
+      const beforeHtvl = eligible.length;
+      eligible = eligible.filter(t => {
+        if ((t._totalMintTvl ?? 0) > highTvlThreshold && (t._volH1 ?? 0) < minVolumeHighTvl) {
+          log("screening", `  ${t.symbol}(${t.mint.slice(0,8)}): SKIP — high_tvl_low_volume (totalTvl=$${Math.round(t._totalMintTvl)})`);
+          return false;
+        }
+        return true;
+      });
+      if (eligible.length < beforeHtvl) {
+        log.screening(`High-TVL filter: ${eligible.length}/${beforeHtvl} passed (totalTvl>$${highTvlThreshold} requires 1h vol>$${minVolumeHighTvl})`);
+      }
+    }
   }
 
   if (eligible.length === 0) {

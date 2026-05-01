@@ -53,7 +53,10 @@
   "binsExtraLow": 0,
   "binsExtraMid": 0,
   "binsExtraHigh": 0,
-  "binsByStep": {},
+  "binsByStep": {
+    "100": 78,
+    "125": 85
+  },
   "candleLimit": 100,
   "fibConfluenceRequired": true,
   "minConfluenceScore": 0.5,
@@ -67,5 +70,9 @@
   "dashboardBaseUrl": "https://hutlike-unexemplary-kyle.ngrok-free.dev",
   "dashboardRefreshSec": 15,
   "exposureCapDisabled": true,
-  "wickRatioThreshold": 1.0
+  "wickRatioThreshold": 1,
+  "_lastEvolved": "2026-04-30T02:15:36.774Z",
+  "_positionsAtEvolution": 45,
+  "highTvlThreshold": 300000,
+  "minVolumeHighTvl": 1000000
 }

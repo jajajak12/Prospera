@@ -43,6 +43,8 @@ export const config = {
     bigMcapThreshold:         u.bigMcapThreshold         ?? 5_000_000,  // mcap threshold for big-mcap gates
     minTokenFeesSolBigMcap:   u.minTokenFeesSolBigMcap   ?? 400, // fee min for mcap > bigMcapThreshold
     minVolBigMcap:            u.minVolBigMcap            ?? 1_000_000, // 1h vol min for mcap > bigMcapThreshold
+    highTvlThreshold:         u.highTvlThreshold         ?? 300_000,   // total TVL across all pools threshold
+    minVolumeHighTvl:         u.minVolumeHighTvl         ?? 1_000_000, // 1h vol min when total token TVL > highTvlThreshold
     athFilterPct:            u.athFilterPct            ?? null,
     minMcap:       u.minMcap       ?? 200_000,
     maxMcap:       u.maxMcap       ?? 5_000_000,
@@ -355,6 +357,8 @@ export function reloadScreeningThresholds() {
     if (fresh.bigMcapThreshold          != null)       s.bigMcapThreshold         = fresh.bigMcapThreshold;
     if (fresh.minTokenFeesSolBigMcap    != null)       s.minTokenFeesSolBigMcap   = fresh.minTokenFeesSolBigMcap;
     if (fresh.minVolBigMcap             != null)       s.minVolBigMcap            = fresh.minVolBigMcap;
+    if (fresh.highTvlThreshold          != null)       s.highTvlThreshold         = fresh.highTvlThreshold;
+    if (fresh.minVolumeHighTvl          != null)       s.minVolumeHighTvl         = fresh.minVolumeHighTvl;
     if (fresh.athFilterPct              !== undefined) s.athFilterPct             = fresh.athFilterPct;
     if (fresh.autoBacktest          !== undefined) s.autoBacktest      = fresh.autoBacktest;
     if (fresh.minBacktestWinRate    != null)       s.minBacktestWinRate = fresh.minBacktestWinRate;
