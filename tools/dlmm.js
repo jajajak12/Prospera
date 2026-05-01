@@ -911,12 +911,16 @@ export async function closePosition({ position_address, reason, skip_swap = fals
             log("close", `Step 3: pre-check RPC error (${preErr.message}) — will attempt swap`);
           }
 
+          // Errors that prove token is permanently unsellable on Jupiter
+          const isRouteError = (e) => e && /no.?route|could not find.*route|route.*not found|TOKEN_NOT_TRADAB|ROUTE_PLAN_NOT_FOUND|token.*not.*support|unsupported.*token|market.*not.*exist/i.test(e);
+
           if (preBalance !== null && preBalance === 0) {
             log("close", `Step 3: token balance=0 — skip swap (nothing to swap)`);
           } else {
             let swapped = false;
             let lastError = null;
             let notFoundCount = 0;
+            let hadRouteError = false;
             const MAX_ATTEMPTS = 10;
             for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
               await new Promise(r => setTimeout(r, Math.min(attempt * 3000, 30000)));
@@ -951,6 +955,7 @@ export async function closePosition({ position_address, reason, skip_swap = fals
                 const swapR = await doSwap({ input_mint: baseMint, output_mint: "SOL", amount: tokenAmt }).catch(e => ({ error: e.message }));
                 if (swapR?.error) {
                   lastError = swapR.error;
+                  if (isRouteError(swapR.error)) hadRouteError = true;
                   log("close_warn", `Step 3 swap attempt ${attempt} failed: ${swapR.error}`);
                   continue;
                 }
@@ -961,6 +966,7 @@ export async function closePosition({ position_address, reason, skip_swap = fals
                 }
               } catch (attemptErr) {
                 lastError = attemptErr.message;
+                if (isRouteError(attemptErr.message)) hadRouteError = true;
                 log("close_warn", `Step 3 attempt ${attempt} error: ${attemptErr.message}`);
               }
             }
@@ -969,9 +975,14 @@ export async function closePosition({ position_address, reason, skip_swap = fals
                 // All attempts returned "not found" → token never existed in wallet (zero-liq close)
                 log("close", `Step 3: token not found in wallet after ${MAX_ATTEMPTS} attempts — treating as zero balance, skip`);
               } else {
-                addSwapBlocked(baseMint);
-                log("close_warn", `SWAP_FAILED_PERMANENT: ${baseMint.slice(0, 8)} — exhausted ${MAX_ATTEMPTS} attempts. Last: ${lastError}. Added to swap-blocked list.`);
-                tgAlert(`⚠️ SWAP_FAILED_PERMANENT\nToken: ${baseMint}\nLast error: ${lastError}\nAdded to swap-blocked list — future closes skip swap.`).catch(() => {});
+                if (hadRouteError) {
+                  addSwapBlocked(baseMint);
+                  log("close_warn", `SWAP_FAILED_PERMANENT: ${baseMint.slice(0, 8)} — no route on Jupiter, added to swap-blocked list.`);
+                  tgAlert(`⚠️ SWAP_FAILED_PERMANENT\nToken: ${baseMint}\nNo route on Jupiter — added to swap-blocked list.`).catch(() => {});
+                } else {
+                  log("close_warn", `SWAP_FAILED_PERMANENT: ${baseMint.slice(0, 8)} — exhausted ${MAX_ATTEMPTS} attempts (transient errors, not blocklisted). Last: ${lastError}`);
+                  tgAlert(`⚠️ SWAP_FAILED_PERMANENT\nToken: ${baseMint}\nLast error: ${lastError}\n(Transient — not added to swap-blocked list)`).catch(() => {});
+                }
               }
             }
           }
