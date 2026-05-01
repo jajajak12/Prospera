@@ -8,7 +8,8 @@
     "https://api.mainnet-beta.solana.com"
   ],
   "minDeployAmountSol": 0.1,
-  "maxPositions": 3,
+  "maxPositions": 2,
+  "autoSizing": true,
   "minSolToOpen": 0.6,
   "timeframe": "5m",
   "minOrganic": 60,
@@ -54,8 +55,8 @@
   "binsExtraMid": 0,
   "binsExtraHigh": 0,
   "binsByStep": {
-    "100": 78,
-    "125": 85
+    "100": 86,
+    "125": 90
   },
   "candleLimit": 100,
   "fibConfluenceRequired": true,
@@ -71,8 +72,8 @@
   "dashboardRefreshSec": 15,
   "exposureCapDisabled": true,
   "wickRatioThreshold": 1,
-  "_lastEvolved": "2026-04-30T02:15:36.774Z",
-  "_positionsAtEvolution": 45,
+  "_lastEvolved": "2026-05-01T12:25:32.207Z",
+  "_positionsAtEvolution": 50,
   "highTvlThreshold": 300000,
   "minVolumeHighTvl": 1000000
 }

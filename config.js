@@ -148,17 +148,25 @@ export const config = {
  * Returns 0 jika saldo tidak cukup untuk deploy minimum.
  */
 export function getPositionSizing(totalSol) {
-  const gasReserve = config.risk.exposureGasReserve ?? 1.0;
-  const capPct     = config.risk.totalExposureCapPct ?? 0.60;
+  const u2 = fs.existsSync(USER_CONFIG_PATH) ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")) : {};
+  const autoSizing = u2.autoSizing ?? true;
+  const gasReserve = config.risk.exposureGasReserve ?? 0.1;
 
-  const exposurableBalance = Math.max(0, totalSol - gasReserve);
-  if (exposurableBalance < 0.1) return 0;
+  const effectiveSol = Math.max(0, totalSol - gasReserve);
 
-  let perPosition = 0.1;
+  if (!autoSizing) {
+    const fixed = u2.minDeployAmountSol ?? 0.5;
+    return effectiveSol >= fixed ? fixed : 0;
+  }
 
-  // Hard cap: single position tidak boleh melebihi totalExposureCapPct% exposurable balance
-  const maxSinglePosition = exposurableBalance * capPct;
-  perPosition = Math.min(perPosition, maxSinglePosition, config.risk.maxDeployAmount ?? 50);
+  let perPosition;
+  if (effectiveSol < 5)        perPosition = 0.5;
+  else if (effectiveSol < 10)  perPosition = 2.0;
+  else if (effectiveSol < 15)  perPosition = 4.0;
+  else if (effectiveSol < 20)  perPosition = 5.0;
+  else                         perPosition = 6.0;
+
+  if (effectiveSol < perPosition) return 0;
 
   return parseFloat(perPosition.toFixed(2));
 }
