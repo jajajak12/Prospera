@@ -23,6 +23,23 @@ import { recordPerformance } from "../lessons.js";
 import { isPoolOnCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
 import { fetchLPAgentOpenPositions } from "./study.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirnameD = path.dirname(fileURLToPath(import.meta.url));
+const SWAP_BLOCKED_PATH = path.join(__dirnameD, "../swap-blocked-tokens.json");
+
+function readSwapBlocked() {
+  try { return JSON.parse(fs.readFileSync(SWAP_BLOCKED_PATH, "utf8")); } catch { return []; }
+}
+function addSwapBlocked(mint) {
+  const list = readSwapBlocked();
+  if (!list.includes(mint)) {
+    list.push(mint);
+    try { fs.writeFileSync(SWAP_BLOCKED_PATH, JSON.stringify(list, null, 2)); } catch { /**/ }
+  }
+}
 // telegram notify handled by callers (executor.js / index.js)
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
@@ -874,6 +891,8 @@ export async function closePosition({ position_address, reason, skip_swap = fals
       const baseMint  = pool.lbPair.tokenXMint.toString();
       if (baseMint === SOL_MINT || baseMint === USDT_MINT) {
         log("close", `Step 3: base token is ${baseMint === SOL_MINT ? "SOL" : "USDT"} — skip swap`);
+      } else if (readSwapBlocked().includes(baseMint)) {
+        log("close", `Step 3: ${baseMint.slice(0, 8)} in swap-blocked list — skip swap`);
       } else {
         try {
           const { getWalletBalances, swapToken: doSwap } = await import("./wallet.js");
@@ -950,8 +969,9 @@ export async function closePosition({ position_address, reason, skip_swap = fals
                 // All attempts returned "not found" → token never existed in wallet (zero-liq close)
                 log("close", `Step 3: token not found in wallet after ${MAX_ATTEMPTS} attempts — treating as zero balance, skip`);
               } else {
-                log("close_warn", `SWAP_FAILED_PERMANENT: ${baseMint.slice(0, 8)} — exhausted ${MAX_ATTEMPTS} attempts. Last: ${lastError}`);
-                tgAlert(`⚠️ SWAP_FAILED_PERMANENT\nToken: ${baseMint}\nLast error: ${lastError}`).catch(() => {});
+                addSwapBlocked(baseMint);
+                log("close_warn", `SWAP_FAILED_PERMANENT: ${baseMint.slice(0, 8)} — exhausted ${MAX_ATTEMPTS} attempts. Last: ${lastError}. Added to swap-blocked list.`);
+                tgAlert(`⚠️ SWAP_FAILED_PERMANENT\nToken: ${baseMint}\nLast error: ${lastError}\nAdded to swap-blocked list — future closes skip swap.`).catch(() => {});
               }
             }
           }
