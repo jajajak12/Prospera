@@ -537,6 +537,15 @@ export async function runManagementCycle({ silent = false } = {}) {
         // DAN peakPrice pernah mencapai ≥120% dari ath lama (meski sekarang sudah retrace)
         if (currentActiveBin > meta.athBin) {
           if (peakPrice < meta.ath * ATH_NEW_THRESHOLD) {
+            const ageMs = p.age_minutes != null ? p.age_minutes * 60 * 1000 : 0;
+            const feesSol = p.unclaimed_fees_sol ?? 0;
+            const totalSol = p.total_value_sol ?? 0;
+            const feePctAtm = totalSol > 0 ? (feesSol / totalSol) * 100 : 0;
+            if (ageMs >= 2 * 60 * 60 * 1000 && feePctAtm < 1.0) {
+              _m("management", `ATH OOR force close ${p.pair}: OOR ${p.age_minutes}m + fee ${feePctAtm.toFixed(2)}% < 1% — dead, skip ATH wait`);
+              exitMap.set(p.position, `ATH OOR >2h low yield (${feePctAtm.toFixed(2)}% fees) — dead position`);
+              continue;
+            }
             _m("management", `ATH OOR skip ${p.pair}: activeBin ${currentActiveBin} > athBin ${meta.athBin} but peakPrice ${peakPrice.toPrecision(4)} < ath*1.20 (${(meta.ath * ATH_NEW_THRESHOLD).toPrecision(4)}) — waiting for stronger ATH`);
             continue;
           }
@@ -588,7 +597,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (ageMs != null && ageMs >= LOW_YIELD_HOURS_MS) {
         const feesSol = p.unclaimed_fees_sol ?? (p.unclaimed_fees_usd != null && solPrice > 0 ? p.unclaimed_fees_usd / solPrice : null);
         const totalSol = p.total_value_sol ?? (p.total_value_usd != null && solPrice > 0 ? p.total_value_usd / solPrice : null);
-        const feePct2 = (feesSol != null && totalSol != null && totalSol > 0) ? (feesSol / totalSol) * 100 : null;
+        const feePct2 = (feesSol != null && totalSol != null) ? (totalSol > 0 ? (feesSol / totalSol) * 100 : 0) : null;
         if (feePct2 !== null && feePct2 < MIN_FEE_PCT) {
           const reasonStr = `2h low yield (<${feePct2.toFixed(2)}% fee collected)`;
           _m("management", `2h low yield: ${p.pair} ${p.age_minutes}m old, fee ${feePct2.toFixed(2)}% < ${MIN_FEE_PCT}% → auto close`);

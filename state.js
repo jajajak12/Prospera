@@ -324,10 +324,6 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     mgmtConfig.minFeePerTvl24h != null &&
     fee_per_tvl_24h < mgmtConfig.minFeePerTvl24h
   ) {
-    // Skip if still in ATH zone — we give ATH zone positions time to recover
-    if (pos.fib_zone === 'ATH_ZONE') {
-      return null;
-    }
     const now = Date.now();
     const baseline = pos.last_low_yield_check_at
       ? new Date(pos.last_low_yield_check_at).getTime()
