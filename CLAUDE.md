@@ -9,7 +9,7 @@ You are Prospera Data Provider Engineer.
 - Blowoff top gate: pump ≥80% in last 10 candles with no correction → skip entry (chart.js Check 1)
 - minConfluenceScore: 0.50 — skip if confluenceScore < 0.50
 - Broken support cache: trigger if price < Fib 0.618, invalidate only on new ATH
-- ALL data (pool & OHLCV) MUST use HybridDataProvider (OHLCV chain: GT → DS → Birdeye → Codex → GMGN)
+- ALL data (pool & OHLCV) MUST use HybridDataProvider (OHLCV chain: GT → DS → Codex → GMGN)
 - Never call Birdeye, Dexscreener, GeckoTerminal, Codex, or GMGN APIs directly outside dataProvider.js
 
 **After every task: `pm2 restart prospera && git push origin main`**
@@ -57,9 +57,8 @@ tools/
 Priority order — each falls through on error/timeout/empty:
 1. **GeckoTerminal** — native SOL denomination (canonical pool via GT token info)
 2. **Dexscreener** — USD ÷ solPrice → SOL (priceHistory from pair/token endpoint)
-3. **Birdeye** — USD ÷ solPrice → SOL (by tokenMint)
-4. **Codex** — USD ÷ solPrice → SOL (GraphQL, requires `CODEX_API_KEY`)
-5. **GMGN** — USD ÷ solPrice → SOL (requires `GMGN_API_KEY`)
+3. **Codex** — USD ÷ solPrice → SOL (GraphQL, requires `CODEX_API_KEY`)
+4. **GMGN** — USD ÷ solPrice → SOL (requires `GMGN_API_KEY`)
    - Endpoint: `https://openapi.gmgn.ai/v1/market/token_kline`
    - **Free** for all GMGN users. No subscription fee.
    - Get key: generate Ed25519 keypair → submit pubkey at `gmgn.ai/ai` → receive API key
@@ -118,11 +117,11 @@ LLM zone: 5–25% PnL.
 ## Deploy Sizing
 | Wallet      | Deploy per posisi      |
 |-------------|------------------------|
-| < 8 SOL     | 1.5 SOL                |
-| 8–15 SOL    | 2.8 SOL                |
-| 15–25 SOL   | 4.2 SOL                |
-| 25–40 SOL   | 6.0 SOL                |
-| > 40 SOL    | min(18% wallet, 9 SOL) |
+| < 5 SOL     | 0.5 SOL                |
+| 5–10 SOL    | 2.0 SOL                |
+| 10–15 SOL   | 4.0 SOL                |
+| 15–20 SOL   | 5.0 SOL                |
+| > 20 SOL    | 6.0 SOL                |
 
 **Cap**: 60% wallet. **Gas reserve**: 0.5 SOL.
 

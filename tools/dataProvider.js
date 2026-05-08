@@ -8,18 +8,15 @@
  *   Dexscreener hanya untuk initial discovery, volume, dan supplementary data
  *
  * - Pool Detail (TVL, binStep, fee, liquidity dll):
- *   Meteora DLMM API (primary)
- *   Birdeye hanya sebagai last fallback (jarang dipakai)
+ *   Meteora DLMM API (primary) → Dexscreener → GeckoTerminal
  *
- * - OHLCV (USD-consistent untuk Technical Analysis):
- *   GeckoTerminal (primary) → Birdeye (fallback) → Dexscreener chart (last resort) → skip candidate
+ * - OHLCV (SOL-denominated untuk Technical Analysis):
+ *   GeckoTerminal (primary) → Dexscreener → Codex → GMGN → skip candidate
  *
- * Tujuan: Menghemat Birdeye API quota (30k/bulan).
- * Birdeye sekarang hanya dipakai sebagai fallback untuk OHLCV.
+ * Birdeye: DISABLED (enableBirdeyeProvider=false). Code kept for reference only.
  * Jika semua source gagal → skip kandidat + notif Telegram dengan token address + alasan error.
  *
  * Fallback triggers: timeout > 3s, HTTP 429, any thrown error.
- * Each source: 1 retry on 429 before falling back to next.
  */
 
 import { randomUUID } from "crypto";
@@ -459,7 +456,7 @@ async function jupiterSolPrice() {
 }
 
 // ─── Reliable USD Price (last-resort chain) ───────────────────────────────────
-// Priority: GeckoTerminal → Birdeye → Jupiter quote (SOL→token→USD) → Dexscreener priceUsd → null
+// Priority: GeckoTerminal → Jupiter quote (SOL→token→USD) → Dexscreener priceUsd → null
 // Returns: { price: number, source: string } | null
 async function getReliableUSDPrice(tokenMint, poolAddress = null, chain = "solana") {
   // 1. GeckoTerminal (primary — most reliable for USD)
@@ -476,21 +473,7 @@ async function getReliableUSDPrice(tokenMint, poolAddress = null, chain = "solan
     }
   }
 
-  // 2. Birdeye
-  if (poolAddress) {
-    try {
-      const pool = await birdeyePoolData(poolAddress, chain);
-      if (pool.price && pool.price > 0) {
-        log.screening(`  [price] Birdeye → $${pool.price.toPrecision(4)}`);
-        return { price: pool.price, source: "birdeye" };
-      }
-      log.screening(`  [price] Birdeye → null (no price in pool data)`);
-    } catch (err) {
-      log.screening(`  [price] Birdeye → FAILED (${err.message})`);
-    }
-  }
-
-  // 3. Jupiter quote (SOL → token → USD)
+  // 2. Jupiter quote (SOL → token → USD)
   try {
     const price = await jupiterQuotePrice(tokenMint, chain);
     if (price && price > 0) {
@@ -502,7 +485,7 @@ async function getReliableUSDPrice(tokenMint, poolAddress = null, chain = "solan
     log.screening(`  [price] Jupiter quote → FAILED (${err.message})`);
   }
 
-  // 4. Last resort: Dexscreener priceUsd
+  // 3. Last resort: Dexscreener priceUsd
   if (poolAddress) {
     try {
       const pool = await dexscreenerPoolData(poolAddress, chain);
@@ -522,7 +505,7 @@ async function getReliableUSDPrice(tokenMint, poolAddress = null, chain = "solan
 }
 
 // ─── Reliable SOL Price (last-resort chain) ──────────────────────────────────
-// Priority: GeckoTerminal OHLCV last close (native SOL) → Birdeye USD ÷ solPrice → null
+// Priority: GeckoTerminal OHLCV last close (native SOL) → null
 // Returns: { price: number, source: string } | null
 async function getReliableSOLPrice(tokenMint, poolAddress = null, chain = "solana") {
   // 1. GeckoTerminal OHLCV last close (native SOL for TOKEN/SOL pools)
@@ -536,24 +519,6 @@ async function getReliableSOLPrice(tokenMint, poolAddress = null, chain = "solan
       }
     } catch (err) {
       log.screening(`  [sol-price] GeckoTerminal → FAILED (${err.message})`);
-    }
-  }
-
-  // 2. Birdeye OHLCV USD ÷ solPrice → SOL
-  if (tokenMint) {
-    try {
-      const [usdCandles, solPrice] = await Promise.all([
-        birdeyeOHLCVByMint(tokenMint, "5m", 5, chain),
-        jupiterSolPrice(),
-      ]);
-      const last = usdCandles[usdCandles.length - 1];
-      if (last?.close > 0 && solPrice > 0) {
-        const priceSOL = last.close / solPrice;
-        log.screening(`  [sol-price] Birdeye USD÷${solPrice.toFixed(0)} → ${priceSOL.toPrecision(4)} SOL`);
-        return { price: priceSOL, source: "birdeye-ohlcv" };
-      }
-    } catch (err) {
-      log.screening(`  [sol-price] Birdeye → FAILED (${err.message})`);
     }
   }
 
@@ -651,14 +616,16 @@ async function gmgnOHLCV(tokenMint, timeframe, limit, chain) {
   }));
 }
 
+// ─── Provider startup logs ────────────────────────────────────────────────────
+log("provider", "BIRDEYE_PROVIDER_DISABLED reason=disabled_by_config");
+log("provider", "OHLCV_PROVIDER_ORDER=GeckoTerminal → Dexscreener → Codex → GMGN");
+
 // ─── HybridDataProvider ───────────────────────────────────────────────────────
 
 export class HybridDataProvider {
   /**
    * Pool metadata (price in USD, mcap, volume, liquidity).
-   * Priority: Dexscreener (primary) → Birdeye (fallback) → GeckoTerminal (last resort).
-   * Dexscreener is primary because it has highest rate limits and best freshness for pool data.
-   * Birdeye used only for Fib/RSI/EMA technical analysis (called on capped 10 candidates max).
+   * Priority: Dexscreener (primary) → GeckoTerminal (fallback).
    * @param {string} poolAddress
    * @param {string} [chain="solana"]
    */
@@ -668,19 +635,11 @@ export class HybridDataProvider {
       log.debug("screening", `getPoolData: Dexscreener OK`, { pool: poolAddress });
       return data;
     } catch (err) {
-      log.warn("screening", `getPoolData: Dexscreener failed → Birdeye (${err.message})`, { pool: poolAddress });
-    }
-
-    try {
-      const data = await birdeyePoolData(poolAddress, chain);
-      log.debug("screening", `getPoolData: Birdeye OK`, { pool: poolAddress });
-      return data;
-    } catch (err) {
-      log.warn("screening", `getPoolData: Birdeye failed → GeckoTerminal (${err.message})`, { pool: poolAddress });
+      log.warn("screening", `getPoolData: Dexscreener failed → GeckoTerminal (${err.message})`, { pool: poolAddress });
     }
 
     const data = await geckoPoolData(poolAddress, chain);
-    log.warn("screening", `getPoolData: GeckoTerminal (last resort)`, { pool: poolAddress });
+    log.warn("screening", `getPoolData: GeckoTerminal (fallback)`, { pool: poolAddress });
     return data;
   }
 
@@ -802,35 +761,7 @@ export class HybridDataProvider {
       if (resolvedMint) log.debug("screening", `getOHLCV: resolved tokenMint=${resolvedMint} from pool`, { pool: poolAddress });
     }
 
-    // ── 3. Birdeye FALLBACK — USD ÷ solPrice → SOL ───────────────────────────
-    if (resolvedMint) {
-      try {
-        const [usdCandles, solPrice] = await Promise.all([
-          birdeyeOHLCVByMint(resolvedMint, timeframe, limit, chain),
-          jupiterSolPrice(),
-        ]);
-        if (!solPrice || solPrice <= 0) throw new Error("solPrice unavailable");
-        const toSOL = c => ({
-          timestamp: c.timestamp,
-          open: c.open / solPrice, high: c.high / solPrice,
-          low:  c.low  / solPrice, close: c.close / solPrice,
-          volume: c.volume,
-        });
-        const candles = usdCandles.map(toSOL);
-        if (candles.length >= MIN_CANDLES) {
-          log.debug("screening", `getOHLCV: Birdeye OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: resolvedMint });
-          return attachOhlcvMeta(candles, { source: "birdeye", timeframe, chain, requestedLimit: limit });
-        }
-        errors.birdeye = `thin (${candles.length})`;
-      } catch (err) {
-        errors.birdeye = err.message;
-        log.warn("screening", `getOHLCV: Birdeye failed (${err.message})`, { token: resolvedMint });
-      }
-    } else {
-      errors.birdeye = "no tokenMint (resolution failed)";
-    }
-
-    // ── 4. Codex FALLBACK — USD ÷ solPrice → SOL ────────────────────────────
+    // ── 3. Codex FALLBACK — USD ÷ solPrice → SOL ────────────────────────────
     if (resolvedMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
@@ -858,7 +789,7 @@ export class HybridDataProvider {
       errors.codex = "no tokenMint (resolution failed)";
     }
 
-    // ── 5. GMGN LAST FALLBACK — USD ÷ solPrice → SOL ────────────────────────
+    // ── 4. GMGN LAST FALLBACK — USD ÷ solPrice → SOL ────────────────────────
     if (resolvedMint) {
       try {
         const [usdCandles, solPrice] = await Promise.all([
@@ -902,7 +833,6 @@ export class HybridDataProvider {
         `<b>Error per source:</b>`,
         `• GeckoTerminal: ${errors.gt ?? "—"}`,
         `• Dexscreener: ${errors.dexscreener ?? "—"}`,
-        `• Birdeye: ${errors.birdeye ?? "—"}`,
         `• Codex: ${errors.codex ?? "—"}`,
         `• GMGN: ${errors.gmgn ?? "—"}`,
         ``,
@@ -916,7 +846,7 @@ export class HybridDataProvider {
 
   /**
    * Last-resort USD price finder.
-   * Priority: GeckoTerminal → Birdeye → Jupiter quote (SOL→token→USD) → Dexscreener priceUsd → null.
+   * Priority: GeckoTerminal → Jupiter quote (SOL→token→USD) → Dexscreener priceUsd → null.
    * Logs "ALL PRICE SOURCES FAILED" if every source returns null/throws.
    * @param {string} tokenMint
    * @param {string|null} poolAddress
@@ -929,7 +859,7 @@ export class HybridDataProvider {
 
   /**
    * Reliable SOL price for a token. Used for Fib gate at deploy time.
-   * Priority: GeckoTerminal OHLCV last close (native SOL) → Birdeye USD ÷ solPrice → null.
+   * Priority: GeckoTerminal OHLCV last close (native SOL) → null.
    * @param {string} tokenMint
    * @param {string|null} poolAddress
    * @param {string} [chain="solana"]

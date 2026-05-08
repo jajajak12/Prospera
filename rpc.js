@@ -2,9 +2,10 @@
  * rpc.js — Centralized Solana RPC connection with automatic failover
  *
  * Priority order:
- *   1. RPC_URL env var (primary)
- *   2. rpcFallbacks[] in user-config.json
- *   3. HELIUS_API_KEY env var (auto-constructed if set)
+ *   1. RPC_URL env var (primary, skipped if Helius)
+ *   2. rpcFallbacks[] in user-config.json (Helius URLs filtered out)
+ *
+ * Helius is disabled. Any Helius endpoint is silently skipped.
  *
  * On any RPC error (timeout, 429, 5xx, connection refused):
  *   - Switches to next endpoint automatically
@@ -39,29 +40,34 @@ function isRpcError(err) {
   return RPC_ERROR_PATTERNS.some(p => msg.includes(p.toLowerCase()));
 }
 
+function isHeliusUrl(url) {
+  return typeof url === "string" && url.toLowerCase().includes("helius");
+}
+
+function maskUrl(url) {
+  return url.replace(/api-key=[^&]+/, "api-key=***").slice(0, 60);
+}
+
 function loadEndpoints() {
   const endpoints = [];
 
-  // Primary from env
-  if (process.env.RPC_URL) endpoints.push(process.env.RPC_URL);
+  // Primary from env — skip if Helius
+  if (process.env.RPC_URL && !isHeliusUrl(process.env.RPC_URL)) {
+    endpoints.push(process.env.RPC_URL);
+  }
 
-  // Fallbacks from user-config
+  // Fallbacks from user-config — filter out Helius
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
       if (Array.isArray(cfg.rpcFallbacks)) {
         for (const url of cfg.rpcFallbacks) {
-          if (url && !endpoints.includes(url)) endpoints.push(url);
+          if (!url || isHeliusUrl(url)) continue;
+          if (!endpoints.includes(url)) endpoints.push(url);
         }
       }
     }
   } catch { /* ignore */ }
-
-  // Helius auto-construct if key set and not already in list
-  if (process.env.HELIUS_API_KEY) {
-    const helius = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
-    if (!endpoints.includes(helius)) endpoints.push(helius);
-  }
 
   // Deduplicate and filter empty
   return [...new Set(endpoints.filter(Boolean))];
@@ -83,12 +89,11 @@ function buildConnection(url) {
 }
 
 function init() {
+  log("rpc", "HELIUS_RPC_DISABLED reason=disabled_by_config");
   _endpoints = loadEndpoints();
-  if (_endpoints.length === 0) throw new Error("No RPC_URL configured");
+  if (_endpoints.length === 0) throw new Error("No non-Helius RPC endpoint configured");
+  log("rpc", `RPC_PROVIDER_ORDER=${_endpoints.map(maskUrl).join(" → ")}`);
   _connection = buildConnection(_endpoints[0]);
-  if (_endpoints.length > 1) {
-    log("rpc", `Initialized with ${_endpoints.length} endpoints — primary: ${_endpoints[0].slice(0, 40)}...`);
-  }
 }
 
 // ─── Public API ───────────────────────────────────────────────────

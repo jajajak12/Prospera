@@ -27,8 +27,9 @@ const JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1";
 const JUPITER_API_KEY = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
 
 /**
- * Get current wallet balances: SOL, USDC, and all SPL tokens using Helius Wallet API.
- * Returns USD-denominated values provided by Helius.
+ * Get current wallet SOL balance via RPC.
+ * Helius is disabled. SPL token list is always empty — callers that need
+ * token amounts (e.g. dlmm.js close step 3) query RPC directly.
  */
 export async function getWalletBalances() {
   let walletAddress;
@@ -38,91 +39,37 @@ export async function getWalletBalances() {
     return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
   }
 
-  const HELIUS_KEY = process.env.HELIUS_API_KEY;
-  if (!HELIUS_KEY) {
-    log("wallet_error", "HELIUS_API_KEY not set in .env");
-    return { wallet: walletAddress, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Helius API key missing" };
+  if (_balanceCache && (Date.now() - _balanceCache.ts) < BALANCE_CACHE_TTL_MS) {
+    return _balanceCache.data;
   }
 
   try {
-    const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${HELIUS_KEY}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-    
-    if (!res.ok) {
-      throw new Error(`Helius API error: ${res.status} ${res.statusText}`);
-    }
-
-    const data = await res.json();
-    const balances = data.balances || [];
-
-    // ─── Find SOL and USDC ────────────────────────────────────
-    const solEntry = balances.find(b => b.mint === config.tokens.SOL || b.symbol === "SOL");
-    const usdcEntry = balances.find(b => b.mint === config.tokens.USDC || b.symbol === "USDC");
-
-    const solBalance = solEntry?.balance || 0;
-    const solPrice = solEntry?.pricePerToken || 0;
-    const solUsd = solEntry?.usdValue || 0;
-    const usdcBalance = usdcEntry?.balance || 0;
-
-    // ─── Map all tokens ───────────────────────────────────────
-    const enrichedTokens = balances.map(b => ({
-      mint: b.mint,
-      symbol: b.symbol || b.mint.slice(0, 8),
-      balance: b.balance,
-      usd: b.usdValue ? Math.round(b.usdValue * 100) / 100 : null,
-    }));
-
+    const pubkey = getWallet().publicKey;
+    const lamports = await withRpcFallback(conn => conn.getBalance(pubkey), "wallet_balance");
+    const solBalance = lamports / LAMPORTS_PER_SOL;
     const result = {
       wallet: walletAddress,
       sol: Math.round(solBalance * 1e6) / 1e6,
-      sol_price: Math.round(solPrice * 100) / 100,
-      sol_usd: Math.round(solUsd * 100) / 100,
-      usdc: Math.round(usdcBalance * 100) / 100,
-      tokens: enrichedTokens,
-      total_usd: Math.round((data.totalUsdValue || 0) * 100) / 100,
+      sol_price: 0,
+      sol_usd: 0,
+      usdc: 0,
+      tokens: [],
+      total_usd: 0,
     };
     _balanceCache = { data: result, ts: Date.now() };
     return result;
-  } catch (error) {
-    log("wallet_error", `Helius failed (${error.message}) — falling back to RPC balance`);
-    // Fallback: iterate all configured RPC endpoints via withRpcFallback
-    try {
-      const pubkey = getWallet().publicKey;
-      const lamports = await withRpcFallback(conn => conn.getBalance(pubkey), "wallet_balance");
-      const solBalance = lamports / LAMPORTS_PER_SOL;
-      log("wallet", `RPC fallback balance: ${solBalance.toFixed(4)} SOL`);
-      // Preserve cached token data — RPC doesn't return SPL tokens, don't overwrite good cache
-      const cachedTokens = _balanceCache?.data?.tokens ?? [];
-      const rpcResult = {
-        wallet: walletAddress,
-        sol: Math.round(solBalance * 1e6) / 1e6,
-        sol_price: _balanceCache?.data?.sol_price ?? 0,
-        sol_usd: 0,
-        usdc: 0,
-        tokens: cachedTokens,
-        total_usd: 0,
-        error: `Helius unavailable — RPC fallback used`,
-      };
-      // Don't overwrite _balanceCache — preserve last Helius token data for auto-swap
-      return rpcResult;
-    } catch (rpcErr) {
-      log("wallet_error", `RPC fallback also failed: ${rpcErr.message}`);
-      if (_balanceCache && (Date.now() - _balanceCache.ts) < BALANCE_CACHE_TTL_MS) {
-        const ageMin = Math.round((Date.now() - _balanceCache.ts) / 60000);
-        log("wallet", `Both APIs failed — using cached balance from ${ageMin}m ago (${_balanceCache.data.sol.toFixed(4)} SOL)`);
-        return { ..._balanceCache.data, error: `cached ${ageMin}m — both APIs rate-limited` };
-      }
-      return {
-        wallet: walletAddress,
-        sol: 0,
-        sol_price: 0,
-        sol_usd: 0,
-        usdc: 0,
-        tokens: [],
-        total_usd: 0,
-        error: error.message,
-      };
+  } catch (err) {
+    log("wallet_error", `RPC balance failed: ${err.message}`);
+    if (_balanceCache && (Date.now() - _balanceCache.ts) < BALANCE_CACHE_TTL_MS) {
+      const ageMin = Math.round((Date.now() - _balanceCache.ts) / 60000);
+      log("wallet", `RPC failed — using cached balance from ${ageMin}m ago`);
+      return { ..._balanceCache.data, error: `cached ${ageMin}m — RPC failed` };
     }
+    return {
+      wallet: walletAddress,
+      sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0,
+      error: err.message,
+    };
   }
 }
 
