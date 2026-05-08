@@ -21,7 +21,8 @@ import "./init.js"; // Load .env FIRST — before any other module
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import cron from "node-cron";
 
 // ── Imports ────────────────────────────────────────────────────────────────────
@@ -32,47 +33,18 @@ import { log } from "./logger.js";
 import { logWithId, logSkip, shortId, logCycleStart } from "./log-utils.js";
 import { getMyPositions, closePosition, getActiveBin, scanOrphanPositions } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
-import { getTopCandidates } from "./tools/screening.js";
+import { getTopCandidates, recheckFastPendingPools } from "./tools/screening.js";
 import { getCircuitState, shouldSkipNextCycle, getActiveProvider } from "./tools/circuit-breaker.js";
 import { evolveThresholds, getPerformanceSummary, getClosedPoolsForBacktest } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, notifyClose, sendWithButtons, registerCallback, unregisterCallback } from "./telegram.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updateFibTouchState, getStateSummary, syncOpenPositions } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, updateFibTouchState, getStateSummary, syncOpenPositions, updatePositionManagementState } from "./state.js";
 import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
 import { runBacktest } from "./backtest.js";
 import { runDailyBacktest } from "./tools/daily-backtester.js";
 import { config, getPositionSizing, calculateCurrentExposure, calculateCurrentExposureSol, canOpenNewPosition, checkExposureCap } from "./config.js";
 import { hybridDataProvider } from "./tools/dataProvider.js";
-
-// ── Startup validation ─────────────────────────────────────────────────────────
-const lpKey     = process.env.LPAGENT_API_KEY;
-const lpKeyBackup = process.env.LPAGENT_API_KEY_BACKUP;
-if (!lpKey) {
-  console.error("FATAL: LPAGENT_API_KEY not set in .env — cannot start");
-  process.exit(1);
-}
-log("startup", `LPAgent: primary=${lpKey ? "YES (len=" + lpKey.length + ")" : "MISSING"} backup=${lpKeyBackup ? "YES (len=" + lpKeyBackup.length + ")" : "MISSING"}`);
-
-// Wallet key validation — fail fast before any cycle runs
-try {
-  const { Keypair } = await import("@solana/web3.js");
-  const bs58 = (await import("bs58")).default;
-  if (!process.env.WALLET_PRIVATE_KEY) throw new Error("WALLET_PRIVATE_KEY not set");
-  const wallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
-  log("startup", `Wallet: ${wallet.publicKey.toString().slice(0, 8)}...`);
-} catch (e) {
-  console.error(`FATAL: Wallet key invalid — ${e.message}`);
-  process.exit(1);
-}
-
-// LLM provider probe — called async below in startAgent()
-
-// Also warn if Telegram not configured (non-fatal)
-const _tel = telegramEnabled();
-log("startup", `Telegram: bot=${_tel ? "ACTIVE" : "DISABLED"} chatId=${process.env.TELEGRAM_CHAT_ID || "MISSING"}`);
-if (_tel) {
-  sendMessage("✅ Prospera Agent started — LIVE mode").catch(() => {});
-}
+import { calcADSlope, calcCMF20, classifyVolumeFlowBias } from "./tools/chart.js";
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 function withTimeout(promise, ms, label = "operation") {
@@ -90,6 +62,7 @@ const SCREENING_INTERVAL_MS = (config.schedule?.screeningIntervalMin || 15) * 60
 const MANAGEMENT_INTERVAL_MS = (config.schedule?.managementIntervalMin || 3) * 60_000;
 
 let _cronTasks = [];
+let _fastPoolWatcherTimer = null;
 let _managementBusy = false;
 let _managementLastCompleted = 0;
 let _screeningBusy = false;
@@ -141,6 +114,10 @@ function startREPL() {
 function stopCronJobs() {
   for (const task of _cronTasks) task?.stop?.();
   _cronTasks = [];
+  if (_fastPoolWatcherTimer) {
+    clearInterval(_fastPoolWatcherTimer);
+    _fastPoolWatcherTimer = null;
+  }
 }
 
 // ── Morning Briefing ─────────────────────────────────────────────────────────
@@ -219,7 +196,7 @@ async function runMorningBriefing({ force = false } = {}) {
   if (perfLines) lines.push(`📈 Performance: ${perfLines}`);
   if (backtestSummary) lines.push(`📈 Backtest: ${backtestSummary}`);
 
-  lines.push(`⚙️ ${config.screening.minBinStep}–${config.screening.maxBinStep} bin | Vol min $${config.screening.minVolume.toLocaleString()} | SL ${config.management.stopLossPct}% / TP ${config.management.takeProfitMaxPct}%`);
+  lines.push(`⚙️ ${config.screening.minBinStep}–${config.screening.maxBinStep} bin | Vol min $${config.screening.minVolume.toLocaleString()} | SL ${config.management.stopLossPct}% | protect ${config.management.profitProtectionPct}% | runner ${config.management.protectedRunnerPct}% | strong TP ${config.management.runnerStrongTakeProfitPct}%`);
 
   const msg = `🌅 Morning Briefing [${ts}]\n\n${lines.join("\n")}`;
   if (telegramEnabled()) sendMessage(msg).catch(() => {});
@@ -262,6 +239,127 @@ async function runPnLPoll() {
 function stripThink(text) {
   if (!text) return text;
   return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+}
+
+function deriveFib382(fibs) {
+  if (!fibs?.fib236 || !fibs?.fib500) return null;
+  if (fibs.fib382 != null) return fibs.fib382;
+  return fibs.fib500 + ((fibs.fib236 - fibs.fib500) * (0.118 / 0.264));
+}
+
+function formatMetric(value, digits = 2) {
+  return typeof value === "number" && isFinite(value) ? value.toFixed(digits) : "n/a";
+}
+
+function buildRunnerContext({ p, tracked, fibs, livePrice, effectiveHigh, retrace, fibState, config }) {
+  const fib500 = fibs?.fib500 ?? null;
+  const fib382 = deriveFib382(fibs);
+  const fib236 = fibs?.fib236 ?? null;
+  const pnlPct = p.pnl_pct ?? null;
+  const peakPnl = tracked?.peak_pnl_pct ?? pnlPct ?? null;
+  const givebackPct = (peakPnl != null && pnlPct != null) ? peakPnl - pnlPct : null;
+  const protectedActive = !!(
+    tracked?.profit_protection_active === true ||
+    (pnlPct != null && pnlPct >= (config.profitProtectionPct ?? 10))
+  );
+  const runnerActive = !!(
+    tracked?.protected_runner_active === true ||
+    (pnlPct != null && pnlPct >= (config.protectedRunnerPct ?? 20))
+  );
+  const feeMetric = p.fee_per_tvl_24h ?? null;
+  const feeTakeProfitReady = feeMetric != null && config.takeProfitFeePct != null && feeMetric >= config.takeProfitFeePct;
+  const minutesOOR = p.minutes_out_of_range ?? 0;
+  const persistentOOR = p.in_range === false && minutesOOR >= (config.outOfRangeWaitMinutes ?? 10);
+  const runnerOORPressure = p.in_range === false && minutesOOR >= Math.max(5, Math.floor((config.outOfRangeWaitMinutes ?? 10) / 2));
+  const reachedFib500 = effectiveHigh != null && fib500 != null && effectiveHigh >= fib500;
+  const reachedFib382 = effectiveHigh != null && fib382 != null && effectiveHigh >= fib382;
+  const reachedFib236 = effectiveHigh != null && fib236 != null && effectiveHigh >= fib236;
+  const aboveFib500 = livePrice != null && fib500 != null ? livePrice >= fib500 : false;
+  const aboveFib382 = livePrice != null && fib382 != null ? livePrice >= fib382 : false;
+  const aboveFib236 = livePrice != null && fib236 != null ? livePrice >= fib236 : false;
+  const weakRetrace = retrace ? ["BREAKDOWN_786", "AGGRESSIVE"].includes(retrace.retraceType) : false;
+  const strongRetrace = retrace ? ["HEALTHY", "STABILIZING"].includes(retrace.retraceType) : false;
+  const dumpVelocity = retrace?.dumpVelocity ?? null;
+  const lostFib500AfterProtection = !!(protectedActive && fib500 != null && livePrice != null && livePrice < fib500);
+  const rejectedFib382 = !!(reachedFib382 && aboveFib382 === false);
+  const rejectedFib236 = !!(reachedFib236 && aboveFib236 === false);
+  const continuationStrong = !!(
+    aboveFib500 &&
+    strongRetrace &&
+    !runnerOORPressure &&
+    (dumpVelocity == null || dumpVelocity < 5) &&
+    (p.in_range !== false || minutesOOR < Math.max(5, Math.floor((config.outOfRangeWaitMinutes ?? 10) / 2)))
+  );
+  const continuationWeak = !!(
+    lostFib500AfterProtection ||
+    weakRetrace ||
+    persistentOOR ||
+    (dumpVelocity != null && dumpVelocity >= 6) ||
+    rejectedFib382 ||
+    rejectedFib236
+  );
+  const reboundDecisionActive = !!(fibState?.touched618 && reachedFib500);
+  let currentFibState = "UNKNOWN";
+  if (livePrice != null && fibs) {
+    if (fibs.fib236 != null && livePrice >= fibs.fib236) currentFibState = "ABOVE_FIB236";
+    else if (fib382 != null && livePrice >= fib382) currentFibState = "FIB382_TO_FIB236";
+    else if (fib500 != null && livePrice >= fib500) currentFibState = "FIB500_TO_FIB382";
+    else if (fibs.fib618 != null && livePrice >= fibs.fib618) currentFibState = "FIB618_TO_FIB500";
+    else if (fibs.fib786 != null && livePrice >= fibs.fib786) currentFibState = "FIB786_TO_FIB618";
+    else currentFibState = "BELOW_FIB786";
+  }
+  return {
+    fib500,
+    fib382,
+    fib236,
+    pnlPct,
+    peakPnl,
+    givebackPct,
+    feeMetric,
+    feeTakeProfitReady,
+    minutesOOR,
+    persistentOOR,
+    runnerOORPressure,
+    reachedFib500,
+    reachedFib382,
+    reachedFib236,
+    aboveFib500,
+    aboveFib382,
+    aboveFib236,
+    lostFib500AfterProtection,
+    rejectedFib382,
+    rejectedFib236,
+    continuationStrong,
+    continuationWeak,
+    reboundDecisionActive,
+    protectedActive,
+    runnerActive,
+    retraceType: retrace?.retraceType ?? "UNKNOWN",
+    dumpVelocity,
+    currentFibState,
+    cmf20: retrace?.cmf20 ?? null,
+    adSlope: retrace?.adSlope ?? null,
+    volumeFlowBias: retrace?.volumeFlowBias ?? "neutral",
+  };
+}
+
+function buildRunnerReason(code, ctx) {
+  return [
+    code,
+    `pnl_pct=${formatMetric(ctx.pnlPct, 1)}%`,
+    `peak_pnl=${formatMetric(ctx.peakPnl, 1)}%`,
+    `price=${formatMetric(ctx.livePrice, 6)}`,
+    `fib500=${formatMetric(ctx.fib500, 6)}`,
+    `fib382=${formatMetric(ctx.fib382, 6)}`,
+    `fib236=${formatMetric(ctx.fib236, 6)}`,
+    `fee_per_tvl_24h=${formatMetric(ctx.feeMetric, 2)}%`,
+    `dump_velocity=${formatMetric(ctx.dumpVelocity, 2)}%/c`,
+    `fib_state=${ctx.currentFibState ?? "UNKNOWN"}`,
+    `retrace=${ctx.retraceType}`,
+    `cmf20=${formatMetric(ctx.cmf20, 3)}`,
+    `adSlope=${formatMetric(ctx.adSlope, 2)}`,
+    `volume_flow_bias=${ctx.volumeFlowBias ?? "neutral"}`,
+  ].join(" | ");
 }
 
 // ── Retrace Snapshot ───────────────────────────────────────────────────────────
@@ -330,13 +428,31 @@ function computeRetraceSnapshot(candles, fibs) {
     retraceType = 'HEALTHY';       // slow drift, expected retrace
   }
 
-  return { retraceType, dumpVelocity, volOnRed, consecutiveRed, priceChangePct, candlesSinceFib500Breach, rangeNarrowing };
+  const cmf20Raw = calcCMF20(candles);
+  const adSlopeRaw = calcADSlope(candles, 5);
+  const cmf20 = Number.isFinite(cmf20Raw) ? Math.round(cmf20Raw * 1000) / 1000 : null;
+  const adSlope = Number.isFinite(adSlopeRaw) ? Math.round(adSlopeRaw * 100) / 100 : null;
+  const volumeFlowBias = classifyVolumeFlowBias({ cmf20, adSlope });
+
+  return {
+    retraceType,
+    dumpVelocity,
+    volOnRed,
+    consecutiveRed,
+    priceChangePct,
+    candlesSinceFib500Breach,
+    rangeNarrowing,
+    cmf20,
+    adSlope,
+    volumeFlowBias,
+  };
 }
 
 // ── Management Cycle ───────────────────────────────────────────────────────────
 export async function runManagementCycle({ silent = false } = {}) {
   if (shouldSkipNextCycle()) {
     log("management", "Circuit breaker skip — cycle skipped (auto-clears when cooldown expires)");
+    log("management", "MANAGEMENT_CYCLE_DONE outcome=circuit_skip");
     return null;
   }
 
@@ -353,6 +469,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     _screeningBusy = false;
   }
   if (_screeningBusy) { _m("management", "Screening running — skipped"); return null; }
+  _m("management", "MANAGEMENT_CYCLE_STARTED");
 
   // ── Fast path: cek posisi dulu sebelum acquire lock / busy flag ─────────────
   // Jika 0 posisi → skip secepat mungkin, tidak perlu lock, tidak perlu LPAgent call
@@ -364,6 +481,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     prePositions = await getMyPositions({ force: true });
   } catch (e) {
     _m("warn", `getMyPositions failed — ${e.message} — skipping cycle`, { correlationId: corrId });
+    _m("error", `MANAGEMENT_CYCLE_ERROR stage=getMyPositions err=${e.message}`);
     logSkip("lpagent_error", { error: e.message }, corrId, "management");
     if (!silent && telegramEnabled()) sendMessage(`Management [${corrId}] — LPAgent error: ${e.message}, skipping`).catch(() => {});
     return null;
@@ -377,6 +495,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   if (!prePositions || prePositions.error) {
     _m("warn", `LPAgent unavailable — ${prePositions?.error ?? "network error"} — skipping cycle`);
+    _m("error", `MANAGEMENT_CYCLE_ERROR stage=prePositions err=${prePositions?.error ?? "network_error"}`);
     logSkip("lpagent_unavailable", { error: prePositions?.error ?? "network_error" }, corrId, "management");
     if (!silent && telegramEnabled()) sendMessage(`Management [${corrId}] — LPAgent unavailable, skipping`).catch(() => {});
     return null;
@@ -385,6 +504,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   const preCount = prePositions?.positions?.length ?? 0;
   if (preCount === 0) {
     _m("management", "No open positions — skipping management cycle");
+    _m("management", "MANAGEMENT_CYCLE_DONE outcome=no_open_positions");
     logSkip("no_open_positions", {}, corrId, "management");
     return null;
   }
@@ -463,6 +583,24 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
+    const retraceMap = new Map();
+    const retraceCandidates = positionData.filter(p => getTrackedPosition(p.position)?.fib_levels_sol != null);
+    if (retraceCandidates.length > 0) {
+      const retraceResults = await Promise.allSettled(
+        retraceCandidates.map(p => {
+          const tracked = getTrackedPosition(p.position);
+          return withTimeout(hybridDataProvider.getOHLCV(p.pool, "5m", 12, "solana", tracked?.base_mint ?? null), 15000, `getOHLCV(${p.pool?.slice(0,8)})`)
+            .then(candles => ({ position: p.position, candles, fibs: tracked?.fib_levels_sol ?? null }));
+        })
+      );
+      for (const r of retraceResults) {
+        if (r.status === "fulfilled" && Array.isArray(r.value?.candles) && r.value.candles.length >= 3) {
+          const snap = computeRetraceSnapshot(r.value.candles, r.value.fibs);
+          if (snap) retraceMap.set(r.value.position, snap);
+        }
+      }
+    }
+
     const exitMap = new Map();
     for (const p of positionData) {
       // Zero-value: rugged/dead token — close immediately, don't wait for SL/OOR logic
@@ -478,29 +616,119 @@ export async function runManagementCycle({ silent = false } = {}) {
       const exit = updatePnlAndCheckExits(p.position, p, config.management);
       if (exit) { exitMap.set(p.position, exit.reason); continue; }
 
-      // Successful Rebound: position touched Fib ≤0.500, then price recovered to ≥0.236 → close + ATH cooldown
       // effectiveHigh = max(livePrice, candle HIGH over last hour) — catches rebounds between cycles
       const livePrice  = livePriceMap.get(p.position) ?? null;
       const candleHigh = candleHighMap.get(p.position) ?? null;
       const effectiveHigh = (livePrice != null || candleHigh != null) ? Math.max(livePrice ?? 0, candleHigh ?? 0) : null;
       const fibState = updateFibTouchState(p.position, livePrice);
-      if (fibState.touched && effectiveHigh != null && fibState.fib236 != null && effectiveHigh >= fibState.fib236) {
-        const reboundViaCandleOnly = candleHigh != null && candleHigh >= fibState.fib236 && (livePrice == null || livePrice < fibState.fib236);
-        // Guard: jika candle high yang jadi penentu tapi live price masih < fib500,
-        // candle high itu dari fase pump sebelum dip (bukan rebound sesungguhnya) → skip
-        if (reboundViaCandleOnly && livePrice != null && fibState.fib500 != null && livePrice < fibState.fib500) {
-          _m("management", `Rebound suppressed: ${p.pair} — candle high ${candleHigh.toPrecision(4)} >= fib236 but live price ${livePrice.toPrecision(4)} < fib500 ${fibState.fib500.toPrecision(4)} (pre-dip candle, not a true rebound)`);
-        } else {
-          const src = reboundViaCandleOnly ? "candle high" : "live";
-          _m("management", `Successful rebound: ${p.pair} — touched Fib ≤0.500 then recovered ≥0.236 (${src}=${effectiveHigh.toPrecision(4)} >= fib236=${fibState.fib236.toPrecision(4)}) → closing + ATH cooldown`);
-          exitMap.set(p.position, `Successful rebound: touched ≤0.500 then recovered to 0.236`);
+      const tracked = getTrackedPosition(p.position);
+      const fibs = tracked?.fib_levels_sol ?? null;
+      const retrace = retraceMap.get(p.position) ?? null;
+      const runnerCtx = buildRunnerContext({
+        p,
+        tracked,
+        fibs,
+        livePrice,
+        effectiveHigh,
+        retrace,
+        fibState,
+        config: config.management,
+      });
+      const reasonCtx = { ...runnerCtx, livePrice };
+
+      if (runnerCtx.protectedActive && tracked?.profit_protection_active !== true) {
+        updatePositionManagementState(p.position, { profit_protection_active: true });
+      }
+      if (runnerCtx.runnerActive && tracked?.protected_runner_active !== true) {
+        updatePositionManagementState(p.position, {
+          protected_runner_active: true,
+          runner_activated_at: tracked?.runner_activated_at || new Date().toISOString(),
+        });
+        _m("management", `${buildRunnerReason("PROTECTED_RUNNER_ACTIVATED", reasonCtx)} | pair=${p.pair}`);
+      }
+      if (runnerCtx.reachedFib500 && tracked?.fib500_reclaimed_after_touch !== true && fibState.touched618) {
+        updatePositionManagementState(p.position, { fib500_reclaimed_after_touch: true });
+      }
+      if (runnerCtx.reachedFib382 && tracked?.runner_reached_fib382 !== true) {
+        updatePositionManagementState(p.position, { runner_reached_fib382: true, runner_target_fib: "fib382" });
+      }
+      if (runnerCtx.reachedFib236 && tracked?.runner_reached_fib236 !== true) {
+        updatePositionManagementState(p.position, { runner_reached_fib236: true, runner_target_fib: "fib236" });
+      }
+
+      if (runnerCtx.reboundDecisionActive && runnerCtx.protectedActive) {
+        _m("management", `${buildRunnerReason("REBOUND_TP_DECISION", reasonCtx)} | pair=${p.pair}`);
+        if (runnerCtx.continuationStrong) {
+          _m("management", `${buildRunnerReason("RUNNER_HOLD_TO_FIB382", reasonCtx)} | pair=${p.pair}`);
         }
       }
-      // Rebound from .618 + profit ≥10%: touched Fib .618, recovered to ≥.500 → early exit
-      if (!exitMap.has(p.position) && fibState.touched618 && effectiveHigh != null && fibState.fib500 != null && effectiveHigh >= fibState.fib500 && p.pnl_pct != null && p.pnl_pct >= 10) {
-        const src = (candleHigh != null && candleHigh >= fibState.fib500 && (livePrice == null || livePrice < fibState.fib500)) ? "candle high" : "live";
-        _m("management", `618 rebound+profit: ${p.pair} — touched ≤.618 then recovered ≥.500 (${src}=${effectiveHigh.toPrecision(4)} >= fib500=${fibState.fib500.toPrecision(4)}) pnl=${p.pnl_pct.toFixed(1)}% ≥10% → closing`);
-        exitMap.set(p.position, `Rebound .618→.500 with profit ${p.pnl_pct.toFixed(1)}%`);
+
+      if (runnerCtx.runnerActive && runnerCtx.continuationStrong && !runnerCtx.reachedFib382) {
+        _m("management", `${buildRunnerReason("RUNNER_HOLD_TO_FIB382", reasonCtx)} | pair=${p.pair}`);
+      }
+
+      if (
+        tracked?.fib500_reclaimed_after_touch &&
+        runnerCtx.protectedActive &&
+        runnerCtx.aboveFib500 === false &&
+        livePrice != null
+      ) {
+        exitMap.set(p.position, buildRunnerReason("RUNNER_CLOSE_LOST_FIB500", reasonCtx));
+        continue;
+      }
+
+      if (
+        runnerCtx.protectedActive &&
+        runnerCtx.givebackPct != null &&
+        runnerCtx.givebackPct >= (config.management.runnerPeakGivebackPct ?? 30)
+      ) {
+        exitMap.set(p.position, buildRunnerReason("RUNNER_CLOSE_PEAK_GIVEBACK", reasonCtx));
+        continue;
+      }
+
+      if (
+        runnerCtx.pnlPct != null &&
+        runnerCtx.pnlPct >= (config.management.runnerStrongTakeProfitPct ?? 50) &&
+        runnerCtx.aboveFib236 &&
+        runnerCtx.continuationStrong &&
+        p.in_range
+      ) {
+        _m("management", `${buildRunnerReason("RUNNER_HOLD_ABOVE_50_STRONG_CONTINUATION", reasonCtx)} | pair=${p.pair}`);
+      }
+
+      if (
+        runnerCtx.pnlPct != null &&
+        runnerCtx.pnlPct >= (config.management.runnerStrongTakeProfitPct ?? 50) &&
+        !(runnerCtx.aboveFib236 && runnerCtx.continuationStrong && p.in_range)
+      ) {
+        exitMap.set(p.position, buildRunnerReason("RUNNER_STRONG_TP_50", reasonCtx));
+        continue;
+      }
+
+      if (runnerCtx.reachedFib236 && runnerCtx.continuationStrong && runnerCtx.aboveFib236) {
+        _m("management", `${buildRunnerReason("RUNNER_HOLD_TO_FIB236", reasonCtx)} | pair=${p.pair}`);
+      }
+
+      if (runnerCtx.rejectedFib236) {
+        exitMap.set(p.position, buildRunnerReason("RUNNER_CLOSE_REJECTED_FIB236", reasonCtx));
+        continue;
+      }
+
+      if (runnerCtx.rejectedFib382) {
+        exitMap.set(p.position, buildRunnerReason("RUNNER_CLOSE_REJECTED_FIB382", reasonCtx));
+        continue;
+      }
+
+      if (runnerCtx.feeTakeProfitReady && !runnerCtx.continuationStrong && !runnerCtx.continuationWeak) {
+        _m("management", `${buildRunnerReason("RUNNER_HOLD_FEE_TP_WAIT_CONFIRMATION", reasonCtx)} | pair=${p.pair}`);
+      }
+
+      if (
+        ((runnerCtx.reboundDecisionActive || runnerCtx.runnerActive || runnerCtx.reachedFib236) || (runnerCtx.feeTakeProfitReady && (runnerCtx.reachedFib500 || (runnerCtx.pnlPct ?? 0) > 0))) &&
+        runnerCtx.continuationWeak
+      ) {
+        exitMap.set(p.position, buildRunnerReason("RUNNER_CLOSE_WEAK_MOMENTUM", reasonCtx));
+        continue;
       }
     }
 
@@ -566,7 +794,6 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (exitMap.has(p.position)) { actionMap.set(p.position, { action: "CLOSE", reason: exitMap.get(p.position) }); continue; }
       if (p.instruction) { actionMap.set(p.position, { action: "INSTRUCTION" }); continue; }
       if (p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) { actionMap.set(p.position, { action: "CLOSE", reason: "stop loss" }); continue; }
-      if (p.pnl_pct != null && config.management.takeProfitMaxPct != null && p.pnl_pct >= config.management.takeProfitMaxPct) { actionMap.set(p.position, { action: "CLOSE", reason: `Hard TP: PnL ${p.pnl_pct.toFixed(1)}% ≥ ${config.management.takeProfitMaxPct}%` }); continue; }
       // Exposure cap temporarily disabled for Phase 3 Stability Test
       // ── Auto-claim fees: ≥2% of position value AND live price ≥ fib 0.382 ───
       {
@@ -578,7 +805,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           const _liveP    = livePriceMap.get(p.position) ?? null;
           let aboveFib382 = false;
           if (_fibLvl?.fib236 != null && _fibLvl?.fib500 != null && _liveP != null) {
-            const fib382 = _fibLvl.fib500 + (_fibLvl.fib236 - _fibLvl.fib500) * (0.118 / 0.264);
+            const fib382 = deriveFib382(_fibLvl);
             aboveFib382 = _liveP >= fib382;
           }
           if (aboveFib382) {
@@ -754,11 +981,11 @@ export async function runManagementCycle({ silent = false } = {}) {
       const stayPositions = positionData.filter(p => actionMap.get(p.position)?.action === "STAY");
 
       if (stayPositions.length > 0) {
-        // Fetch OHLCV for all stay positions in parallel → retrace snapshot
-        const retraceMap = new Map();
-        {
+        // Fetch OHLCV for stay positions missing retrace data.
+        const missingRetrace = stayPositions.filter(p => !retraceMap.has(p.position));
+        if (missingRetrace.length > 0) {
           const snapResults = await Promise.allSettled(
-            stayPositions.map(p => {
+            missingRetrace.map(p => {
               const tracked = getTrackedPosition(p.position);
               const baseMint = tracked?.base_mint ?? null;
               const fibs = tracked?.fib_levels_sol ?? null;
@@ -802,7 +1029,7 @@ export async function runManagementCycle({ silent = false } = {}) {
               ? ` | fib500_breach=${snap.candlesSinceFib500Breach}c ago`
               : '';
             const narrowNote = snap.rangeNarrowing ? ' | range_narrowing=YES' : '';
-            retraceLine = `  retrace: ${snap.retraceType} | dump_vel=${snap.dumpVelocity.toFixed(1)}%/c | vol_red=${snap.volOnRed.toFixed(1)}x | consec_red=${snap.consecutiveRed} | Δprice=${snap.priceChangePct.toFixed(1)}%${breachNote}${narrowNote}`;
+            retraceLine = `  retrace: ${snap.retraceType} | dump_vel=${snap.dumpVelocity.toFixed(1)}%/c | vol_red=${snap.volOnRed.toFixed(1)}x | consec_red=${snap.consecutiveRed} | Δprice=${snap.priceChangePct.toFixed(1)}% | cmf20=${snap.cmf20 ?? "null"} | adSlope=${snap.adSlope ?? "null"} | bias=${snap.volumeFlowBias ?? "neutral"}${breachNote}${narrowNote}`;
           }
 
           return [
@@ -861,12 +1088,15 @@ RULES: DO NOT invent observations. ONLY use data in position blocks above.
 
   } catch (error) {
     _m("error", `Management failed: ${error.message}`);
+    _m("error", `MANAGEMENT_CYCLE_ERROR stage=main err=${error.message}`);
     mgmtReport = `Failed: ${error.message}`;
   } finally {
     _managementBusy = false;
     _managementLastCompleted = Date.now();
 
     if (lockAcquired) completeManagementLock();
+    _m("management", `LOCK_RELEASED type=management acquired=${lockAcquired}`);
+    _m("management", `MANAGEMENT_CYCLE_DONE outcome=${mgmtReport?.startsWith("Failed:") ? "error" : "completed"}`);
     if (!silent && telegramEnabled() && mgmtReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
       sendMessage(`🔄 Management Cycle [${ts}] ID: ${corrId}\n${stripThink(mgmtReport)}`).catch(() => {});
@@ -885,11 +1115,13 @@ export async function runScreeningCycle({ silent = false, athOorPools = null } =
   // a stale "running" lock file when the cycle will exit anyway.
   if (shouldSkipNextCycle()) {
     _s("screening", "Circuit breaker skip — cycle skipped (auto-clears when cooldown expires)");
+    _s("screening", "SCREENING_CYCLE_DONE outcome=circuit_skip");
     return null;
   }
 
   if (_screeningBusy) {
     log("cron", "Screening skipped — busy");
+    _s("screening", "SCREENING_CYCLE_DONE outcome=busy_skip");
     if (!silent && telegramEnabled()) sendMessage(`🔍 Screening busy — cycle already running`).catch(() => {});
     return null;
   }
@@ -897,6 +1129,7 @@ export async function runScreeningCycle({ silent = false, athOorPools = null } =
   if (_exposureHardPausedUntil > Date.now()) {
     const resumeAt = new Date(_exposureHardPausedUntil).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
     _s("screening", `HARD CAP pause active until ${resumeAt}`);
+    _s("screening", "SCREENING_CYCLE_DONE outcome=hard_cap_pause");
     if (!silent && telegramEnabled()) sendMessage(`🔍 Screening paused — exposure cap active, resumes at ${resumeAt} UTC`).catch(() => {});
     return null;
   }
@@ -904,6 +1137,7 @@ export async function runScreeningCycle({ silent = false, athOorPools = null } =
   const lockResult = acquireScreeningLock();
   if (!lockResult.acquired) {
     _s("screening", `Lock not acquired`);
+    _s("screening", "SCREENING_CYCLE_DONE outcome=lock_busy");
     if (!silent && telegramEnabled()) sendMessage(`🔍 Screening skipped — lock busy`).catch(() => {});
     return null;
   }
@@ -912,11 +1146,13 @@ export async function runScreeningCycle({ silent = false, athOorPools = null } =
   _screeningBusySince = Date.now();
   _screeningLastTriggered = Date.now();
   timers.screeningLastRun = Date.now();
+  _s("screening", "SCREENING_CYCLE_STARTED");
 
   // _release defined at function scope so both pre-check and main body share it
   const _release = () => {
     completeScreeningLock();
     _screeningBusy = false;
+    _s("screening", "LOCK_RELEASED type=screening");
     _s("screening", "Screening lock released");
   };
 
@@ -930,7 +1166,9 @@ export async function runScreeningCycle({ silent = false, athOorPools = null } =
     prePositions = await getMyPositions({ force: true });
   } catch (e) {
     _s("error", `getMyPositions failed — ${e.message} — skipping cycle`);
+    _s("error", `SCREENING_CYCLE_ERROR stage=getMyPositions err=${e.message}`);
     if (telegramEnabled()) sendMessage(`Screening [${corrId}] — LPAgent error: ${e.message}, skipping cycle`).catch(() => {});
+    _s("screening", "SCREENING_CYCLE_DONE outcome=lpagent_error");
     _release(); return null;
   }
   try {
@@ -940,14 +1178,24 @@ export async function runScreeningCycle({ silent = false, athOorPools = null } =
     preBalance = preBalance ?? { sol: 0, sol_price: 0 };
   }
 
-  if (prePositions.total_positions >= config.risk.maxPositions) { logSkip("max_positions", {}, corrId); _release(); return null; }
+  if (prePositions.total_positions >= config.risk.maxPositions) {
+    logSkip("max_positions", {}, corrId);
+    _s("screening", "SCREENING_CYCLE_DONE outcome=max_positions");
+    _release();
+    return null;
+  }
   const solPriceAvailable = (preBalance?.sol_price ?? 0) > 0;
   const currentExposure = solPriceAvailable
     ? calculateCurrentExposureSol(prePositions.positions, preBalance.sol_price)
     : 0; // sol_price unavailable → skip cap check, exposure treated as 0
   const totalPortfolio = (preBalance?.sol ?? 0) + currentExposure;
   deployAmount = getPositionSizing(totalPortfolio > 0 ? totalPortfolio : (preBalance?.sol ?? 0));
-  if (deployAmount === 0) { logSkip("insufficient_balance", {}, corrId); _release(); return null; }
+  if (deployAmount === 0) {
+    logSkip("insufficient_balance", {}, corrId);
+    _s("screening", "SCREENING_CYCLE_DONE outcome=insufficient_balance");
+    _release();
+    return null;
+  }
   if (!solPriceAvailable) {
     _s("screening", "SOL price unavailable — skipping exposure cap check, proceeding with screening");
   }
@@ -961,6 +1209,7 @@ export async function runScreeningCycle({ silent = false, athOorPools = null } =
     _exposureHardPausedUntil = cap.pauseUntil;
     _s("error", "HARD CAP TRIGGERED");
     if (telegramEnabled()) sendMessage(`🔍 Screening BLOCKED — exposure cap\nCurrent: ${cap.currentExposureSol.toFixed(2)} SOL (${((cap.currentExposureSol / Math.max(preBalance.sol - cap.gasReserveSol, 0.01)) * 100).toFixed(1)}%)\nProposed: +${deployAmount.toFixed(2)} SOL\nProjected: ${cap.projectedExposureSol.toFixed(2)} SOL (${cap.exposurePct.toFixed(1)}%) > cap ${cap.hardCapPct.toFixed(0)}%`).catch(() => {});
+    _s("screening", "SCREENING_CYCLE_DONE outcome=hard_cap_triggered");
     _release(); return null;
   }
   // Exposure cap temporarily disabled for Phase 3 Stability Test
@@ -1027,7 +1276,26 @@ export async function runScreeningCycle({ silent = false, athOorPools = null } =
             const entryPrice = fib?.currentPrice ?? c.price ?? null;
             const activeBin = freshActiveBinResults[i]?.status === "fulfilled" ? freshActiveBinResults[i].value?.binId : null;
             if (c.pool && ath && entryPrice && activeBin != null) {
-              pending[c.pool] = { ath, entryPrice, binStep: c.bin_step ?? null, activeBinAtScreening: activeBin, fib500: fib?.fibLevels?.fib500 ?? null, tokenMint: c.base?.mint ?? null };
+              pending[c.pool] = {
+                ath,
+                entryPrice,
+                binStep: c.bin_step ?? null,
+                activeBinAtScreening: activeBin,
+                fib236: fib?.fibLevels?.fib236 ?? null,
+                fib500: fib?.fibLevels?.fib500 ?? null,
+                rangeTopPrice: fib?.rangeTopPrice ?? null,
+                rangeBottomPrice: fib?.rangeBottomPrice ?? null,
+                targetTopPrice: fib?.targetTopPrice ?? fib?.rangeCoverage?.targetTopPrice ?? null,
+                targetBottomPrice: fib?.targetBottomPrice ?? fib?.rangeCoverage?.targetBottomPrice ?? null,
+                computedRangeTopPrice: fib?.computedRangeTopPrice ?? fib?.rangeCoverage?.computedRangeTopPrice ?? null,
+                computedRangeBottomPrice: fib?.computedRangeBottomPrice ?? fib?.rangeCoverage?.computedRangeBottomPrice ?? null,
+                rangeCoverageOk: fib?.rangeCoverageOk ?? fib?.rangeCoverage?.coverageOk ?? null,
+                requiredDepthBinsRaw: fib?.requiredDepthBinsRaw ?? fib?.rangeCoverage?.requiredDepthBinsRaw ?? null,
+                maxBinsForPosition: fib?.maxBinsForPosition ?? fib?.rangeCoverage?.maxBinsForPosition ?? null,
+                binsBelow: fib?.binsBelow ?? null,
+                binsAbove: fib?.binsAbove ?? null,
+                tokenMint: c.base?.mint ?? null,
+              };
             }
           }
           fs.writeFileSync(PENDING_ATH_PATH, JSON.stringify(pending));
@@ -1040,7 +1308,7 @@ export async function runScreeningCycle({ silent = false, athOorPools = null } =
           const fib382 = fib?.fibLevels?.fib382 != null ? `${fib.fibLevels.fib382.toPrecision(4)} SOL` : "n/a";
           const screenPrice = fib?.currentPrice != null ? `${fib.currentPrice.toPrecision(4)} SOL` : "n/a";
           const conf = fib?.confluenceScore != null ? fib.confluenceScore.toFixed(2) : "n/a";
-          return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${conf} binsBelow=${fib?.binsBelow} binsAbove=${fib?.binsAbove ?? 0}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  active_bin: ${activeBin}`;
+          return `POOL: ${pool.name} (${pool.pool})\n  metrics: bin_step=${pool.bin_step}, fee=${pool.fee_pct}%, tvl=$${pool.active_tvl}\n  fib: signal=${fib?.signal} conf=${conf} binsBelow=${fib?.binsBelow} binsAbove=${fib?.binsAbove ?? 0}\n  fib_levels: fib500=${fib500} fib382=${fib382} screenPrice=${screenPrice}\n  volume_flow: cmf20=${fib?.cmf20 ?? "null"} adSlope=${fib?.adSlope ?? "null"} bias=${fib?.volumeFlowBias ?? "neutral"}\n  active_bin: ${activeBin}`;
         }).join("\n\n");
 
         let agentContent = "";
@@ -1068,8 +1336,10 @@ RULES:
     }
   } catch (error) {
     _s("error", `Screening main loop failed: ${error.message}`);
+    _s("error", `SCREENING_CYCLE_ERROR stage=main err=${error.message}`);
     screenReport = `Failed: ${error.message}`;
   } finally {
+    _s("screening", `SCREENING_CYCLE_DONE outcome=${screenReport?.startsWith("Failed:") ? "error" : "completed"}`);
     _release();
     if (!silent && telegramEnabled() && screenReport) {
       const ts = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
@@ -1081,6 +1351,8 @@ RULES:
   } catch (outerErr) {
     // Outer safety net — ensures _screeningBusy is always released even if pre-screening throws
     _s("error", `Screening outer catch: ${outerErr.message} — releasing lock`);
+    _s("error", `SCREENING_CYCLE_ERROR stage=outer err=${outerErr.message}`);
+    _s("screening", "SCREENING_CYCLE_DONE outcome=outer_error");
     _release();
     return null;
   }
@@ -1153,7 +1425,25 @@ export function startCronJobs() {
   });
 
   _cronTasks = [mgmtTask, screenTask, backtestTask, briefingTask, pollTask, syncTask, orphanTask];
+  log("cron", `CRON_JOBS_STARTED mgmt=*/${config.schedule.managementIntervalMin}min screen=*/${config.schedule.screeningIntervalMin}min`);
   log("cron", `Cron started — mgmt=*/${config.schedule.managementIntervalMin}min screen=*/${config.schedule.screeningIntervalMin}min`);
+
+  if (config.screening.fastPoolRecheckEnabled !== false) {
+    const intervalSeconds = Math.max(10, config.screening.fastPoolRecheckIntervalSeconds ?? 15);
+    _fastPoolWatcherTimer = setInterval(async () => {
+      if (_screeningBusy || _managementBusy) return;
+      try {
+        const result = await recheckFastPendingPools();
+        if (result.triggeredRescreen && !_screeningBusy) {
+          runScreeningCycle({ silent: true }).catch(e => log("cron_error", `Fast pool rescreen failed: ${e.message}`));
+        }
+      } catch (e) {
+        log("cron_error", `Fast pool watcher failed: ${e.message}`);
+      }
+    }, intervalSeconds * 1000);
+    _fastPoolWatcherTimer.unref?.();
+    log("screening", `FAST_POOL_WATCHER_STARTED interval_seconds=${intervalSeconds} ttl_minutes=${config.screening.fastPoolRecheckTtlMinutes ?? 120} max_candidates=${config.screening.fastPoolRecheckMaxCandidates ?? 30} meteora_direct=${config.screening.fastPoolRecheckUseMeteoraDirect !== false}`);
+  }
 }
 
 // ── Graceful Shutdown ─────────────────────────────────────────────────────────
@@ -1363,25 +1653,63 @@ async function handleTelegram(text) {
 }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
-log("startup", "Fibonacci LP Agent starting (minimal mode)...");
-log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
-
-registerCronRestarter(() => { startCronJobs(); });
-
-const isTTY = process.stdin.isTTY;
-
-// Probe LLM providers before starting cycles
-probeLLMProviders().catch(e => log("startup", `LLM probe error: ${e.message}`)).finally(() => {
-  if (isTTY) {
-    // REPL mode — start cron + Telegram polling + REPL interface
-    startCronJobs();
-    startHealthServer();
-    startREPL(); // does not return — blocks on readline
-  } else {
-    // PM2 / non-TTY mode
-    startCronJobs();
-    startHealthServer();
-    _screeningLastTriggered = 0;
-    startPolling(handleTelegram);
+async function validateRuntimeStartup() {
+  const lpKey = process.env.LPAGENT_API_KEY;
+  const lpKeyBackup = process.env.LPAGENT_API_KEY_BACKUP;
+  if (!lpKey) {
+    throw new Error("LPAGENT_API_KEY not set in .env");
   }
-});
+  log("startup", `LPAgent: primary=YES (len=${lpKey.length}) backup=${lpKeyBackup ? "YES (len=" + lpKeyBackup.length + ")" : "MISSING"}`);
+
+  const { Keypair } = await import("@solana/web3.js");
+  const bs58 = (await import("bs58")).default;
+  if (!process.env.WALLET_PRIVATE_KEY) throw new Error("WALLET_PRIVATE_KEY not set");
+  const wallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
+  log("startup", `Wallet: ${wallet.publicKey.toString().slice(0, 8)}...`);
+
+  const telEnabled = telegramEnabled();
+  log("startup", `Telegram: bot=${telEnabled ? "ACTIVE" : "DISABLED"} chatId=${process.env.TELEGRAM_CHAT_ID || "MISSING"}`);
+  if (telEnabled) {
+    sendMessage("✅ Prospera Agent started — LIVE mode").catch(() => {});
+  }
+}
+
+function startAppRuntime() {
+  log("startup", "Fibonacci LP Agent starting (minimal mode)...");
+  log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
+
+  registerCronRestarter(() => { startCronJobs(); });
+
+  const isTTY = process.stdin.isTTY;
+
+  validateRuntimeStartup().then(() => {
+    // Do not block cron startup on external provider probing.
+    // If probeLLMProviders hangs or is slow, management/screening cycles must still start.
+    if (isTTY) {
+      // REPL mode — start cron + Telegram polling + REPL interface
+      startCronJobs();
+      startHealthServer();
+      startREPL(); // does not return — blocks on readline
+    } else {
+      // PM2 / non-TTY mode
+      startCronJobs();
+      startHealthServer();
+      _screeningLastTriggered = 0;
+      startPolling(handleTelegram);
+    }
+
+    log("startup", "LLM probe started in background");
+    probeLLMProviders()
+      .then(() => log("startup", "LLM probe finished"))
+      .catch(e => log("startup", `LLM probe error: ${e.message}`));
+  }).catch((e) => {
+    console.error(`FATAL: ${e.message}`);
+    process.exit(1);
+  });
+}
+
+const isMainModule = process.argv[1] != null && path.resolve(process.argv[1]) === __filename;
+const isPm2Managed = process.env.pm_id != null || process.env.PM2_HOME != null;
+if (isMainModule || isPm2Managed) {
+  startAppRuntime();
+}

@@ -29,6 +29,9 @@ import { fileURLToPath } from "url";
 
 const __dirnameD = path.dirname(fileURLToPath(import.meta.url));
 const SWAP_BLOCKED_PATH = path.join(__dirnameD, "../swap-blocked-tokens.json");
+const GHOST_POSITIONS_PATH = path.join(__dirnameD, "../ghost-positions.json");
+const GHOST_MIN_AGE_MS = 10 * 60 * 1000;
+const GHOST_RETRY_COOLDOWN_MS = 10 * 60 * 1000;
 
 function readSwapBlocked() {
   try { return JSON.parse(fs.readFileSync(SWAP_BLOCKED_PATH, "utf8")); } catch { return []; }
@@ -39,6 +42,20 @@ function addSwapBlocked(mint) {
     list.push(mint);
     try { fs.writeFileSync(SWAP_BLOCKED_PATH, JSON.stringify(list, null, 2)); } catch { /**/ }
   }
+}
+
+function loadGhostTracker() {
+  try {
+    if (!fs.existsSync(GHOST_POSITIONS_PATH)) return {};
+    const raw = JSON.parse(fs.readFileSync(GHOST_POSITIONS_PATH, "utf8"));
+    return raw && typeof raw === "object" ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveGhostTracker(data) {
+  try { fs.writeFileSync(GHOST_POSITIONS_PATH, JSON.stringify(data, null, 2)); } catch { /**/ }
 }
 // telegram notify handled by callers (executor.js / index.js)
 
@@ -74,6 +91,7 @@ function getWallet() {
 
 // ─── Pool Cache ────────────────────────────────────────────────
 const poolCache = new Map();
+const _emptyCloseAttemptByPositionMinute = new Map();
 
 async function getPool(poolAddress) {
   const key = poolAddress.toString();
@@ -665,15 +683,24 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
         age_minutes:          lp.ageHour != null ? Math.round(lp.ageHour * 60) : ageFromState,
         minutes_out_of_range: minutesOutOfRange(positionAddress),
         instruction:          tracked?.instruction ?? null,
+        _raw_value_native:    lp.valueNative,
+        _raw_unclaimed_native: lp.unCollectedFeeNative,
         _source:              "lpagent",
       };
     });
 
+    const { results: emptyCleanupResults } = await cleanupEmptyPositions(positions, { logCategory: "positions", sweep: false });
+    const ghostCleanupResults = await cleanupGhostPositions(positions, { logCategory: "positions" });
+
     // Filter LPAgent ghost positions: zero value + not deployed by us (not in state.json)
-    // LPAgent keeps tracking positions after on-chain account is closed/rugged indefinitely.
+    // Keep rows in result if cleanup failed (so management still sees unresolved artifacts).
     const ghostPositions = [];
     const filtered = positions.filter(p => {
       const isGhost = p.total_value_sol <= 0 && !getTrackedPosition(p.position);
+      const cleanup = emptyCleanupResults.get(p.position);
+      const ghostCleanup = ghostCleanupResults.get(p.position);
+      if (cleanup && !cleanup.closed) return true;
+      if (ghostCleanup?.closed) return false;
       if (isGhost) {
         log("positions_warn", `Ghost position filtered: pos=${p.position?.slice(0, 8)} pair=${p.pair} sol=${p.total_value_sol} age=${p.age_minutes} — LPAgent ghost, not tracked in state`);
         ghostPositions.push(p);
@@ -694,6 +721,197 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
   }
   })();
   return _positionsInflight;
+}
+
+function isDeterministicEmptyPosition(p) {
+  if (!p?.position) return false;
+  try { new PublicKey(p.position); } catch { return false; }
+  const ageOk = (p.age_minutes ?? 0) >= 10;
+  if (!ageOk) return false;
+  const rawValue = p._raw_value_native;
+  const rawUnclaimed = p._raw_unclaimed_native;
+  if (rawValue == null || rawUnclaimed == null) return false;
+  const valueZero = Number(rawValue) <= 0;
+  const feesZero = Number(rawUnclaimed) <= 0;
+  return valueZero && feesZero;
+}
+
+async function confirmOnChainZeroLiquidity(positionAddress, poolAddress = null) {
+  try {
+    const walletAddress = getWallet().publicKey.toString();
+    const targetPool = poolAddress ?? await lookupPoolForPosition(positionAddress, walletAddress);
+    const pool = await getPool(targetPool);
+    const posData = await pool.getPosition(new PublicKey(positionAddress));
+    const xAmt = posData?.positionData?.totalXAmount;
+    const yAmt = posData?.positionData?.totalYAmount;
+    if (xAmt == null || yAmt == null) return false;
+    return BigInt(xAmt.toString()) === 0n && BigInt(yAmt.toString()) === 0n;
+  } catch {
+    return false;
+  }
+}
+
+export async function cleanupEmptyPositions(positions, { logCategory = "management", sweep = true } = {}) {
+  const results = new Map();
+  const minuteBucket = Math.floor(Date.now() / 60000);
+  if (sweep) {
+    log(logCategory, `EMPTY_POSITION_SWEEP_START total_positions=${positions?.length ?? 0}`);
+  }
+
+  for (const p of (positions ?? [])) {
+    if (!isDeterministicEmptyPosition(p)) continue;
+    log(logCategory, `EMPTY_POSITION_DETECTED pos=${p.position?.slice(0, 8)} pair=${p.pair ?? "N/A/N/A"} age=${p.age_minutes ?? "?"}m valSOL=${p.total_value_sol} valUSD=${p.total_value_usd} feesSOL=${p.unclaimed_fees_sol} feesUSD=${p.unclaimed_fees_usd}`);
+
+    const lastMinute = _emptyCloseAttemptByPositionMinute.get(p.position);
+    if (lastMinute === minuteBucket) {
+      log(logCategory, `EMPTY_POSITION_CLOSE_FAILED pos=${p.position?.slice(0, 8)} err=duplicate_attempt_same_minute`);
+      results.set(p.position, { closed: false, error: "duplicate_attempt_same_minute" });
+      continue;
+    }
+
+    const onChainEmpty = await confirmOnChainZeroLiquidity(p.position, p.pool ?? null);
+    if (onChainEmpty !== true) {
+      log(`${logCategory}_warn`, `EMPTY_POSITION_CLOSE_FAILED pos=${p.position?.slice(0, 8)} err=onchain_zero_liquidity_not_confirmed`);
+      results.set(p.position, { closed: false, error: "onchain_zero_liquidity_not_confirmed" });
+      continue;
+    }
+
+    _emptyCloseAttemptByPositionMinute.set(p.position, minuteBucket);
+    log(logCategory, `EMPTY_POSITION_CLOSE_ATTEMPT pos=${p.position?.slice(0, 8)} reason=empty_zero_value_position`);
+    try {
+      const res = await closePosition({
+        position_address: p.position,
+        reason: "empty_zero_value_position",
+        skip_swap: true,
+        _pool_hint: p.pool ?? null,
+      });
+      if (res?.success || res?.already_closed) {
+        log(logCategory, `EMPTY_POSITION_CLOSED pos=${p.position?.slice(0, 8)}`);
+        results.set(p.position, { closed: true });
+      } else {
+        log(`${logCategory}_warn`, `EMPTY_POSITION_CLOSE_FAILED pos=${p.position?.slice(0, 8)} err=${res?.error ?? "unknown"}`);
+        results.set(p.position, { closed: false, error: res?.error ?? "unknown" });
+      }
+    } catch (e) {
+      log(`${logCategory}_warn`, `EMPTY_POSITION_CLOSE_FAILED pos=${p.position?.slice(0, 8)} err=${e.message}`);
+      results.set(p.position, { closed: false, error: e.message });
+    }
+  }
+
+  if (sweep) {
+    const detected = [...results.keys()].length;
+    const closed = [...results.values()].filter(r => r.closed).length;
+    const failed = detected - closed;
+    log(logCategory, `EMPTY_POSITION_SWEEP_DONE detected=${detected} closed=${closed} failed=${failed}`);
+  }
+  return { results };
+}
+
+function isGhostCandidate(p) {
+  if (!p?.position) return false;
+  try { new PublicKey(p.position); } catch { return false; }
+  if (getTrackedPosition(p.position)) return false;
+
+  const pair = String(p.pair ?? "").toLowerCase();
+  const pairMissing = pair === "" || pair === "null" || pair.includes("n/a/null") || pair.includes("n/a/n/a");
+  if (!pairMissing) return false;
+
+  const totalValueSol = p.total_value_sol;
+  const totalValueUsd = p.total_value_usd;
+  const feesSol = p.unclaimed_fees_sol;
+  const feesUsd = p.unclaimed_fees_usd;
+  const valueZero = (totalValueSol == null || totalValueSol <= 0) && (totalValueUsd == null || totalValueUsd <= 0);
+  const feesZeroOrUnknown = (feesSol == null || feesSol <= 0) && (feesUsd == null || feesUsd <= 0);
+  return valueZero && feesZeroOrUnknown;
+}
+
+export async function cleanupGhostPositions(positions, { logCategory = "management" } = {}) {
+  const tracker = loadGhostTracker();
+  const now = Date.now();
+  const results = new Map();
+  const seenThisCycle = new Set();
+
+  for (const p of (positions ?? [])) {
+    if (!isGhostCandidate(p)) continue;
+    const pos = p.position;
+    seenThisCycle.add(pos);
+    log(logCategory, `GHOST_POSITION_DETECTED pos=${pos.slice(0, 8)} pair=${p.pair ?? "N/A/null"} sol=${p.total_value_sol} usd=${p.total_value_usd} age=${p.age_minutes ?? "null"}`);
+
+    let rec = tracker[pos];
+    if (!rec?.firstSeenAt) {
+      rec = {
+        firstSeenAt: now,
+        lastSeenAt: now,
+        lastAttemptAt: null,
+        lastResult: "first_seen",
+        pool: p.pool ?? null,
+        pair: p.pair ?? null,
+      };
+      tracker[pos] = rec;
+      log(logCategory, `GHOST_POSITION_FIRST_SEEN pos=${pos.slice(0, 8)} first_seen_at=${new Date(now).toISOString()}`);
+      results.set(pos, { closed: false, waiting: true, reason: "first_seen" });
+      continue;
+    }
+
+    rec.lastSeenAt = now;
+    rec.pool = p.pool ?? rec.pool ?? null;
+    rec.pair = p.pair ?? rec.pair ?? null;
+
+    const seenMs = now - rec.firstSeenAt;
+    if (seenMs < GHOST_MIN_AGE_MS) {
+      const waitMs = GHOST_MIN_AGE_MS - seenMs;
+      log(logCategory, `GHOST_POSITION_WAITING pos=${pos.slice(0, 8)} seen_for_min=${Math.floor(seenMs / 60000)} wait_min=${Math.ceil(waitMs / 60000)}`);
+      results.set(pos, { closed: false, waiting: true, reason: "min_age_not_reached" });
+      continue;
+    }
+
+    if (rec.lastAttemptAt && (now - rec.lastAttemptAt) < GHOST_RETRY_COOLDOWN_MS) {
+      const retryMs = GHOST_RETRY_COOLDOWN_MS - (now - rec.lastAttemptAt);
+      log(logCategory, `GHOST_POSITION_WAITING pos=${pos.slice(0, 8)} retry_in_min=${Math.ceil(retryMs / 60000)} last_result=${rec.lastResult ?? "unknown"}`);
+      results.set(pos, { closed: false, waiting: true, reason: "retry_cooldown" });
+      continue;
+    }
+
+    const onChainEmpty = await confirmOnChainZeroLiquidity(pos, p.pool ?? null);
+    if (onChainEmpty !== true) {
+      rec.lastAttemptAt = now;
+      rec.lastResult = "onchain_zero_liquidity_not_confirmed";
+      log(`${logCategory}_warn`, `GHOST_POSITION_CLOSE_FAILED pos=${pos.slice(0, 8)} err=onchain_zero_liquidity_not_confirmed`);
+      results.set(pos, { closed: false, error: "onchain_zero_liquidity_not_confirmed" });
+      continue;
+    }
+
+    rec.lastAttemptAt = now;
+    log(logCategory, `GHOST_POSITION_CLOSE_ATTEMPT pos=${pos.slice(0, 8)} reason=ghost_orphan_cleanup`);
+    try {
+      const r = await closePosition({
+        position_address: pos,
+        reason: "ghost_orphan_cleanup",
+        skip_swap: true,
+        _pool_hint: p.pool ?? null,
+      });
+      if (r?.success || r?.already_closed) {
+        log(logCategory, `GHOST_POSITION_CLOSED pos=${pos.slice(0, 8)}`);
+        delete tracker[pos];
+        results.set(pos, { closed: true });
+      } else {
+        rec.lastResult = r?.error ?? "unknown";
+        log(`${logCategory}_warn`, `GHOST_POSITION_CLOSE_FAILED pos=${pos.slice(0, 8)} err=${rec.lastResult}`);
+        results.set(pos, { closed: false, error: rec.lastResult });
+      }
+    } catch (e) {
+      rec.lastResult = e.message;
+      log(`${logCategory}_warn`, `GHOST_POSITION_CLOSE_FAILED pos=${pos.slice(0, 8)} err=${e.message}`);
+      results.set(pos, { closed: false, error: e.message });
+    }
+  }
+
+  // Prune tracker entries that are no longer seen in LPAgent results.
+  for (const key of Object.keys(tracker)) {
+    if (!seenThisCycle.has(key)) delete tracker[key];
+  }
+  saveGhostTracker(tracker);
+  return results;
 }
 
 // ─── Get Positions for Any Wallet ─────────────────────────────
@@ -827,15 +1045,18 @@ export async function closePosition({ position_address, reason, skip_swap = fals
   }
 
   const tracked = getTrackedPosition(position_address);
+  let wallet = null;
+  let poolAddress = null;
+  let pool = null;
 
   try {
     const closeCtx = { position: position_address, pool: tracked?.pool, pair: tracked?.pool_name, reason };
     log("close", `Closing position: ${position_address}`, closeCtx);
-    const wallet = getWallet();
-    const poolAddress = _pool_hint ?? await lookupPoolForPosition(position_address, wallet.publicKey.toString());
+    wallet = getWallet();
+    poolAddress = _pool_hint ?? await lookupPoolForPosition(position_address, wallet.publicKey.toString());
     // Clear cached pool so SDK loads fresh position fee state
     poolCache.delete(poolAddress.toString());
-    const pool = await getPool(poolAddress);
+    pool = await getPool(poolAddress);
 
     const positionPubKey = new PublicKey(position_address);
 
@@ -1116,7 +1337,7 @@ export async function closePosition({ position_address, reason, skip_swap = fals
       // Try closePositionIfEmpty which handles this case directly.
       log("close_warn", `Position ${position_address.slice(0, 8)} removeLiquidity binId crash — attempting closePositionIfEmpty fallback`);
       try {
-        const _pool = typeof pool !== "undefined" ? pool : await getPool(poolAddress);
+        const _pool = pool ?? await getPool(poolAddress);
         const _posData = await _pool.getPosition(new PublicKey(position_address));
         const closeTx = await _pool.closePositionIfEmpty({ owner: wallet.publicKey, position: _posData });
         const closeHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, closeTx, [wallet]), "close:closePositionIfEmpty");

@@ -7,3 +7,8 @@ state.json
 pool-memory.json
 lessons.json
 strategy-library.json
+ghost-positions.json
+deploy.lock
+state/fast-pending-pools.json
+notifications/__pycache__/
+data/diagnostics/

@@ -243,10 +243,24 @@ function derivLesson(perf) {
 
   if (!rule) return null;
 
+  const closeReason = (perf.close_reason || "").toUpperCase();
+  if (closeReason.includes("PROTECTED_RUNNER")) tags.push("protected_runner");
+  if (closeReason.includes("REBOUND_TP_DECISION")) tags.push("rebound_618_to_500_decision");
+  if (closeReason.includes("RUNNER_HOLD_TO_FIB382") || closeReason.includes("REJECTED_FIB382")) tags.push("extended_rebound_382");
+  if (closeReason.includes("RUNNER_HOLD_TO_FIB236")) tags.push("runner_to_236");
+  if (closeReason.includes("RUNNER_CLOSE_LOST_FIB500")) tags.push("lost_fib500_after_runner");
+  if (closeReason.includes("VOLUME_FLOW_BIAS=STRONG_ACCUMULATION") || closeReason.includes("VOLUME_FLOW_BIAS=ACCUMULATION")) {
+    tags.push("volume_flow_accumulation");
+    if (closeReason.includes("RUNNER_")) tags.push("cmf_confirmed_runner");
+  }
+  if (closeReason.includes("VOLUME_FLOW_BIAS=STRONG_DISTRIBUTION") || closeReason.includes("VOLUME_FLOW_BIAS=DISTRIBUTION")) {
+    tags.push("volume_flow_distribution");
+  }
+
   return {
     id: Date.now(),
     rule,
-    tags,
+    tags: [...new Set(tags)],
     outcome,
     context,
     pnl_pct: perf.pnl_pct,

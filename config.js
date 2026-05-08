@@ -9,6 +9,15 @@ const u = fs.existsSync(USER_CONFIG_PATH)
   ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
   : {};
 
+function normalizeNumberArray(value, fallback = []) {
+  const source = Array.isArray(value)
+    ? value
+    : (value == null ? fallback : [value]);
+  return source
+    .map(v => Number(v))
+    .filter(v => Number.isFinite(v));
+}
+
 // Apply wallet/RPC from user-config if not already in env
 if (u.rpcUrl)    process.env.RPC_URL            ||= u.rpcUrl;
 if (u.walletKey) process.env.WALLET_PRIVATE_KEY ||= u.walletKey;
@@ -50,6 +59,13 @@ export const config = {
     maxMcap:       u.maxMcap       ?? 5_000_000,
     minBinStep:           u.minBinStep           ?? 80,
     maxBinStep:           u.maxBinStep           ?? 200,
+    preferredBinStepMin:  u.preferredBinStepMin  ?? (u.minBinStep ?? 80),
+    preferredBinStepMax:  u.preferredBinStepMax  ?? (u.maxBinStep ?? 200),
+    conditionalBinSteps:  normalizeNumberArray(u.conditionalBinSteps, [50]),
+    allowBinStep50IfRangeCoverageOk: u.allowBinStep50IfRangeCoverageOk ?? true,
+    minRangeBottomFibLevel: u.minRangeBottomFibLevel ?? 0.618,
+    minBinsForPosition:   u.minBinsForPosition   ?? 35,
+    maxBinsForPosition:   u.maxBinsForPosition   ?? 90,
     timeframe:            u.timeframe            ?? "5m",
     minFeeActiveTvlRatio: u.minFeeActiveTvlRatio ?? 0.05,
     minFee:               u.minFee               ?? 25,
@@ -62,10 +78,22 @@ export const config = {
     minConfluenceScore:   u.minConfluenceScore   ?? 0.30,   // min fib confluence to enter (screen.js)
     wickRatioThreshold:   u.wickRatioThreshold   ?? 1.0,    // upper wick / body ratio to suppress spike highs
     maxTechnicalAnalysisCandidates: u.maxTechnicalAnalysisCandidates ?? 10,  // Birdeye 60 RPM ÷ 2 calls = 30 max. We use 10 (~33% of limit).
+    enableMicroConsolidationCheck: u.enableMicroConsolidationCheck ?? true,
+    microConsolidationTimeframe: u.microConsolidationTimeframe ?? "1m",
+    minMicroConsolidationCandles: u.minMicroConsolidationCandles ?? 20,
+    minPullbackFromAthPct: u.minPullbackFromAthPct ?? 18,
+    maxConsolidationRangePct: u.maxConsolidationRangePct ?? 18,
+    minSupportHoldCount: u.minSupportHoldCount ?? 4,
+    microConsolidationOnlyForBlowoff: u.microConsolidationOnlyForBlowoff ?? true,
     // Auto-backtest pre-deploy filter
     autoBacktest:         u.autoBacktest         ?? false,
     minBacktestWinRate:   u.minBacktestWinRate   ?? 0.50,
     backtestAggregate:    u.backtestAggregate    ?? 15,
+    fastPoolRecheckEnabled:         u.fastPoolRecheckEnabled         ?? true,
+    fastPoolRecheckIntervalSeconds: u.fastPoolRecheckIntervalSeconds ?? 15,
+    fastPoolRecheckTtlMinutes:      u.fastPoolRecheckTtlMinutes      ?? 120,
+    fastPoolRecheckMaxCandidates:   u.fastPoolRecheckMaxCandidates   ?? 30,
+    fastPoolRecheckUseMeteoraDirect:u.fastPoolRecheckUseMeteoraDirect ?? true,
   },
 
   // ─── Blocklists ─────────────────────────
@@ -83,6 +111,10 @@ export const config = {
     stopLossPct:           u.stopLossPct           ?? -20,
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
     takeProfitMaxPct:      u.takeProfitMaxPct      ?? 25,
+    profitProtectionPct:   u.profitProtectionPct   ?? 10,
+    protectedRunnerPct:    u.protectedRunnerPct    ?? 20,
+    runnerStrongTakeProfitPct: u.runnerStrongTakeProfitPct ?? 50,
+    runnerPeakGivebackPct: u.runnerPeakGivebackPct ?? 30,
     minFeePerTvl24h:           u.minFeePerTvl24h           ?? 1,
     lowYieldCheckIntervalMin:   u.lowYieldCheckIntervalMin   ?? 120, // 2h per position
     minAgeBeforeYieldCheck:     u.minAgeBeforeYieldCheck     ?? 60,
@@ -138,11 +170,11 @@ export const config = {
  * Tiered position sizing based on total wallet balance.
  *
  * Tiers:
- *   < 8 SOL   → 1.5 SOL per posisi
- *   8–15 SOL  → 2.8 SOL per posisi
- *   15–25 SOL → 4.2 SOL per posisi
- *   25–40 SOL → 6.0 SOL per posisi
- *   > 40 SOL  → min(18% wallet, 9 SOL)
+ *   < 5 SOL   → 0.5 SOL per posisi
+ *   5–10 SOL  → 2.0 SOL per posisi
+ *   10–15 SOL → 4.0 SOL per posisi
+ *   15–20 SOL → 5.0 SOL per posisi
+ *   > 20 SOL  → 6.0 SOL per posisi
  *
  * Selalu di-cap oleh single-position max = exposurableBalance × totalExposureCapPct.
  * Returns 0 jika saldo tidak cukup untuk deploy minimum.

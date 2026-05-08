@@ -24,6 +24,18 @@ function load() {
   try {
     const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
     if (!data.positions || typeof data.positions !== "object" || Array.isArray(data.positions)) data.positions = {};
+    for (const pos of Object.values(data.positions)) {
+      if (!Array.isArray(pos.notes)) pos.notes = [];
+      if (pos.peak_pnl_pct == null) pos.peak_pnl_pct = 0;
+      if (pos.trailing_active == null) pos.trailing_active = false;
+      if (pos.profit_protection_active == null) pos.profit_protection_active = false;
+      if (pos.protected_runner_active == null) pos.protected_runner_active = false;
+      if (pos.fib500_reclaimed_after_touch == null) pos.fib500_reclaimed_after_touch = false;
+      if (pos.runner_target_fib == null) pos.runner_target_fib = null;
+      if (pos.runner_activated_at == null) pos.runner_activated_at = null;
+      if (pos.runner_reached_fib382 == null) pos.runner_reached_fib382 = false;
+      if (pos.runner_reached_fib236 == null) pos.runner_reached_fib236 = false;
+    }
     return data;
   } catch (err) {
     log("state_error", `Failed to read state.json: ${err.message}`);
@@ -112,6 +124,13 @@ export function trackPosition({
     notes: [],
     peak_pnl_pct: 0,
     trailing_active: false,
+    profit_protection_active: false,
+    protected_runner_active: false,
+    fib500_reclaimed_after_touch: false,
+    runner_target_fib: null,
+    runner_activated_at: null,
+    runner_reached_fib382: false,
+    runner_reached_fib236: false,
   };
   pushEvent(state, { action: "deploy", position, pool_name: pool_name || pool });
   save(state);
@@ -206,6 +225,32 @@ export function setPositionInstruction(position_address, instruction) {
   return true;
 }
 
+export function updatePositionManagementState(position_address, updates = {}, note = null) {
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos || pos.closed) return null;
+
+  let changed = false;
+  for (const [key, value] of Object.entries(updates)) {
+    if (pos[key] !== value) {
+      pos[key] = value;
+      changed = true;
+    }
+  }
+
+  if (note) {
+    pos.notes.push(note);
+    changed = true;
+  }
+
+  if (changed) {
+    save(state);
+    log("state", `Position ${position_address} management state updated: ${Object.keys(updates).join(", ") || "note_only"}`);
+  }
+
+  return pos;
+}
+
 export function getTrackedPositions(openOnly = false) {
   const state = load();
   const all = Object.values(state.positions);
@@ -262,6 +307,19 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   if (currentPnlPct != null && currentPnlPct > (pos.peak_pnl_pct ?? 0)) {
     pos.peak_pnl_pct = currentPnlPct;
     changed = true;
+  }
+
+  if (!pos.profit_protection_active && currentPnlPct != null && mgmtConfig.profitProtectionPct != null && currentPnlPct >= mgmtConfig.profitProtectionPct) {
+    pos.profit_protection_active = true;
+    changed = true;
+    log("state", `Position ${position_address} profit protection activated at ${currentPnlPct.toFixed(2)}%`);
+  }
+
+  if (!pos.protected_runner_active && currentPnlPct != null && mgmtConfig.protectedRunnerPct != null && currentPnlPct >= mgmtConfig.protectedRunnerPct) {
+    pos.protected_runner_active = true;
+    pos.runner_activated_at = pos.runner_activated_at || new Date().toISOString();
+    changed = true;
+    log("state", `Position ${position_address} protected runner activated at ${currentPnlPct.toFixed(2)}%`);
   }
 
   // Activate trailing TP
@@ -335,6 +393,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     }
     pos.last_low_yield_check_at = new Date().toISOString();
     changed = true;
+    if (changed) save(state);
     return {
       action: "LOW_YIELD",
       reason: `Low yield: fee/TVL ${fee_per_tvl_24h.toFixed(2)}% < min ${mgmtConfig.minFeePerTvl24h}%`,
@@ -347,6 +406,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     }
   }
 
+  if (changed) save(state);
   return null;
 }
 

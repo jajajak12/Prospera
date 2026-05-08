@@ -60,6 +60,48 @@ function birdeyeKeyRotate() {
 
 function sig(ms) { return AbortSignal.timeout(ms); }
 
+function normalizeOhlcvCandles(candles) {
+  if (!Array.isArray(candles) || candles.length === 0) return [];
+  return candles
+    .filter(c =>
+      c &&
+      Number.isFinite(Number(c.timestamp)) &&
+      Number.isFinite(Number(c.open)) &&
+      Number.isFinite(Number(c.high)) &&
+      Number.isFinite(Number(c.low)) &&
+      Number.isFinite(Number(c.close))
+    )
+    .map(c => ({
+      timestamp: Number(c.timestamp),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+      volume: Number(c.volume) || 0,
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function attachOhlcvMeta(candles, meta = {}) {
+  const normalized = normalizeOhlcvCandles(candles);
+  Object.defineProperty(normalized, "_meta", {
+    value: {
+      source: meta.source ?? null,
+      timeframe: meta.timeframe ?? null,
+      chain: meta.chain ?? null,
+      requestedLimit: meta.requestedLimit ?? null,
+      candleCount: normalized.length,
+      firstCandleTimestamp: normalized[0]?.timestamp ?? null,
+      lastCandleTimestamp: normalized[normalized.length - 1]?.timestamp ?? null,
+      normalizedAscending: true,
+    },
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  return normalized;
+}
+
 // Exponential backoff for rate-limit retries (retries=2 → 3 total attempts: 0s → 2s → 4s)
 async function withRetry(fn, retries = 2, baseDelayMs = 2000) {
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -700,7 +742,7 @@ export class HybridDataProvider {
         const candles = await geckoOHLCV(gtPool, chain, timeframe, limit);
         if (candles.length >= 5) {
           log.debug("screening", `getOHLCV: GeckoTerminal OK (${candles.length} candles, SOL-native)`, { pool: gtPool });
-          return candles;
+          return attachOhlcvMeta(candles, { source: "geckoterminal", timeframe, chain, requestedLimit: limit });
         }
         if (candles.length > 0) {
           errors.gt = `thin (${candles.length})`;
@@ -742,7 +784,7 @@ export class HybridDataProvider {
         const candles = usdCandles.map(toSOL);
         if (candles.length >= MIN_CANDLES) {
           log.debug("screening", `getOHLCV: Dexscreener OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`);
-          return candles;
+          return attachOhlcvMeta(candles, { source: "dexscreener", timeframe, chain, requestedLimit: limit });
         }
         errors.dexscreener = `thin (${candles.length})`;
       } catch (err) {
@@ -777,7 +819,7 @@ export class HybridDataProvider {
         const candles = usdCandles.map(toSOL);
         if (candles.length >= MIN_CANDLES) {
           log.debug("screening", `getOHLCV: Birdeye OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: resolvedMint });
-          return candles;
+          return attachOhlcvMeta(candles, { source: "birdeye", timeframe, chain, requestedLimit: limit });
         }
         errors.birdeye = `thin (${candles.length})`;
       } catch (err) {
@@ -805,7 +847,7 @@ export class HybridDataProvider {
         const candles = usdCandles.map(toSOL);
         if (candles.length >= MIN_CANDLES) {
           log.debug("screening", `getOHLCV: Codex OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: resolvedMint });
-          return candles;
+          return attachOhlcvMeta(candles, { source: "codex", timeframe, chain, requestedLimit: limit });
         }
         errors.codex = `thin (${candles.length})`;
       } catch (err) {
@@ -833,7 +875,7 @@ export class HybridDataProvider {
         const candles = usdCandles.map(toSOL);
         if (candles.length >= MIN_CANDLES) {
           log.debug("screening", `getOHLCV: GMGN OK (${candles.length} candles, USD÷${solPrice.toFixed(2)}→SOL)`, { token: resolvedMint });
-          return candles;
+          return attachOhlcvMeta(candles, { source: "gmgn", timeframe, chain, requestedLimit: limit });
         }
         errors.gmgn = `thin (${candles.length})`;
       } catch (err) {

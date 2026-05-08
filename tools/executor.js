@@ -26,7 +26,7 @@ import { addPoolNote } from "../pool-memory.js";
 import { addSmartWallet, removeSmartWallet, loadSmartWallets, observePoolParticipants, getObservationStats } from "../smart-wallets.js";
 import { runBacktest } from "../backtest.js";
 import { listStrategies, getStrategy } from "../strategy-library.js";
-import { config, reloadScreeningThresholds, canOpenNewPosition, calculateCurrentExposureSol } from "../config.js";
+import { config, reloadScreeningThresholds } from "../config.js";
 import { acquireDeployLock, releaseDeployLock } from "./lock-manager.js";
 import fs from "fs";
 import path from "path";
@@ -40,6 +40,31 @@ const POSITION_META_PATH  = path.join(__dirname, "../position-meta.json");
 import { log, logAction } from "../logger.js";
 import { safeSave } from "../log-utils.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
+
+function getPreferredBinStepRange(screeningCfg = config.screening ?? {}) {
+  return {
+    min: screeningCfg.preferredBinStepMin ?? screeningCfg.minBinStep ?? 80,
+    max: screeningCfg.preferredBinStepMax ?? screeningCfg.maxBinStep ?? 200,
+  };
+}
+
+function getConditionalBinStepSet(screeningCfg = config.screening ?? {}) {
+  return new Set((screeningCfg.conditionalBinSteps ?? []).map(Number).filter(Number.isFinite));
+}
+
+function getBinStepPolicy(binStep, screeningCfg = config.screening ?? {}) {
+  const step = Number(binStep);
+  if (!Number.isFinite(step)) return "unknown";
+  const preferred = getPreferredBinStepRange(screeningCfg);
+  if (step >= preferred.min && step <= preferred.max) return "preferred";
+  if (
+    screeningCfg.allowBinStep50IfRangeCoverageOk !== false &&
+    getConditionalBinStepSet(screeningCfg).has(step)
+  ) {
+    return "conditional";
+  }
+  return "rejected";
+}
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
@@ -225,6 +250,10 @@ const toolMap = {
       minVolumeToRebalance:  ["management", "minVolumeToRebalance"],
       stopLossPct:           ["management", "stopLossPct"],
       takeProfitFeePct:      ["management", "takeProfitFeePct"],
+      profitProtectionPct:   ["management", "profitProtectionPct"],
+      protectedRunnerPct:    ["management", "protectedRunnerPct"],
+      runnerStrongTakeProfitPct: ["management", "runnerStrongTakeProfitPct"],
+      runnerPeakGivebackPct: ["management", "runnerPeakGivebackPct"],
       trailingTakeProfit:    ["management", "trailingTakeProfit"],
       trailingTriggerPct:    ["management", "trailingTriggerPct"],
       trailingDropPct:       ["management", "trailingDropPct"],
@@ -414,6 +443,7 @@ export async function executeTool(name, args) {
         }).catch(() => {});
 
       } else if (name === "deploy_position") {
+        log("deploy", `DEPLOY_EXECUTED pool=${args.pool_address} price_range=${result.price_range ?? "n/a"} binsBelow=${args.bins_below ?? "n/a"} binsAbove=${args.bins_above ?? "n/a"} fib236=${args.fib_levels_sol?.fib236 ?? "n/a"}`);
         notifyDeploy({
           pair:       result.pool_name || args.pool_name || args.pool_address?.slice(0, 8),
           amountSol:  args.amount_y ?? args.amount_sol ?? 0,
@@ -502,13 +532,14 @@ export async function executeTool(name, args) {
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "deploy_position": {
-      // Bin step range check
-      const minStep = config.screening.minBinStep;
-      const maxStep = config.screening.maxBinStep;
-      if (args.bin_step != null && (args.bin_step < minStep || args.bin_step > maxStep)) {
+      // Bin step policy check
+      const binStepPolicy = args.bin_step != null ? getBinStepPolicy(args.bin_step, config.screening) : "unknown";
+      if (args.bin_step != null && binStepPolicy === "rejected") {
+        const preferred = getPreferredBinStepRange(config.screening);
+        const conditional = [...getConditionalBinStepSet(config.screening)].join(",") || "none";
         return {
           pass: false,
-          reason: `bin_step ${args.bin_step} is outside allowed range [${minStep}-${maxStep}].`,
+          reason: `bin_step ${args.bin_step} is outside allowed policy (preferred ${preferred.min}-${preferred.max}, conditional ${conditional}).`,
         };
       }
 
@@ -602,27 +633,37 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      // Exposure cap re-check — TOCTOU guard: another cycle may have deployed between screener check and here
-      {
-        const currentExposureSol = calculateCurrentExposureSol(positions, balance.sol_price ?? 0);
-        const cap = canOpenNewPosition(amountY, currentExposureSol, balance.sol);
-        if (!cap.allowed) {
-          return { pass: false, reason: `Exposure cap exceeded at deploy time: ${cap.reason}` };
-        }
-      }
+      // Exposure cap hard block disabled by source-of-truth (Phase 3 Stability Test).
 
-      // Real-time Fib 0.500 gate — SOL denomination (consistent with OHLCV candles and Fib levels)
+      // Real-time Fib gates + deploy range validation
       let _deployMeta = null;
+      const manualOverride = args?.allow_missing_deploy_meta === true || args?.manual_override === true;
       try {
         const pending = fs.existsSync(PENDING_ATH_PATH)
           ? JSON.parse(fs.readFileSync(PENDING_ATH_PATH, "utf8"))
           : {};
         _deployMeta = pending[args.pool_address];
+        if (!_deployMeta) {
+          if (binStepPolicy === "conditional") {
+            return {
+              pass: false,
+              reason: `Deploy blocked — conditional bin_step ${args.bin_step} requires screening deploy metadata with range coverage validation.`,
+            };
+          }
+          if (manualOverride) {
+            log.warn("deploy", `DEPLOY_META_MISSING override=true pool=${args.pool_address} — allowing by explicit manual override`);
+          } else {
+            return {
+              pass: false,
+              reason: `Deploy blocked — missing screening deploy metadata for pool ${args.pool_address}. Re-run screening or use explicit manual override.`,
+            };
+          }
+        }
+
         if (_deployMeta?.fib500 != null) {
           const reliable = await hybridDataProvider.getReliableSOLPrice(_deployMeta.tokenMint ?? null, args.pool_address, "solana");
           const livePriceSol = reliable?.price ?? null;
           if (livePriceSol == null) {
-            // Price unavailable at deploy time — fib500 already verified at screening, allow deploy
             log.warn("deploy", `Fib deploy-gate: SOL price unavailable → allowing deploy (fib500=${_deployMeta.fib500?.toPrecision(4)} SOL verified at screening)`, { pool: args.pool_address });
           } else if (livePriceSol < _deployMeta.fib500) {
             return {
@@ -631,7 +672,66 @@ async function runSafetyChecks(name, args) {
             };
           }
         }
-      } catch { /* non-fatal — if check fails, allow deploy */ }
+
+        if (_deployMeta) {
+          const pendingFib236 = _deployMeta?.fib236 ?? null;
+          const pendingFib500 = _deployMeta?.fib500 ?? null;
+          const pendingRangeTop = _deployMeta?.computedRangeTopPrice ?? _deployMeta?.rangeTopPrice ?? null;
+          const pendingRangeBottom = _deployMeta?.computedRangeBottomPrice ?? _deployMeta?.rangeBottomPrice ?? null;
+          const targetTopPrice = _deployMeta?.targetTopPrice ?? pendingFib236 ?? null;
+          const targetBottomPrice = _deployMeta?.targetBottomPrice ?? _deployMeta?.fib618 ?? null;
+          const entryPrice = _deployMeta?.entryPrice ?? null;
+          const binsAbove = _deployMeta?.binsAbove ?? args?.bins_above ?? 0;
+          const effectiveBinStep = args.bin_step ?? _deployMeta?.binStep ?? null;
+          const effectivePolicy = effectiveBinStep != null ? getBinStepPolicy(effectiveBinStep, config.screening) : binStepPolicy;
+          const isAthZonePassiveBid = binsAbove < 0 || (entryPrice != null && pendingFib236 != null && entryPrice > pendingFib236);
+          const zoneType = isAthZonePassiveBid ? "ATH_ZONE_PASSIVE_BID" : "PRIMARY_OR_OTHER";
+
+          if (effectivePolicy === "conditional" && _deployMeta?.rangeCoverageOk !== true) {
+            return {
+              pass: false,
+              reason: `RANGE_COVERAGE_TOO_NARROW_FOR_BIN_STEP token=${_deployMeta?.tokenMint ?? args.base_mint ?? "unknown"} bin_step=${effectiveBinStep}`,
+            };
+          }
+
+          if (isAthZonePassiveBid && targetTopPrice != null && pendingRangeTop != null) {
+            const topDiffPct = Math.abs(pendingRangeTop - targetTopPrice) / Math.max(targetTopPrice, 1e-12);
+            const tolerancePct = Math.max(0.01, Math.min(0.03, ((effectiveBinStep ?? 100) / 10000) * 2));
+            if (topDiffPct > tolerancePct) {
+              return {
+                pass: false,
+                reason: `Deploy blocked — ATH zone range top mismatch: rangeTop=${pendingRangeTop.toPrecision(6)} vs targetTop=${targetTopPrice.toPrecision(6)} (diff ${(topDiffPct * 100).toFixed(2)}% > tol ${(tolerancePct * 100).toFixed(2)}%).`,
+              };
+            }
+          }
+
+          if (targetBottomPrice != null && pendingRangeBottom != null && pendingRangeBottom > targetBottomPrice) {
+            return {
+              pass: false,
+              reason: `RANGE_COVERAGE_TOO_NARROW_FOR_BIN_STEP token=${_deployMeta?.tokenMint ?? args.base_mint ?? "unknown"} bin_step=${effectiveBinStep}`,
+            };
+          }
+
+          if (_deployMeta?.ath != null && pendingFib500 != null && pendingFib236 != null) {
+            const range = (_deployMeta.ath - pendingFib500) / 0.500;
+            const expectedFib236 = _deployMeta.ath - 0.236 * range;
+            const fibDiffPct = Math.abs(pendingFib236 - expectedFib236) / Math.max(expectedFib236, 1e-12);
+            if (fibDiffPct > 0.03) {
+              return {
+                pass: false,
+                reason: `Deploy blocked — fib236 inconsistent with ATH/fib500 context: pending=${pendingFib236.toPrecision(6)} expected=${expectedFib236.toPrecision(6)} diff ${(fibDiffPct * 100).toFixed(2)}%.`,
+              };
+            }
+          }
+
+          log("deploy", `DEPLOY_RANGE_VALIDATION pool=${args.pool_address} zoneType=${zoneType} fib236=${pendingFib236 ?? "n/a"} fib500=${pendingFib500 ?? "n/a"} rangeTop=${pendingRangeTop ?? "n/a"} rangeBottom=${pendingRangeBottom ?? "n/a"} targetBottom=${targetBottomPrice ?? "n/a"} binsBelow=${_deployMeta?.binsBelow ?? args.bins_below ?? "n/a"} binsAbove=${binsAbove} activeBinPrice=${entryPrice ?? "n/a"} rangeCoverageOk=${_deployMeta?.rangeCoverageOk ?? "n/a"}`);
+        }
+      } catch (e) {
+        return {
+          pass: false,
+          reason: `Deploy blocked — deploy validation failed: ${e.message}`,
+        };
+      }
 
       // Inject fib levels for Failed Rebound tracking in management cycle
       if (_deployMeta?.fib500 != null && _deployMeta?.ath != null) {
