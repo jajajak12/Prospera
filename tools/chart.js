@@ -809,27 +809,40 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     ...[dailyATL, intradayLow].filter(v => Number.isFinite(v) && v > 0)
   );
 
-  // Guard: fallback to swingLow=0 when provider returns all-zero lows (new tokens)
+  // Guard: recover swingLow when provider zero-lows cause aggregate min to be 0 → filtered.
+  // Three sub-cases:
+  //   A) Some positive lows exist in candles → use their min (aggregate was 0-dragged).
+  //   B) No positive lows, only zeros → new token, synthetic swingLow=0 for Fib only.
+  //   C) No usable lows at all → true data failure, skip.
+  // syntheticAtlZeroApplied guards DLMM range bottom from using 0 as anchor.
+  let syntheticAtlZeroApplied = false;
   if (!Number.isFinite(swingLow)) {
     const allCandles      = [...(dailyCandles ?? []), ...candles];
     const candleCount     = allCandles.length;
-    const positiveLowCount = allCandles.filter(c => Number.isFinite(c.low) && c.low > 0).length;
+    const positiveLows    = allCandles.map(c => c.low).filter(v => Number.isFinite(v) && v > 0);
+    const positiveLowCount = positiveLows.length;
     const zeroLowCount    = allCandles.filter(c => Number.isFinite(c.low) && c.low === 0).length;
     const hasPositiveOHLC = allCandles.some(c =>
       (Number.isFinite(c.high) && c.high > 0) ||
       (Number.isFinite(c.close) && c.close > 0)
     );
 
-    if (
+    if (positiveLowCount > 0) {
+      // Case A: positive lows exist but aggregate min was dragged to 0 by zero-low candles.
+      swingLow = Math.min(...positiveLows);
+      log("screening", `FIB_SWING_LOW_RECOVERED symbol=${opts.symbol ?? tokenMint} mint=${tokenMint} candleCount=${candleCount} positiveLowCount=${positiveLowCount} zeroLowCount=${zeroLowCount} swingLow=${fmt(swingLow)} swingHigh=${fmt(swingHigh)}`, { pool: poolAddress });
+    } else if (
       candleCount > 0 &&
       Number.isFinite(swingHigh) && swingHigh > 0 &&
-      positiveLowCount === 0 &&
       zeroLowCount > 0 &&
       hasPositiveOHLC
     ) {
+      // Case B: all lows are 0 → brand-new token, anchor Fib at 0.
       swingLow = 0;
+      syntheticAtlZeroApplied = true;
       log("screening", `FIB_SWING_LOW_FALLBACK_ZERO symbol=${opts.symbol ?? tokenMint} mint=${tokenMint} candleCount=${candleCount} positiveLowCount=0 zeroLowCount=${zeroLowCount} swingHigh=${fmt(swingHigh)}`, { pool: poolAddress });
     } else {
+      // Case C: no usable low data.
       log.warn("screening", `FIB_SWING_LOW_UNAVAILABLE symbol=${opts.symbol ?? tokenMint} mint=${tokenMint} candleCount=${candleCount} positiveLowCount=${positiveLowCount} zeroLowCount=${zeroLowCount} swingHigh=${fmt(swingHigh)}`);
       return skip(`FIB_SWING_LOW_UNAVAILABLE — no valid low data (positiveLowCount=${positiveLowCount} zeroLowCount=${zeroLowCount})`, currentPrice, null, null, { analysisDiagnostics });
     }
@@ -1016,9 +1029,16 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
   //   totalBins = binsBelow + binsAbove = (shift + depth) + (−shift) = depth  ✓
   //   Position starts all-in SOL (passive bid); earns fees as price falls to fib236.
 
+  const fallbackSupportPct = config.screening.fallbackSupportBelowFib618Pct ?? 0.15;
   const atrBuffer     = atr ?? (fib.fib618 * binStepPct / 100);
-  const supportTarget = nearestSupport ?? (fib.fib618 * 0.80);
-  const supportPrice  = Math.max(supportTarget - atrBuffer, fib.fib786);
+  const supportTarget = nearestSupport ?? (fib.fib618 * (1 - fallbackSupportPct));
+  // Synthetic ATL zero: skip ATR buffer so range bottom stays at fib618*(1-pct), not deeper.
+  const supportPrice  = (syntheticAtlZeroApplied && nearestSupport == null)
+    ? Math.max(supportTarget, fib.fib786)
+    : Math.max(supportTarget - atrBuffer, fib.fib786);
+  if (nearestSupport == null) {
+    log("screening", `FIB_SUPPORT_FALLBACK_BELOW_618 symbol=${opts.symbol ?? tokenMint} fib618=${fmt(fib.fib618)} pctBelow=${fallbackSupportPct * 100} supportTarget=${fmt(supportTarget)} syntheticAtlZeroApplied=${syntheticAtlZeroApplied}`, { pool: poolAddress });
+  }
 
   let binsBelow, binsAbove;
   let shiftBins = 0;

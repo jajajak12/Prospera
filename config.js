@@ -85,6 +85,7 @@ export const config = {
     maxConsolidationRangePct: u.maxConsolidationRangePct ?? 18,
     minSupportHoldCount: u.minSupportHoldCount ?? 4,
     microConsolidationOnlyForBlowoff: u.microConsolidationOnlyForBlowoff ?? true,
+    fallbackSupportBelowFib618Pct: u.fallbackSupportBelowFib618Pct ?? 0.15,
     // Auto-backtest pre-deploy filter
     autoBacktest:         u.autoBacktest         ?? false,
     minBacktestWinRate:   u.minBacktestWinRate   ?? 0.50,
@@ -113,6 +114,7 @@ export const config = {
     takeProfitMaxPct:      u.takeProfitMaxPct      ?? 25,
     profitProtectionPct:   u.profitProtectionPct   ?? 10,
     protectedRunnerPct:    u.protectedRunnerPct    ?? 20,
+    minAgeBeforeRunnerWeakCloseMin: u.minAgeBeforeRunnerWeakCloseMin ?? 20,
     runnerStrongTakeProfitPct: u.runnerStrongTakeProfitPct ?? 50,
     runnerPeakGivebackPct: u.runnerPeakGivebackPct ?? 30,
     minFeePerTvl24h:           u.minFeePerTvl24h           ?? 1,
