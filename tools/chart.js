@@ -809,10 +809,36 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     ...[dailyATL, intradayLow].filter(v => Number.isFinite(v) && v > 0)
   );
 
-  log("screening", `ATH_COMPONENTS ${tokenMint}: rawCandleATH=${fmt(rawCandleATH)} cleanedCandleATH=${fmt(cleanedCandleATH)} intradayHigh=${fmt(intradayHigh)} previousKnownATH=${fmt(previousKnownATH)} currentPrice=${fmt(currentPrice)} finalATH=${fmt(swingHigh)}`, { pool: poolAddress });
+  // Guard: fallback to swingLow=0 when provider returns all-zero lows (new tokens)
+  if (!Number.isFinite(swingLow)) {
+    const allCandles      = [...(dailyCandles ?? []), ...candles];
+    const candleCount     = allCandles.length;
+    const positiveLowCount = allCandles.filter(c => Number.isFinite(c.low) && c.low > 0).length;
+    const zeroLowCount    = allCandles.filter(c => Number.isFinite(c.low) && c.low === 0).length;
+    const hasPositiveOHLC = allCandles.some(c =>
+      (Number.isFinite(c.high) && c.high > 0) ||
+      (Number.isFinite(c.close) && c.close > 0)
+    );
 
-  if (swingHigh <= swingLow || swingHigh === swingLow) {
-    return skip("No price movement detected (swing_high === swing_low)", currentPrice, null, null, { analysisDiagnostics });
+    if (
+      candleCount > 0 &&
+      Number.isFinite(swingHigh) && swingHigh > 0 &&
+      positiveLowCount === 0 &&
+      zeroLowCount > 0 &&
+      hasPositiveOHLC
+    ) {
+      swingLow = 0;
+      log("screening", `FIB_SWING_LOW_FALLBACK_ZERO symbol=${opts.symbol ?? tokenMint} mint=${tokenMint} candleCount=${candleCount} positiveLowCount=0 zeroLowCount=${zeroLowCount} swingHigh=${fmt(swingHigh)}`, { pool: poolAddress });
+    } else {
+      log.warn("screening", `FIB_SWING_LOW_UNAVAILABLE symbol=${opts.symbol ?? tokenMint} mint=${tokenMint} candleCount=${candleCount} positiveLowCount=${positiveLowCount} zeroLowCount=${zeroLowCount} swingHigh=${fmt(swingHigh)}`);
+      return skip(`FIB_SWING_LOW_UNAVAILABLE — no valid low data (positiveLowCount=${positiveLowCount} zeroLowCount=${zeroLowCount})`, currentPrice, null, null, { analysisDiagnostics });
+    }
+  }
+
+  log("screening", `ATH_COMPONENTS ${tokenMint}: rawCandleATH=${fmt(rawCandleATH)} cleanedCandleATH=${fmt(cleanedCandleATH)} intradayHigh=${fmt(intradayHigh)} previousKnownATH=${fmt(previousKnownATH)} currentPrice=${fmt(currentPrice)} finalATH=${fmt(swingHigh)} swingLow=${fmt(swingLow)}`, { pool: poolAddress });
+
+  if (swingHigh <= swingLow) {
+    return skip(`No price range (swingHigh=${fmt(swingHigh)} <= swingLow=${fmt(swingLow)})`, currentPrice, null, null, { analysisDiagnostics });
   }
 
   const fib = calcFibLevels(swingHigh, swingLow);
@@ -1073,6 +1099,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
 
   // ── Build Reason ──────────────────────────────────────────────────────────
   const zoneTier = inAthZone ? "ATH_ZONE(0-0.236)" : "PRIMARY(near 0.236)";
+  const zoneLabel = inAthZone ? "ATH_ZONE" : (inPrimaryZone ? "PRIMARY" : "NEAR_FIB236");
   const rangeTopLabel  = inAthZone ? `fib236 @${fmt(fib.fib236)}` : `current @${fmt(currentPrice)}`;
   const rangeBotLabel  = `support @${fmt(supportPrice)}`;
   const parts = [
@@ -1111,6 +1138,7 @@ export async function analyzeSignal(tokenMint, binStep, currentPrice, candleLimi
     currentPrice,
     confluenceScore,
     pricePosition:   Math.round(pricePosition * 100) / 100,
+    zoneLabel,
     inPrimaryZone,
     inAthZone,
     hasHiddenDivergence,
