@@ -1,14 +1,13 @@
 import {
   Keypair,
   PublicKey,
-  sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import BN from "bn.js";
 import bs58 from "bs58";
 import { config } from "../config.js";
 import { hybridDataProvider } from './dataProvider.js';
 import { log } from "../logger.js";
-import { getConnection, withRpcFallback, reportRpcSuccess, reportRpcError, isOnFallback } from "../rpc.js";
+import { getCurrentRpcProvider, sendAndConfirmWithRpcFallback, withRpcFallback } from "../rpc.js";
 import {
   trackPosition,
   markOutOfRange,
@@ -18,6 +17,13 @@ import {
   getTrackedPosition,
   minutesOutOfRange,
   syncOpenPositions,
+  setPendingDeploy,
+  updatePendingDeploy,
+  clearPendingDeploy,
+  markPositionUnusable,
+  isPositionMarkedUnusable,
+  markPositionAdopted,
+  getDeployRecord,
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
 import { isPoolOnCooldown } from "../pool-memory.js";
@@ -78,7 +84,7 @@ async function getDLMM() {
 // ─── Lazy wallet init ─────────────────────────────────────────
 let _wallet = null;
 
-function getWallet() {
+export function getWallet() {
   if (!_wallet) {
     if (!process.env.WALLET_PRIVATE_KEY) {
       throw new Error("WALLET_PRIVATE_KEY not set");
@@ -94,7 +100,8 @@ const poolCache = new Map();
 const _emptyCloseAttemptByPositionMinute = new Map();
 
 async function getPool(poolAddress) {
-  const key = poolAddress.toString();
+  const providerId = getCurrentRpcProvider().id;
+  const key = `${providerId}:${poolAddress.toString()}`;
   if (!poolCache.has(key)) {
     const { DLMM } = await getDLMM();
     const pool = await withRpcFallback(
@@ -143,6 +150,188 @@ function isBlockHeightError(err) {
   return (err?.message || "").includes("block height exceeded");
 }
 
+function extractSignatureFromError(err) {
+  const msg = err?.message || "";
+  const match = msg.match(/Signature ([1-9A-HJ-NP-Za-km-z]{32,})/);
+  return match?.[1] || null;
+}
+
+function isZeroLiquidityAmounts(xAmt, yAmt) {
+  return xAmt !== null && yAmt !== null
+    && BigInt(xAmt.toString()) === 0n
+    && BigInt(yAmt.toString()) === 0n;
+}
+
+function isZeroValuePositionRow(p) {
+  const totalValueSol = Number(p?.total_value_sol ?? 0);
+  const totalValueUsd = Number(p?.total_value_usd ?? 0);
+  const feesSol = Number(p?.unclaimed_fees_sol ?? 0);
+  const feesUsd = Number(p?.unclaimed_fees_usd ?? 0);
+  return totalValueSol <= 0 && totalValueUsd <= 0 && feesSol <= 0 && feesUsd <= 0;
+}
+
+async function getOnChainPoolPositions(poolAddress, walletPublicKey) {
+  const { DLMM } = await getDLMM();
+  const allPositions = await withRpcFallback(
+    conn => DLMM.getAllLbPairPositionsByUser(conn, walletPublicKey),
+    "poolPositions:getAllPositions"
+  );
+  const candidate = Object.entries(allPositions).find(([key]) => key === new PublicKey(poolAddress).toBase58());
+  return candidate?.[1]?.lbPairPositionsData || [];
+}
+
+async function classifyOnChainPosition(poolAddress, positionAddress, walletPublicKey) {
+  const positions = await getOnChainPoolPositions(poolAddress, walletPublicKey);
+  for (const pos of positions) {
+    const addr = pos.publicKey.toString();
+    if (positionAddress && addr !== positionAddress) continue;
+    const xAmt = pos.positionData?.totalXAmount ?? null;
+    const yAmt = pos.positionData?.totalYAmount ?? null;
+    return {
+      existsInUserPositions: true,
+      position: addr,
+      xAmt,
+      yAmt,
+      isZeroLiquidity: isZeroLiquidityAmounts(xAmt, yAmt),
+      raw: pos,
+    };
+  }
+
+  if (!positionAddress) return null;
+  const accountInfo = await withRpcFallback(
+    conn => conn.getAccountInfo(new PublicKey(positionAddress)),
+    "positionAccount:getAccountInfo"
+  ).catch(() => null);
+  return {
+    existsInUserPositions: false,
+    position: positionAddress,
+    xAmt: null,
+    yAmt: null,
+    isZeroLiquidity: false,
+    accountExists: !!accountInfo,
+    accountOwner: accountInfo?.owner?.toBase58?.() ?? null,
+    lamports: accountInfo?.lamports ?? null,
+    dataLen: accountInfo?.data?.length ?? null,
+  };
+}
+
+async function cleanupZeroLiquidityPositionAccount({
+  position,
+  pool,
+  pool_name = null,
+  signature = null,
+  reason = "zero_liquidity_stale_position",
+  logCategory = "deploy",
+}) {
+  log(logCategory, `ZERO_LIQ_POSITION_CLEANUP_ATTEMPT position=${position} pool=${pool}`);
+  try {
+    const res = await closePosition({
+      position_address: position,
+      reason,
+      skip_swap: true,
+      _pool_hint: pool,
+    });
+    const cleanup = {
+      attempted: true,
+      closed: !!(res?.success || res?.already_closed),
+      result: res?.error ?? (res?.success ? "closed" : "unknown"),
+    };
+    if (!cleanup.closed) {
+      markPositionUnusable({ pool, position, reason, pool_name, signature, cleanup });
+      log(logCategory, `ZERO_LIQ_POSITION_MARKED_UNUSABLE position=${position} pool=${pool}`);
+    }
+    return cleanup;
+  } catch (e) {
+    const cleanup = { attempted: true, closed: false, result: e.message };
+    markPositionUnusable({ pool, position, reason, pool_name, signature, cleanup });
+    log(logCategory, `ZERO_LIQ_POSITION_MARKED_UNUSABLE position=${position} pool=${pool}`);
+    return cleanup;
+  }
+}
+
+async function reconcileDeployOutcome({
+  pool_address,
+  pool_name = null,
+  positionAddress,
+  signature = null,
+  reason,
+  activeStrategy,
+  minBinId,
+  maxBinId,
+  activeBinsBelow,
+  activeBinsAbove,
+  finalAmountY,
+  finalAmountX,
+  activeBinIdNum,
+}) {
+  const wallet = getWallet();
+  const classification = await classifyOnChainPosition(pool_address, positionAddress, wallet.publicKey);
+
+  if (classification?.existsInUserPositions && !classification.isZeroLiquidity) {
+    const adoptedPosition = classification.position;
+    log("deploy", `DEPLOY_RECONCILE_POSITION_FOUND liquidity=X=${classification.xAmt} Y=${classification.yAmt} position=${adoptedPosition}`);
+    trackPosition({
+      position: adoptedPosition,
+      pool: pool_address,
+      pool_name: pool_name || null,
+      strategy: activeStrategy,
+      bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
+      amount_sol: finalAmountY,
+      amount_x: finalAmountX,
+      active_bin: activeBinIdNum,
+    });
+    markPositionAdopted({ pool: pool_address, position: adoptedPosition, pool_name, source: "reconcile" });
+    clearPendingDeploy(pool_address, { status: "adopted", note: reason });
+    return {
+      success: true,
+      adopted: true,
+      position: adoptedPosition,
+      pool: pool_address,
+      pool_name,
+      message: "Existing on-chain position adopted",
+    };
+  }
+
+  const accountExists = classification?.accountExists === true || classification?.existsInUserPositions === true;
+  if (accountExists) {
+    log("deploy", `ZERO_LIQ_POSITION_ACCOUNT_DETECTED position=${positionAddress} pool=${pool_address}`);
+    const cleanup = await cleanupZeroLiquidityPositionAccount({
+      position: positionAddress,
+      pool: pool_address,
+      pool_name,
+      signature,
+      reason,
+    });
+    if (cleanup.closed) {
+      clearPendingDeploy(pool_address, { status: "zero_liq_closed", note: reason });
+    } else {
+      updatePendingDeploy(pool_address, { status: "unusable", cleanup });
+    }
+    return {
+      success: false,
+      retryable: true,
+      zero_liq_stale: true,
+      cleanup_attempted: cleanup.attempted,
+      cleanup_closed: cleanup.closed,
+      error: "Zero-liquidity stale position account detected; deploy will retry with fresh position account",
+      position: positionAddress,
+      pool: pool_address,
+      pool_name,
+    };
+  }
+
+  clearPendingDeploy(pool_address, { status: "reconciled_no_position", note: reason });
+  return {
+    success: false,
+    retryable: true,
+    reconciled: true,
+    error: "Deploy attempt reconciled: no non-zero position found; safe to retry with fresh position account",
+    position: positionAddress,
+    pool: pool_address,
+    pool_name,
+  };
+}
+
 /**
  * Fetch fresh blockhash, stamp it onto tx, then send.
  * On fallback RPC adds +150 to lastValidBlockHeight (stale-hash buffer).
@@ -150,25 +339,12 @@ function isBlockHeightError(err) {
  * fresh blockhash before giving up.
  */
 async function refreshAndSend(tx, signers, label) {
-  const FALLBACK_BUFFER = 150;
-
-  async function attempt() {
-    const { blockhash, lastValidBlockHeight } = await withRpcFallback(
-      conn => conn.getLatestBlockhash("confirmed"),
-      `${label}:blockhash`
-    );
-    tx.recentBlockhash = blockhash;
-    tx.lastValidBlockHeight = lastValidBlockHeight + (isOnFallback() ? FALLBACK_BUFFER : 0);
-    return withRpcFallback(c => sendAndConfirmTransaction(c, tx, signers), label);
-  }
-
-  try {
-    return await attempt();
-  } catch (err) {
-    if (!isBlockHeightError(err)) throw err;
-    log("deploy_warn", `${label}: block height exceeded — retrying with fresh blockhash`);
-    return await attempt(); // one retry
-  }
+  return sendAndConfirmWithRpcFallback(tx, signers, {
+    label,
+    refreshBlockhash: true,
+    allowSubscription: true,
+    maxBlockhashRefreshes: 2,
+  });
 }
 
 // ─── Deploy Position ───────────────────────────────────────────
@@ -275,7 +451,17 @@ export async function deployPosition({
 
   const totalBins = activeBinsBelow + activeBinsAbove;
   const isWideRange = totalBins > 69;
-  const newPosition = Keypair.generate();
+  let newPosition = Keypair.generate();
+  const deployRecord = getDeployRecord(pool_address);
+  const priorPendingPosition = deployRecord?.pending?.position ?? null;
+  if (priorPendingPosition && priorPendingPosition !== newPosition.publicKey.toString()) {
+    log("deploy", `DEPLOY_RETRY_FRESH_POSITION_ACCOUNT oldPosition=${priorPendingPosition} newPosition=${newPosition.publicKey.toString()}`);
+  }
+  while (isPositionMarkedUnusable(pool_address, newPosition.publicKey.toString())) {
+    const oldPosition = newPosition.publicKey.toString();
+    newPosition = Keypair.generate();
+    log("deploy", `DEPLOY_RETRY_FRESH_POSITION_ACCOUNT oldPosition=${oldPosition} newPosition=${newPosition.publicKey.toString()}`);
+  }
 
   const deployCtx = { pool: pool_address, pair: pool_name };
   log("deploy", `Pool: ${pool_address}`, deployCtx);
@@ -283,6 +469,20 @@ export async function deployPosition({
   log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins, active=${activeBinIdNum}${isWideRange ? " WIDE" : ""}${rangeMode})`, deployCtx);
   log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`, deployCtx);
   log("deploy", `Position: ${newPosition.publicKey.toString()}`, deployCtx);
+  log("deploy", `DEPLOY_POSITION_ACCOUNT_GENERATED position=${newPosition.publicKey.toString()} pool=${pool_address}`);
+  setPendingDeploy({
+    pool: pool_address,
+    pool_name: pool_name || null,
+    position: newPosition.publicKey.toString(),
+    status: "generated",
+    context: {
+      strategy: activeStrategy,
+      minBinId,
+      maxBinId,
+      bins_below: activeBinsBelow,
+      bins_above: activeBinsAbove,
+    },
+  });
 
   // Track Phase 1 key for wide-range phantom cleanup on Phase 2 failure
   let _phase1PositionKey = null;
@@ -333,6 +533,7 @@ export async function deployPosition({
       for (let i = 0; i < createTxArray.length; i++) {
         const signers = i === 0 ? [wallet, newPosition] : [wallet];
         const txHash = await refreshAndSend(createTxArray[i], signers, "deploy:create");
+        if (i === 0) updatePendingDeploy(pool_address, { signature: txHash, status: "create_sent" });
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
@@ -351,6 +552,7 @@ export async function deployPosition({
       const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
       for (let i = 0; i < addTxArray.length; i++) {
         const txHash = await refreshAndSend(addTxArray[i], [wallet], "deploy:add_liquidity");
+        if (i === 0) updatePendingDeploy(pool_address, { status: "liquidity_sent" });
         txHashes.push(txHash);
         log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
       }
@@ -366,6 +568,7 @@ export async function deployPosition({
         slippage: 1000, // 10% in bps
       });
       const txHash = await refreshAndSend(tx, [wallet, newPosition], "deploy:standard");
+      updatePendingDeploy(pool_address, { signature: txHash, status: "submitted" });
       txHashes.push(txHash);
     }
 
@@ -398,6 +601,8 @@ export async function deployPosition({
       has_hidden_divergence: has_hidden_divergence ?? null,
       smart_wallet_present:  smart_wallet_present  ?? null,
     });
+    clearPendingDeploy(pool_address, { status: "deployed", note: "deploy_success" });
+    markPositionAdopted({ pool: pool_address, position: newPosition.publicKey.toString(), pool_name, source: "deploy_success" });
 
     const actualBinStep = pool.lbPair.binStep;
     const activePrice = parseFloat(pool.fromPricePerLamport(Number(activeBin.price)));
@@ -427,6 +632,30 @@ export async function deployPosition({
     log("deploy_error", error.message);
     // Always invalidate cache so next cycle fetches fresh LPAgent state
     _positionsCacheAt = 0;
+    const errorSignature = extractSignatureFromError(error);
+    if (errorSignature) {
+      updatePendingDeploy(pool_address, { signature: errorSignature });
+    }
+
+    if (isBlockHeightError(error)) {
+      log("deploy", `DEPLOY_BLOCKHASH_EXPIRED_RECONCILE_STARTED signature=${errorSignature ?? "unknown"} position=${newPosition.publicKey.toString()} pool=${pool_address}`);
+      updatePendingDeploy(pool_address, { status: "blockhash_expired", signature: errorSignature });
+      return await reconcileDeployOutcome({
+        pool_address,
+        pool_name,
+        positionAddress: newPosition.publicKey.toString(),
+        signature: errorSignature,
+        reason: "block_height_exceeded",
+        activeStrategy,
+        minBinId,
+        maxBinId,
+        activeBinsBelow,
+        activeBinsAbove,
+        finalAmountY,
+        finalAmountX,
+        activeBinIdNum,
+      });
+    }
 
     // Wide-range: Phase 1 created an empty on-chain position but Phase 2 failed.
     // Close it immediately so LPAgent doesn't return it as an active position,
@@ -443,13 +672,61 @@ export async function deployPosition({
           shouldClaimAndClose: true,
         });
         for (const tx of Array.isArray(cleanupTxs) ? cleanupTxs : [cleanupTxs]) {
-          await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet]), "deploy:phantom_cleanup")
+          await sendAndConfirmWithRpcFallback(tx, [wallet], {
+            label: "deploy:phantom_cleanup",
+            refreshBlockhash: true,
+            allowSubscription: true,
+            maxBlockhashRefreshes: 2,
+          })
             .catch(e => log("deploy_error", `Phantom cleanup tx failed: ${e.message}`));
         }
         log("deploy", `Phantom cleanup OK: empty position closed`);
       } catch (cleanupErr) {
         log("deploy_error", `Phantom cleanup failed: ${cleanupErr.message}`);
       }
+    }
+
+    // "account already in use": another position already exists for this pool on-chain.
+    // Scan and adopt it instead of treating as fatal failure.
+    if (error.message?.includes("account already in use")) {
+      log("deploy", `EXISTING_POSITION_FOUND_BEFORE_DEPLOY pool=${pool_address} — scanning on-chain for adoption`);
+      try {
+        const reconciled = await reconcileDeployOutcome({
+          pool_address,
+          pool_name,
+          positionAddress: newPosition.publicKey.toString(),
+          signature: errorSignature,
+          reason: "account_already_in_use",
+          activeStrategy,
+          minBinId,
+          maxBinId,
+          activeBinsBelow,
+          activeBinsAbove,
+          finalAmountY,
+          finalAmountX,
+          activeBinIdNum,
+        });
+        if (reconciled?.adopted || reconciled?.retryable) return reconciled;
+        log("deploy_warn", `EXISTING_POSITION_FOUND_BEFORE_DEPLOY pool=${pool_address} — on-chain scan found no valid untracked position`);
+      } catch (scanErr) {
+        log("deploy_error", `Adoption scan failed: ${scanErr.message}`);
+      }
+      markPositionUnusable({
+        pool: pool_address,
+        position: newPosition.publicKey.toString(),
+        reason: "account_already_in_use_unreconciled",
+        pool_name,
+        signature: errorSignature,
+      });
+      return {
+        success: false,
+        retryable: true,
+        zero_liq_stale: true,
+        error: "Zero-liquidity stale position account detected; deploy will retry with fresh position account",
+        position: newPosition.publicKey.toString(),
+        pool: pool_address,
+        pool_name,
+      };
     }
 
     // InvalidBinArray (0x178b) on Phase 2: bin arrays exist but RebalanceLiquidity
@@ -462,6 +739,11 @@ export async function deployPosition({
         error: error.message,
       };
     }
+    // Confirm no position state was written for unhandled failures (simulation errors, etc.)
+    if (error.message?.includes("Simulation failed") || error.message?.includes("custom program error") || error.message?.includes("0x0")) {
+      log("deploy", `FAILED_SIMULATION_NO_STATE_WRITE pool=${pool_address} — simulation or program error; trackPosition NOT called, no open state written: ${error.message.slice(0, 100)}`);
+    }
+    clearPendingDeploy(pool_address, { status: "failed", note: error.message });
     return { success: false, error: error.message };
   }
 }
@@ -516,8 +798,25 @@ export async function scanOrphanPositions(lpAgentAddresses, lpAgentPositionData 
         const totalLiq = xAmt != null ? `X=${xAmt} Y=${yAmt}` : "liq=unknown";
         log("orphan_scan", `  chain pos ${addr.slice(0, 8)} pool=${lbPairKey.slice(0, 8)} ${totalLiq} | known=${isKnown} tracked=${isTracked} zeroLiq=${isZeroLiq}`);
         if (!isKnown) {
-          // On-chain but LPAgent doesn't know → true orphan
-          orphans.push({ position: addr, pool: lbPairKey });
+          // On-chain but LPAgent doesn't know
+          const stateRec = getTrackedPosition(addr);
+          if (isTracked && stateRec && !stateRec.closed && !isZeroLiq) {
+            // Our state tracks it AND it's open AND has non-zero liquidity → adoptable orphan
+            log("orphan_scan", `  Adoptable: pos=${addr.slice(0, 8)} pool=${lbPairKey.slice(0, 8)} — tracked in state, open, non-zero liq, not in LPAgent`);
+            orphans.push({ position: addr, pool: lbPairKey, adoptable: true });
+          } else if (isTracked && stateRec?.closed) {
+            // State says closed but on-chain has it — stale state, verify then close
+            log("orphan_scan", `  StaleClosed: pos=${addr.slice(0, 8)} pool=${lbPairKey.slice(0, 8)} — state=closed on-chain=active → close`);
+            orphans.push({ position: addr, pool: lbPairKey });
+          } else if (!isTracked && !isZeroLiq) {
+            // On-chain has it, LPAgent doesn't, state doesn't → adopt into state (not orphan-to-close)
+            // This is a position we never tracked but now see on-chain; adopt it
+            log("orphan_scan", `  ForeignPosition: pos=${addr.slice(0, 8)} pool=${lbPairKey.slice(0, 8)} — untracked, non-zero liq, not in LPAgent → adopt into state`);
+            orphans.push({ position: addr, pool: lbPairKey, adoptable: true, foreign: true });
+          } else {
+            // Zero-liq or state-tracked-but-closed → true orphan, close it
+            orphans.push({ position: addr, pool: lbPairKey });
+          }
         } else if (!isTracked && isZeroLiq) {
           // LPAgent-known + on-chain + zero liquidity + not in state.json
           // Ghost filter removes from management view — catch here for close
@@ -692,18 +991,34 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
     const { results: emptyCleanupResults } = await cleanupEmptyPositions(positions, { logCategory: "positions", sweep: false });
     const ghostCleanupResults = await cleanupGhostPositions(positions, { logCategory: "positions" });
 
-    // Filter LPAgent ghost positions: zero value + not deployed by us (not in state.json)
-    // Keep rows in result if cleanup failed (so management still sees unresolved artifacts).
+    // Active positions require confirmed non-zero value/fees from LPAgent.
+    // Zero-liquidity rows are stale artifacts, not deploy blockers.
+    log("positions", "GHOST_FILTER_NONZERO_REQUIRED source=lpagent");
     const ghostPositions = [];
     const filtered = positions.filter(p => {
-      const isGhost = p.total_value_sol <= 0 && !getTrackedPosition(p.position);
+      const tracked = getTrackedPosition(p.position);
+      const isGhost = isZeroValuePositionRow(p);
       const cleanup = emptyCleanupResults.get(p.position);
       const ghostCleanup = ghostCleanupResults.get(p.position);
-      if (cleanup && !cleanup.closed) return true;
+      if (cleanup && !cleanup.closed) {
+        ghostPositions.push({ ...p, stale_zero_liquidity: true, cleanup_error: cleanup.error ?? null });
+        return false;
+      }
       if (ghostCleanup?.closed) return false;
       if (isGhost) {
-        log("positions_warn", `Ghost position filtered: pos=${p.position?.slice(0, 8)} pair=${p.pair} sol=${p.total_value_sol} age=${p.age_minutes} — LPAgent ghost, not tracked in state`);
-        ghostPositions.push(p);
+        if (tracked && !tracked.closed) {
+          log("positions_warn", `ZERO_LIQ_POSITION_ACCOUNT_DETECTED position=${p.position} pool=${p.pool ?? "unknown"} tracked=true`);
+          markPositionUnusable({
+            pool: p.pool ?? tracked.pool,
+            position: p.position,
+            reason: "lpagent_zero_value_row",
+            pool_name: tracked.pool_name ?? p.pair ?? null,
+            context: { source: "lpagent", tracked: true },
+          });
+        } else {
+          log("positions_warn", `Ghost position filtered: pos=${p.position?.slice(0, 8)} pair=${p.pair} sol=${p.total_value_sol} age=${p.age_minutes} — LPAgent ghost, not tracked in state`);
+        }
+        ghostPositions.push({ ...p, stale_zero_liquidity: true });
       }
       return !isGhost;
     });
@@ -1023,7 +1338,12 @@ export async function claimFees({ position_address }) {
 
     const txHashes = [];
     for (const tx of txs) {
-      const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet]), "claim");
+      const txHash = await sendAndConfirmWithRpcFallback(tx, [wallet], {
+        label: "claim",
+        refreshBlockhash: true,
+        allowSubscription: true,
+        maxBlockhashRefreshes: 2,
+      });
       txHashes.push(txHash);
     }
     log("claim", `SUCCESS txs: ${txHashes.join(", ")}`);
@@ -1076,7 +1396,12 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         });
         if (claimTxs && claimTxs.length > 0) {
           for (const tx of claimTxs) {
-            const claimHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet]), "close:claim");
+            const claimHash = await sendAndConfirmWithRpcFallback(tx, [wallet], {
+              label: "close:claim",
+              refreshBlockhash: true,
+              allowSubscription: true,
+              maxBlockhashRefreshes: 2,
+            });
             txHashes.push(claimHash);
           }
           log("close", `Step 1 OK: ${txHashes.join(", ")}`);
@@ -1098,7 +1423,12 @@ export async function closePosition({ position_address, reason, skip_swap = fals
     });
 
     for (const tx of Array.isArray(closeTx) ? closeTx : [closeTx]) {
-      const txHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, tx, [wallet]), "close:remove_liquidity");
+      const txHash = await sendAndConfirmWithRpcFallback(tx, [wallet], {
+        label: "close:remove_liquidity",
+        refreshBlockhash: true,
+        allowSubscription: true,
+        maxBlockhashRefreshes: 2,
+      });
       txHashes.push(txHash);
     }
     log("close", `SUCCESS txs: ${txHashes.join(", ")}`, closeCtx);
@@ -1340,7 +1670,12 @@ export async function closePosition({ position_address, reason, skip_swap = fals
         const _pool = pool ?? await getPool(poolAddress);
         const _posData = await _pool.getPosition(new PublicKey(position_address));
         const closeTx = await _pool.closePositionIfEmpty({ owner: wallet.publicKey, position: _posData });
-        const closeHash = await withRpcFallback(conn => sendAndConfirmTransaction(conn, closeTx, [wallet]), "close:closePositionIfEmpty");
+        const closeHash = await sendAndConfirmWithRpcFallback(closeTx, [wallet], {
+          label: "close:closePositionIfEmpty",
+          refreshBlockhash: true,
+          allowSubscription: true,
+          maxBlockhashRefreshes: 2,
+        });
         log("close", `closePositionIfEmpty SUCCESS: ${closeHash}`);
         recordClose(position_address, reason || "agent decision");
         return { success: true, position: position_address, pool: poolAddress?.toString(), txs: [closeHash], base_mint: _pool.lbPair.tokenXMint.toString(), close_reason: reason || "agent decision" };

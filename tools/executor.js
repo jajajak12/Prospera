@@ -16,12 +16,13 @@ import {
   claimFees,
   closePosition,
   estimateBinInitFee,
+  getWallet as dlmmGetWallet,
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { getTokenAdvancedInfo, getTokenPriceInfo, getTokenClusterList } from "./okx.js";
 import { getJupiterTokenInfo } from "./token.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction } from "../state.js";
+import { setPositionInstruction, getTrackedPosition, trackPosition, markPositionAdopted, markPositionUnusable } from "../state.js";
 import { addPoolNote } from "../pool-memory.js";
 import { addSmartWallet, removeSmartWallet, loadSmartWallets, observePoolParticipants, getObservationStats } from "../smart-wallets.js";
 import { runBacktest } from "../backtest.js";
@@ -39,7 +40,7 @@ const POSITION_META_PATH  = path.join(__dirname, "../position-meta.json");
 
 import { log, logAction } from "../logger.js";
 import { safeSave } from "../log-utils.js";
-import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
+import { notifyDeploy, notifyClose, notifySwap, notifyExistingPositionAdopted, notifyZeroLiquidityStalePosition } from "../telegram.js";
 
 function getPreferredBinStepRange(screeningCfg = config.screening ?? {}) {
   return {
@@ -432,6 +433,15 @@ export async function executeTool(name, args) {
       success,
     });
 
+    if (name === "deploy_position" && result?.zero_liq_stale) {
+      notifyZeroLiquidityStalePosition({
+        pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8),
+        position: result.position,
+        cleanupAttempted: result.cleanup_attempted === true,
+        cleanupClosed: result.cleanup_closed === true,
+      }).catch(() => {});
+    }
+
     if (success) {
       if (name === "swap_token" && result.tx) {
         notifySwap({
@@ -443,16 +453,25 @@ export async function executeTool(name, args) {
         }).catch(() => {});
 
       } else if (name === "deploy_position") {
-        log("deploy", `DEPLOY_EXECUTED pool=${args.pool_address} price_range=${result.price_range ?? "n/a"} binsBelow=${args.bins_below ?? "n/a"} binsAbove=${args.bins_above ?? "n/a"} fib236=${args.fib_levels_sol?.fib236 ?? "n/a"}`);
-        notifyDeploy({
-          pair:       result.pool_name || args.pool_name || args.pool_address?.slice(0, 8),
-          amountSol:  args.amount_y ?? args.amount_sol ?? 0,
-          position:   result.position,
-          tx:         result.txs?.[0] ?? result.tx,
-          priceRange: result.price_range,
-          binStep:    result.bin_step,
-          baseFee:    result.base_fee,
-        }).catch(() => {});
+        // Handle already-exists adoption case — no new position opened, existing was adopted
+        if (result?.adopted && result?.position) {
+          log("deploy", `DEPLOY_SKIPPED_EXISTING_ADOPTED pool=${args.pool_address} position=${result.position.slice(0, 8)}`);
+          notifyExistingPositionAdopted({
+            pair:     result.pool_name || args.pool_name || args.pool_address?.slice(0, 8),
+            position: result.position,
+          }).catch(() => {});
+        } else if (result?.success) {
+          log("deploy", `DEPLOY_EXECUTED pool=${args.pool_address} price_range=${result.price_range ?? "n/a"} binsBelow=${args.bins_below ?? "n/a"} binsAbove=${args.bins_above ?? "n/a"} fib236=${args.fib_levels_sol?.fib236 ?? "n/a"}`);
+          notifyDeploy({
+            pair:       result.pool_name || args.pool_name || args.pool_address?.slice(0, 8),
+            amountSol:  args.amount_y ?? args.amount_sol ?? 0,
+            position:   result.position,
+            tx:         result.txs?.[0] ?? result.tx,
+            priceRange: result.price_range,
+            binStep:    result.bin_step,
+            baseFee:    result.base_fee,
+          }).catch(() => {});
+        }
 
         // Save ath_bin for OOR management — close only if price makes new ATH
         try {
@@ -551,6 +570,86 @@ async function runSafetyChecks(name, args) {
           reason: `Max positions (${config.risk.maxPositions}) reached. Close a position first.`,
         };
       }
+      // Check for existing position on-chain before attempting deploy.
+      // Handles case where on-chain position exists but LPAgent is slow/stale returning it.
+      // This prevents "account already in use" errors and duplicate position attempts.
+      if (args.pool_address) {
+        try {
+          const { DLMM } = await import("@meteora-ag/dlmm");
+          const wallet = dlmmGetWallet();
+          const walletKey = wallet.publicKey.toString();
+          if (walletKey) {
+            const { withRpcFallback } = await import("../rpc.js");
+            const allUserPositions = await withRpcFallback(
+              conn => DLMM.getAllLbPairPositionsByUser(conn, wallet.publicKey),
+              "executor:predeploy_scan"
+            );
+            const poolBytes = args.pool_address;
+            const poolEntry = Object.entries(allUserPositions || {}).find(([k]) => k === poolBytes || k.slice(0, 8) === poolBytes.slice(0, 8));
+            if (poolEntry) {
+              for (const pos of (poolEntry[1].lbPairPositionsData || [])) {
+                const existingAddr = pos.publicKey.toString();
+                const xAmt = pos.positionData?.totalXAmount ?? null;
+                const yAmt = pos.positionData?.totalYAmount ?? null;
+                const isZeroLiq = xAmt !== null && yAmt !== null
+                  && BigInt(xAmt.toString()) === 0n && BigInt(yAmt.toString()) === 0n;
+                const trackedRec = getTrackedPosition(existingAddr);
+                const isTrackedOpen = !!(trackedRec && !trackedRec.closed);
+                if (isTrackedOpen && !isZeroLiq) {
+                  // Already in our state — suppress duplicate deploy
+                  log("deploy", `DUPLICATE_DEPLOY_SUPPRESSED pool=${args.pool_address} existing_pos=${existingAddr.slice(0, 8)} — tracked in state`);
+                  return {
+                    pass: false,
+                    reason: `Existing position ${existingAddr.slice(0, 8)}... already active in pool ${args.pool_address}. Position adopted in prior session.`,
+                    existing_position: existingAddr,
+                    adopted: true,
+                  };
+                } else if (isTrackedOpen && isZeroLiq) {
+                  log("deploy", `ZERO_LIQ_POSITION_ACCOUNT_DETECTED position=${existingAddr} pool=${args.pool_address}`);
+                  markPositionUnusable({
+                    pool: args.pool_address,
+                    position: existingAddr,
+                    reason: "predeploy_tracked_zero_liquidity",
+                    pool_name: args.pool_name || null,
+                    context: { source: "runSafetyChecks" },
+                  });
+                } else if (!isZeroLiq) {
+                  // On-chain position found, not tracked in state, non-zero liquidity
+                  // → adopt into state and suppress deploy so we don't hit "account already in use"
+                  log("deploy", `EXISTING_POSITION_FOUND_BEFORE_DEPLOY pool=${args.pool_address} — adopting untracked pos=${existingAddr.slice(0, 8)} with non-zero liquidity`);
+                  trackPosition({
+                    position: existingAddr,
+                    pool: args.pool_address,
+                    pool_name: args.pool_name || null,
+                    strategy: "bid_ask",
+                    amount_sol: 0,
+                    amount_x: 0,
+                  });
+                  markPositionAdopted({ pool: args.pool_address, position: existingAddr, pool_name: args.pool_name || null, source: "predeploy_scan" });
+                  return {
+                    pass: false,
+                    reason: `Existing on-chain position ${existingAddr.slice(0, 8)}... adopted into state. No duplicate deploy attempted.`,
+                    existing_position: existingAddr,
+                    adopted: true,
+                  };
+                }
+                // Zero-liquidity account → not an active deploy blocker
+                log("deploy", `ZERO_LIQ_POSITION_ACCOUNT_DETECTED position=${existingAddr} pool=${args.pool_address}`);
+                markPositionUnusable({
+                  pool: args.pool_address,
+                  position: existingAddr,
+                  reason: "predeploy_zero_liquidity",
+                  pool_name: args.pool_name || null,
+                  context: { source: "runSafetyChecks" },
+                });
+              }
+            }
+          }
+        } catch (scanErr) {
+          log("deploy_warn", `Pre-deploy on-chain scan failed: ${scanErr.message} — proceeding with deploy`);
+        }
+      }
+
       if (positions.positions.some(p => p.pool === args.pool_address)) {
         return {
           pass: false,
@@ -661,16 +760,79 @@ async function runSafetyChecks(name, args) {
         }
 
         if (_deployMeta?.fib500 != null) {
-          const reliable = await hybridDataProvider.getReliableSOLPrice(_deployMeta.tokenMint ?? null, args.pool_address, "solana");
-          const livePriceSol = reliable?.price ?? null;
+          // PRE_DEPLOY_REVALIDATION: fetch live active bin price from on-chain; fallback to SOL price API
+          let livePriceSol = null;
+          try {
+            const activeBinData = await getActiveBin({ pool_address: args.pool_address });
+            livePriceSol = activeBinData?.price ?? null;
+          } catch (binErr) {
+            log.warn("deploy", `PRE_DEPLOY_REVALIDATION active bin fetch failed: ${binErr.message} — trying SOL price fallback`);
+            try {
+              const reliable = await hybridDataProvider.getReliableSOLPrice(_deployMeta.tokenMint ?? null, args.pool_address, "solana");
+              livePriceSol = reliable?.price ?? null;
+            } catch (_) {}
+          }
+
           if (livePriceSol == null) {
-            log.warn("deploy", `Fib deploy-gate: SOL price unavailable → allowing deploy (fib500=${_deployMeta.fib500?.toPrecision(4)} SOL verified at screening)`, { pool: args.pool_address });
-          } else if (livePriceSol < _deployMeta.fib500) {
             return {
               pass: false,
-              reason: `Deploy blocked — live price ${livePriceSol.toPrecision(4)} SOL dropped below Fib 0.500 (${_deployMeta.fib500.toPrecision(4)} SOL) since screening.`,
+              reason: `PRE_DEPLOY_ABORT_STALE_SIGNAL — live price unavailable (active bin + SOL price both failed); cannot validate zone before deploy. Pool: ${args.pool_address}`,
             };
           }
+
+          // Derive Fib levels from stored ATH + fib500
+          const fibRange = _deployMeta.ath != null ? (_deployMeta.ath - _deployMeta.fib500) / 0.500 : null;
+          const fib382 = fibRange != null ? _deployMeta.ath - 0.382 * fibRange : null;
+          const fib236 = _deployMeta.fib236 ?? (fibRange != null ? _deployMeta.ath - 0.236 * fibRange : null);
+
+          log("deploy", `PRE_DEPLOY_REVALIDATION pool=${args.pool_address} livePrice=${livePriceSol.toPrecision(6)} fib500=${_deployMeta.fib500.toPrecision(4)} fib382=${fib382?.toPrecision(4) ?? "n/a"} fib236=${fib236?.toPrecision(4) ?? "n/a"}`);
+
+          if (livePriceSol < _deployMeta.fib500) {
+            return {
+              pass: false,
+              reason: `PRE_DEPLOY_ABORT_STALE_SIGNAL — live price ${livePriceSol.toPrecision(4)} SOL dropped below Fib 0.500 (${_deployMeta.fib500.toPrecision(4)} SOL) since screening.`,
+            };
+          }
+
+          if (fib382 != null && livePriceSol < fib382) {
+            return {
+              pass: false,
+              reason: `PRE_DEPLOY_ABORT_STALE_SIGNAL — live price ${livePriceSol.toPrecision(4)} SOL is below Fib 0.382 (${fib382.toPrecision(4)} SOL) — too deep in retracement for entry.`,
+            };
+          }
+
+          // Zone drift check: abort if zone changed between screening and deploy
+          if (fib236 != null) {
+            const screeningWasAthZone = (_deployMeta.binsAbove ?? 0) < 0 || (_deployMeta.entryPrice != null && _deployMeta.entryPrice > fib236);
+            const liveIsAthZone = livePriceSol > fib236;
+            if (screeningWasAthZone !== liveIsAthZone) {
+              log.warn("deploy", `PRE_DEPLOY_ZONE_CHANGED pool=${args.pool_address} screening=${screeningWasAthZone ? "ATH_ZONE" : "PRIMARY"} live=${liveIsAthZone ? "ATH_ZONE" : "PRIMARY"} livePrice=${livePriceSol.toPrecision(6)} fib236=${fib236.toPrecision(6)}`);
+              return {
+                pass: false,
+                reason: `PRE_DEPLOY_ABORT_STALE_SIGNAL — zone changed from ${screeningWasAthZone ? "ATH_ZONE" : "PRIMARY"} to ${liveIsAthZone ? "ATH_ZONE" : "PRIMARY"} (fib236=${fib236.toPrecision(4)} SOL). Re-screen required.`,
+              };
+            }
+          }
+        }
+
+        // PRE_DEPLOY_DEPTH_CHECK: reject if pool TVL dropped below safe threshold for this deploy size
+        try {
+          const deployAmountSol = args.amount_y ?? args.amount_sol ?? 0;
+          if (deployAmountSol > 0.5 && args.pool_address) {
+            const poolRaw = await getPoolDetail({ pool_address: args.pool_address });
+            const tvlUsd = poolRaw?.tvl ?? poolRaw?.liquidity ?? null;
+            const minTvl = config.screening?.minTvl ?? 25000;
+            const depthFloor = minTvl * 0.5;
+            log("deploy", `PRE_DEPLOY_DEPTH_CHECK pool=${args.pool_address} tvlUsd=${tvlUsd?.toFixed(0) ?? "n/a"} depthFloor=${depthFloor.toFixed(0)} deploySOL=${deployAmountSol}`);
+            if (tvlUsd != null && tvlUsd < depthFloor) {
+              return {
+                pass: false,
+                reason: `DEPLOY_SIZE_TOO_LARGE_FOR_POOL_DEPTH — pool TVL $${tvlUsd.toFixed(0)} is below depth floor $${depthFloor.toFixed(0)} (50% of screening minTvl $${minTvl}). Deploy of ${deployAmountSol} SOL may overwhelm thin pool and cause slippage.`,
+              };
+            }
+          }
+        } catch (depthErr) {
+          log.warn("deploy", `PRE_DEPLOY_DEPTH_CHECK failed: ${depthErr.message} — allowing deploy`);
         }
 
         if (_deployMeta) {
